@@ -18,31 +18,54 @@ VelaOS is an experimental, independent operating system project written primaril
 
 ## Architecture
 
-```text
-                 UEFI Firmware
-                       |
-                VelaOS Bootloader
-                       |
-                   Vela Kernel
-         +-------------+-------------+
-         |             |             |
-    Memory / IPC   Scheduler     VFS / Drivers
-         +-------------+-------------+
-                       |
-              Hardware Abstraction
-          x86-64 / AArch64 / RISC-V64
-                  / LoongArch64
+```mermaid
+flowchart TB
+    UEFI["UEFI Firmware"] --> BOOT["Vela Boot / Rust UEFI Loader"]
+    BOOT --> K["Vela Kernel"]
 
-         AmigaOS 3.1 API Compatibility
-          Exec / DOS / Graphics /
-           Layers / Intuition / ...
-                 /          \
-       Native Applications   68k Runtime
-                 \          /
-              Vela Workbench
+    K --> MM["Memory / Scheduler / Syscalls / IPC / VFS"]
+    K --> HAL["HAL and Drivers"]
+    HAL --> X["x86-64"]
+    HAL --> A["AArch64"]
+    HAL --> R["RISC-V64"]
+    HAL --> L["LoongArch64"]
+
+    W["Vela Workbench"] --> API["AmigaOS 3.1 API Services"]
+    N["Native Rust / C Apps"] --> NABI["Vela Native ABI"]
+    G["Original 68k HUNK Apps"] --> EMU["m68k Runtime + Guest ABI Bridge"]
+
+    EMU --> API
+    NABI --> API
+    NABI --> K
+    API --> K
+    W --> NABI
 ```
 
 The design separates the native 64-bit ABI from the original 32-bit, big-endian Motorola 68k ABI. Shared system services provide the underlying functionality, while explicit adapters handle calling conventions, pointer representations, structure layouts, and guest memory.
+
+## boot workflow
+
+```mermaid
+sequenceDiagram
+    participant F as UEFI Firmware
+    participant B as Vela Boot
+    participant K as Vela Kernel
+    participant I as Init / Services
+    participant W as Vela Workbench
+
+    F->>B: Load/Start BOOT<ARCH>.EFI
+    B->>B: Init console, filesystem and GOP
+    B->>B: Draw Amiga-inspired splash
+    B->>B: Read kernel ELF64 and initrd
+    B->>B: Prepare stack, pages and BootInfo
+    B->>B: Collect ACPI/DTB, framebuffer, memory map
+    B->>F: ExitBootServices (valid map key)
+    F-->>B: Boot Services unavailable
+    B->>K: Handoff BootInfo + arch-specific entry
+    K->>K: MM, exceptions, timer, scheduler
+    K->>I: Start system services
+    I->>W: Start desktop and Shell
+```
 
 ## Target Platforms
 
