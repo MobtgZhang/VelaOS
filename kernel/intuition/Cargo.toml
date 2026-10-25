@@ -1,0 +1,17 @@
+[package]
+name = "vela-kernel-intuition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Intuition: Screen, Window, Gadget, IDCMP"
+
+[dependencies]
+vela-abi-native64.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-input.workspace = true
+vela-kernel-layers.workspace = true
+vela-renderer2d.workspace = true
+vela-text.workspace = true
+vela-theme-classic.workspace = true
+spin.workspace = true

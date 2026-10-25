@@ -1,0 +1,13 @@
+[package]
+name = "vela-theme-classic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Original Workbench-inspired classic palette and metrics for VelaOS"
+
+[dependencies]
+vela-renderer2d.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

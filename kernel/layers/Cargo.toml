@@ -1,0 +1,11 @@
+[package]
+name = "vela-kernel-layers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Layer compositing and clipping"
+
+[dependencies]
+vela-renderer2d.workspace = true
+spin.workspace = true

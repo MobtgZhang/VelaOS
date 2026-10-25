@@ -1,0 +1,13 @@
+[package]
+name = "vela-kernel-graphics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Graphics services: RastPort, Bitmap, pens, text"
+
+[dependencies]
+vela-boot-protocol.workspace = true
+vela-renderer2d.workspace = true
+vela-text.workspace = true
+spin.workspace = true

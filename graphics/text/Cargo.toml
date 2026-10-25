@@ -1,0 +1,13 @@
+[package]
+name = "vela-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Original embedded bitmap font for VelaOS"
+
+[dependencies]
+spin.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

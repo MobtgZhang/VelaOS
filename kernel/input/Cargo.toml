@@ -1,0 +1,10 @@
+[package]
+name = "vela-kernel-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PS/2 controller, keyboard and mouse decoding"
+
+[dependencies]
+spin.workspace = true
