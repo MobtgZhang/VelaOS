@@ -1,0 +1,13 @@
+[package]
+name = "vela-kernel-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Physical frame allocator, page mapper, kernel heap"
+
+[dependencies]
+vela-boot-protocol.workspace = true
+vela-hal-common.workspace = true
+vela-hal-x86_64.workspace = true
+spin.workspace = true

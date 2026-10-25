@@ -1,0 +1,34 @@
+[package]
+name = "vela-kernel-entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS kernel entry point and arch glue"
+
+[features]
+# Only the final kernel binary needs a panic handler; enabling it here pulls
+# `vela-kernel-core`'s implementation in without making every library that
+# depends on this crate a duplicate lang item.
+default = []
+panic-handler = ["vela-kernel-core/panic-handler"]
+
+[[bin]]
+name = "vela-kernel"
+path = "src/main.rs"
+
+[dependencies]
+vela-boot-protocol.workspace = true
+vela-hal-common.workspace = true
+vela-hal-x86_64.workspace = true
+vela-kernel-core.workspace = true
+vela-kernel-dos.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-graphics.workspace = true
+vela-kernel-input.workspace = true
+vela-kernel-intuition.workspace = true
+vela-kernel-layers.workspace = true
+vela-kernel-syscall.workspace = true
+vela-ramfs.workspace = true
+vela-kernel-memory.workspace = true
+spin.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "vela-kernel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kernel logger, panic handler, and lock primitives"
+
+[features]
+# The panic handler is a lang item, and a crate that is linked as a library
+# must not define one. Only the final kernel binary enables this, which is
+# what makes `vela-kernel-core` both a reusable library and the owner of the
+# kernel's panic behaviour.
+default = []
+panic-handler = []
+
+[dependencies]
+vela-hal-x86_64.workspace = true
+spin.workspace = true
