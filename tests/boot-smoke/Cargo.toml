@@ -1,0 +1,11 @@
+[package]
+name = "vela-test-boot-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "QEMU boot smoke tests"
+
+[dependencies]
+anyhow = "1"
+xtask = { path = "../../tools/xtask" }
