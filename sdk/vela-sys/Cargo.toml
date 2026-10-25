@@ -1,0 +1,27 @@
+[package]
+name = "vela-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "User-space SDK with Amiga-style library bases"
+
+[dependencies]
+spin.workspace = true
+# The ABI layouts, for *every* target and not just hosted ones.
+#
+# This is the fix for a real bug: the SDK used to restate `Node`, `Message`
+# and `IntuiMessage` by hand, and its `Message` came out 160 bytes against the
+# kernel's 104 — so every `GetMsg`/`ReplyMsg` round trip copied the wrong
+# number of bytes and a guest program saw a reply port of zero. The hosted
+# build was the only place that could ever have caught it, which is exactly why
+# the duplication was invisible. Sharing the definition removes the second copy
+# that *can* drift, on every target.
+vela-abi-native64.workspace = true
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+vela-kernel-dos.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-graphics.workspace = true
+vela-kernel-intuition.workspace = true
+vela-kernel-syscall.workspace = true

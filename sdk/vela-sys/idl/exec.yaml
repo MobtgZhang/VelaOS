@@ -1,0 +1,204 @@
+# The `exec.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: exec.library
+prefix: EXEC
+functions:
+  - name: MapPage
+    lvo: -168
+    offset: MAPPAGE
+    stub: map_page
+    syscall: MAP_PAGE
+    number: 18
+    kernel: MAP_PAGE
+    status: not-started
+  - name: Brk
+    lvo: -160
+    offset: BRK
+    stub: brk
+    syscall: BRK
+    number: 19
+    kernel: BRK
+    status: not-started
+  - name: PutChar
+    lvo: -152
+    offset: PUTCHAR
+    stub: put_char
+    syscall: PUTCHAR
+    number: 16
+    kernel: PUTCHAR
+    status: implemented
+  - name: PowerOff
+    lvo: -144
+    offset: POWEROFF
+    stub: power_off
+    syscall: POWER_OFF
+    number: 17
+    kernel: POWER_OFF
+    status: implemented
+  - name: CreateMsgPort
+    lvo: -136
+    offset: CREATEMSGPORT
+    stub: create_port
+    syscall: CREATE_MSG_PORT
+    number: 0
+    kernel: CREATE_MSG_PORT
+    status: implemented
+  - name: DeleteMsgPort
+    lvo: -128
+    offset: DELETEMSGPORT
+    stub: delete_port
+    syscall: DELETE_MSG_PORT
+    number: 1
+    kernel: DELETE_MSG_PORT
+    status: implemented
+  - name: AddPort
+    lvo: -120
+    offset: ADDPORT
+    stub: add_port
+    syscall: none
+    status: not-started
+  - name: Forbid
+    lvo: -112
+    offset: FORBID
+    stub: forbid
+    syscall: FORBID
+    number: 12
+    kernel: FORBID
+    status: implemented
+  - name: Permit
+    lvo: -104
+    offset: PERMIT
+    stub: permit
+    syscall: PERMIT
+    number: 13
+    kernel: PERMIT
+    status: implemented
+  - name: PutMsg
+    lvo: -96
+    offset: PUTMSG
+    stub: put_msg
+    syscall: PUT_MSG
+    number: 2
+    kernel: PUT_MSG
+    status: implemented
+  - name: GetMsg
+    lvo: -88
+    offset: GETMSG
+    stub: get_msg
+    syscall: GET_MSG
+    number: 3
+    kernel: GET_MSG
+    status: implemented
+  - name: ReplyMsg
+    lvo: -80
+    offset: REPLYMSG
+    stub: reply_msg
+    syscall: REPLY_MSG
+    number: 4
+    kernel: REPLY_MSG
+    status: implemented
+  - name: WaitPort
+    lvo: -72
+    offset: WAITPORT
+    stub: wait_port
+    syscall: WAIT_PORT
+    number: 5
+    kernel: WAIT_PORT
+    status: implemented
+  - name: Wait
+    lvo: -64
+    offset: WAIT
+    stub: wait
+    syscall: WAIT
+    number: 6
+    kernel: WAIT
+    status: implemented
+  - name: SetSignal
+    lvo: -56
+    offset: SETSIGNAL
+    stub: set_signal
+    syscall: SET_SIGNAL
+    number: 7
+    kernel: SET_SIGNAL
+    status: implemented
+  - name: SetExcept
+    lvo: -48
+    offset: SETEXCEPT
+    stub: set_except
+    syscall: SET_EXCEPT
+    number: 8
+    kernel: SET_EXCEPT
+    status: implemented
+  - name: Signal
+    lvo: -40
+    offset: SIGNAL
+    stub: signal
+    syscall: SIGNAL
+    number: 9
+    kernel: SIGNAL
+    status: implemented
+  - name: OpenLibrary
+    lvo: -32
+    offset: OPENLIBRARY
+    stub: open_library
+    syscall: OPEN_LIBRARY
+    number: 10
+    kernel: OPEN_LIBRARY
+    status: implemented
+  - name: CloseLibrary
+    lvo: -24
+    offset: CLOSELIBRARY
+    stub: close_library
+    syscall: CLOSE_LIBRARY
+    number: 11
+    kernel: CLOSE_LIBRARY
+    status: implemented
+  - name: Yield
+    lvo: -16
+    offset: YIELD
+    stub: yield_now
+    syscall: YIELD
+    number: 14
+    kernel: YIELD
+    status: implemented
+  - name: FindTask
+    lvo: -8
+    offset: FINDTASK
+    stub: find_task
+    syscall: GET_TASK_ID
+    number: 15
+    kernel: GET_TASK_ID
+    status: implemented

@@ -1,0 +1,118 @@
+# The `dos.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: dos.library
+prefix: DOS
+functions:
+  - name: Open
+    lvo: -80
+    offset: OPEN
+    stub: open
+    syscall: D_OPEN
+    number: 256
+    kernel: DOS_OPEN
+    status: implemented
+  - name: Close
+    lvo: -72
+    offset: CLOSE
+    stub: close
+    syscall: D_CLOSE
+    number: 257
+    kernel: DOS_CLOSE
+    status: implemented
+  - name: Read
+    lvo: -64
+    offset: READ
+    stub: read
+    syscall: D_READ
+    number: 258
+    kernel: DOS_READ
+    status: implemented
+  - name: Write
+    lvo: -56
+    offset: WRITE
+    stub: write
+    syscall: D_WRITE
+    number: 259
+    kernel: DOS_WRITE
+    status: implemented
+  - name: Seek
+    lvo: -48
+    offset: SEEK
+    stub: seek
+    syscall: D_SEEK
+    number: 260
+    kernel: DOS_SEEK
+    status: implemented
+  - name: ReadDir
+    lvo: -40
+    offset: READDIR
+    stub: read_dir
+    syscall: D_READ_DIR
+    number: 261
+    kernel: DOS_READ_DIR
+    status: implemented
+  - name: DeleteFile
+    lvo: -32
+    offset: DELETEFILE
+    stub: delete
+    syscall: D_DELETE
+    number: 262
+    kernel: DOS_DELETE
+    status: implemented
+  - name: CreateDir
+    lvo: -24
+    offset: CREATEDIR
+    stub: mkdir
+    syscall: D_MKDIR
+    number: 263
+    kernel: DOS_MKDIR
+    status: implemented
+  - name: Examine
+    lvo: -16
+    offset: EXAMINE
+    stub: examine
+    syscall: D_EXAMINE
+    number: 264
+    kernel: DOS_EXAMINE
+    status: implemented
+  - name: CurrentDir
+    lvo: -8
+    offset: CURRENTDIR
+    stub: current_dir
+    syscall: D_CURRENT_DIR
+    number: 265
+    kernel: DOS_CURRENT_DIR
+    status: implemented

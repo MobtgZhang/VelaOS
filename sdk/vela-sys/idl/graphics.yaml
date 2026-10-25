@@ -1,0 +1,142 @@
+# The `graphics.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: graphics.library
+prefix: GRAPHICS
+functions:
+  - name: AllocPen
+    lvo: -104
+    offset: ALLOCPEN
+    stub: alloc_pen
+    syscall: G_ALLOC_PEN
+    number: 64
+    kernel: GRAPHICS_ALLOC_PEN
+    status: implemented
+  - name: FreePen
+    lvo: -96
+    offset: FREEPEN
+    stub: free_pen
+    syscall: G_FREE_PEN
+    number: 65
+    kernel: GRAPHICS_FREE_PEN
+    status: implemented
+  - name: SetPen
+    lvo: -88
+    offset: SETPEN
+    stub: set_pen
+    syscall: G_SET_PEN
+    number: 66
+    kernel: GRAPHICS_SET_PEN
+    status: implemented
+  - name: Rect
+    lvo: -80
+    offset: RECT
+    stub: rect
+    syscall: G_RECT
+    number: 67
+    kernel: GRAPHICS_RECT
+    status: implemented
+  - name: RectFill
+    lvo: -72
+    offset: RECTFILL
+    stub: fill_rect
+    syscall: G_FILL_RECT
+    number: 68
+    kernel: GRAPHICS_FILL_RECT
+    status: implemented
+  - name: Text
+    lvo: -64
+    offset: TEXT
+    stub: text
+    syscall: G_TEXT
+    number: 69
+    kernel: GRAPHICS_TEXT
+    status: implemented
+  - name: Line
+    lvo: -56
+    offset: LINE
+    stub: line
+    syscall: G_LINE
+    number: 70
+    kernel: GRAPHICS_LINE
+    status: implemented
+  - name: SetClip
+    lvo: -48
+    offset: SETCLIP
+    stub: set_clip
+    syscall: G_SET_CLIP
+    number: 71
+    kernel: GRAPHICS_SET_CLIP
+    status: implemented
+  - name: PenColor
+    lvo: -40
+    offset: PENCOLOR
+    stub: pen_color
+    syscall: G_PEN_COLOR
+    number: 72
+    kernel: GRAPHICS_PEN_COLOR
+    status: implemented
+  - name: WritePixel
+    lvo: -32
+    offset: WRITEPIXEL
+    stub: write_pixel
+    syscall: G_WRITE_PIXEL
+    number: 73
+    kernel: GRAPHICS_WRITE_PIXEL
+    status: implemented
+  - name: Move
+    lvo: -24
+    offset: MOVE
+    stub: move_to
+    syscall: G_MOVE
+    number: 74
+    kernel: GRAPHICS_MOVE
+    status: implemented
+  - name: SetPalette
+    lvo: -16
+    offset: SETPALETTE
+    stub: set_palette
+    syscall: G_SET_PALETTE
+    number: 75
+    kernel: GRAPHICS_SET_PALETTE
+    status: implemented
+  - name: RasterInfo
+    lvo: -8
+    offset: RASTERINFO
+    stub: raster_info
+    syscall: G_RASTER_INFO
+    number: 76
+    kernel: GRAPHICS_RASTER_INFO
+    status: implemented

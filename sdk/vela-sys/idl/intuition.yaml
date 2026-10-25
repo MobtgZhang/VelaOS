@@ -1,0 +1,142 @@
+# The `intuition.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: intuition.library
+prefix: INTUITION
+functions:
+  - name: OpenScreen
+    lvo: -104
+    offset: OPENSCREEN
+    stub: open_screen
+    syscall: I_OPEN_SCREEN
+    number: 192
+    kernel: INTUITION_OPEN_SCREEN
+    status: implemented
+  - name: CloseScreen
+    lvo: -96
+    offset: CLOSESCREEN
+    stub: close_screen
+    syscall: I_CLOSE_SCREEN
+    number: 193
+    kernel: INTUITION_CLOSE_SCREEN
+    status: implemented
+  - name: OpenWindow
+    lvo: -88
+    offset: OPENWINDOW
+    stub: open_window
+    syscall: I_OPEN_WINDOW
+    number: 194
+    kernel: INTUITION_OPEN_WINDOW
+    status: implemented
+  - name: CloseWindow
+    lvo: -80
+    offset: CLOSEWINDOW
+    stub: close_window
+    syscall: I_CLOSE_WINDOW
+    number: 195
+    kernel: INTUITION_CLOSE_WINDOW
+    status: implemented
+  - name: SetWindowTitle
+    lvo: -72
+    offset: SETWINDOWTITLE
+    stub: set_title
+    syscall: I_SET_TITLE
+    number: 196
+    kernel: INTUITION_SET_TITLE
+    status: implemented
+  - name: Refresh
+    lvo: -64
+    offset: REFRESH
+    stub: refresh
+    syscall: I_REFRESH
+    number: 197
+    kernel: INTUITION_REFRESH
+    status: implemented
+  - name: SetAttrs
+    lvo: -56
+    offset: SETATTRS
+    stub: set_attrs
+    syscall: I_SET_ATTRS
+    number: 198
+    kernel: INTUITION_SET_ATTRS
+    status: implemented
+  - name: AddGadget
+    lvo: -48
+    offset: ADDGADGET
+    stub: add_gadget
+    syscall: I_ADD_GADGET
+    number: 199
+    kernel: INTUITION_ADD_GADGET
+    status: implemented
+  - name: RemoveGadget
+    lvo: -40
+    offset: REMOVEGADGET
+    stub: remove_gadget
+    syscall: I_REMOVE_GADGET
+    number: 200
+    kernel: INTUITION_REMOVE_GADGET
+    status: implemented
+  - name: SetWindowBounds
+    lvo: -32
+    offset: SETWINDOWBOUNDS
+    stub: set_bounds
+    syscall: I_SET_BOUNDS
+    number: 201
+    kernel: INTUITION_SET_BOUNDS
+    status: implemented
+  - name: BringWindowToFront
+    lvo: -24
+    offset: BRINGWINDOWTOFRONT
+    stub: to_front
+    syscall: I_FRONT
+    number: 202
+    kernel: INTUITION_FRONT
+    status: implemented
+  - name: SendWindowToBack
+    lvo: -16
+    offset: SENDWINDOWTOBACK
+    stub: to_back
+    syscall: I_BACK
+    number: 203
+    kernel: INTUITION_BACK
+    status: implemented
+  - name: RepaintWindow
+    lvo: -8
+    offset: REPAINTWINDOW
+    stub: repaint
+    syscall: I_REPAINT
+    number: 204
+    kernel: INTUITION_REPAINT
+    status: implemented

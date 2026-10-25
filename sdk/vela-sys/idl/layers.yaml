@@ -1,0 +1,118 @@
+# The `layers.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: layers.library
+prefix: LAYERS
+functions:
+  - name: CreateLayer
+    lvo: -80
+    offset: CREATELAYER
+    stub: create_layer
+    syscall: L_CREATE
+    number: 128
+    kernel: LAYERS_CREATE
+    status: implemented
+  - name: DeleteLayer
+    lvo: -72
+    offset: DELETELAYER
+    stub: delete_layer
+    syscall: L_DESTROY
+    number: 129
+    kernel: LAYERS_DESTROY
+    status: implemented
+  - name: SetClip
+    lvo: -64
+    offset: SETCLIP
+    stub: set_clip
+    syscall: L_SET_CLIP
+    number: 130
+    kernel: LAYERS_SET_CLIP
+    status: implemented
+  - name: BringToFront
+    lvo: -56
+    offset: BRINGTOFRONT
+    stub: bring_to_front
+    syscall: L_FRONT
+    number: 131
+    kernel: LAYERS_FRONT
+    status: implemented
+  - name: SendToBack
+    lvo: -48
+    offset: SENDTOBACK
+    stub: send_to_back
+    syscall: L_BACK
+    number: 132
+    kernel: LAYERS_BACK
+    status: implemented
+  - name: SetVisible
+    lvo: -40
+    offset: SETVISIBLE
+    stub: set_visible
+    syscall: L_SET_VISIBLE
+    number: 133
+    kernel: LAYERS_SET_VISIBLE
+    status: implemented
+  - name: MoveLayer
+    lvo: -32
+    offset: MOVELAYER
+    stub: move_layer
+    syscall: L_MOVE
+    number: 134
+    kernel: LAYERS_MOVE
+    status: implemented
+  - name: Composite
+    lvo: -24
+    offset: COMPOSITE
+    stub: composite
+    syscall: L_COMPOSITE
+    number: 135
+    kernel: LAYERS_COMPOSITE
+    status: implemented
+  - name: ObtainOrder
+    lvo: -16
+    offset: OBTAINORDER
+    stub: order
+    syscall: L_ORDER
+    number: 136
+    kernel: LAYERS_ORDER
+    status: implemented
+  - name: WhichLayer
+    lvo: -8
+    offset: WHICHLAYER
+    stub: topmost
+    syscall: L_TOPMOST
+    number: 137
+    kernel: LAYERS_TOPMOST
+    status: implemented
