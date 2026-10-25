@@ -1,0 +1,51 @@
+# VelaOS — link configuration
+
+# Bare-metal kernel: rust-lld drives the PE/COFF and ELF links without a
+# system C toolchain.
+#
+# The kernel is a higher-half kernel, so it needs three flags that a default
+# link does not supply:
+#
+#   -no-pie           the image must land at a fixed address, not be relocated
+#                     by a dynamic loader that does not exist
+#   -T <script>       the higher-half layout and the `kernel_entry` entry point
+#   -z max-page-size  4 KiB pages, matching the firmware's page size, so the
+#                     loader can map the image without 2 MiB-page alignment
+#                     surprises
+#
+# The kernel image is *linked* at 0xFFFF800000000000 and *loaded* at
+# 0x100000; the kernel maps the two together after the handoff. The AT()
+# phrases in the linker script are what make those two addresses independent.
+#
+# The linker script is *not* named here. A relative `-T` path is resolved
+# against the linker's working directory, which differs between `cargo build`
+# at the workspace root and `cargo build -p vela-kernel-entry` inside the
+# crate. `kernel/entry/build.rs` passes an absolute path instead, computed from
+# `CARGO_MANIFEST_DIR`, which is correct from every working directory.
+[target.x86_64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+  "-C", "link-arg=-n",
+  "-C", "link-arg=-znoexecstack",
+  "-C", "link-arg=-no-pie",
+  "-C", "link-arg=-zmax-page-size=4096",
+  "-C", "link-arg=--nmagic",
+]
+
+[target.x86_64-unknown-uefi]
+linker = "rust-lld"
+rustflags = [
+  "-C", "link-arg=-znoexecstack",
+  "-C", "link-arg=-no-pie",
+]
+
+# Cross-arch no_std compile checks (Phase 8 CI). No linker is configured here on
+# purpose: these targets are only ever run through `cargo check`.
+[target.aarch64-unknown-none]
+rustflags = ["-C", "link-arg=-n"]
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "link-arg=-n"]
+
+[target.loongarch64-unknown-none]
+rustflags = ["-C", "link-arg=-n"]

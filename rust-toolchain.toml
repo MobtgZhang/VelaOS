@@ -1,0 +1,12 @@
+[toolchain]
+# Pinned to the active nightly that validated the UEFI probe chain.
+# Change deliberately and re-run the boot-smoke suite when upgrading.
+channel = "nightly"
+components = ["clippy", "rustfmt"]
+targets = [
+  "x86_64-unknown-uefi",
+  "x86_64-unknown-none",
+  "aarch64-unknown-none",
+  "riscv64gc-unknown-none-elf",
+  "loongarch64-unknown-none",
+]

@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+  # boot
+  "boot/boot-protocol",
+  "boot/elf-loader",
+  "boot/uefi-loader",
+  # hal
+  "hal/common",
+  "hal/x86_64",
+  # kernel
+  "kernel/entry",
+  "kernel/core",
+  "kernel/memory",
+  "kernel/scheduler",
+  "kernel/exec",
+  "kernel/vfs",
+  "kernel/dos",
+  "kernel/syscall",
+  "kernel/graphics",
+  "kernel/layers",
+  "kernel/intuition",
+  "kernel/input",
+  # amiga abi + spec
+  "amiga/abi-native64",
+  "amiga/abi-guest32",
+  # graphics
+  "graphics/renderer2d",
+  "graphics/text",
+  "graphics/theme-classic",
+  # fs
+  "fs/ramfs",
+  "fs/amiga-path",
+  # userland
+  "sdk/vela-sys",
+  "userland/init",
+  "userland/workbench",
+  "userland/apps/guitest",
+  # tooling + tests
+  "tools/xtask",
+  "platforms/hosted",
+  "tests/abi-layout",
+  "tests/api-conformance",
+  "tests/boot-smoke",
+  "tests/gui-golden",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+vela-boot-protocol = { path = "boot/boot-protocol" }
+vela-elf-loader = { path = "boot/elf-loader" }
+vela-hal-common = { path = "hal/common" }
+vela-hal-x86_64 = { path = "hal/x86_64" }
+vela-kernel-core = { path = "kernel/core" }
+vela-kernel-memory = { path = "kernel/memory" }
+vela-kernel-scheduler = { path = "kernel/scheduler" }
+vela-kernel-exec = { path = "kernel/exec" }
+vela-kernel-vfs = { path = "kernel/vfs" }
+vela-kernel-dos = { path = "kernel/dos" }
+vela-kernel-syscall = { path = "kernel/syscall" }
+vela-kernel-graphics = { path = "kernel/graphics" }
+vela-kernel-layers = { path = "kernel/layers" }
+vela-kernel-intuition = { path = "kernel/intuition" }
+vela-kernel-input = { path = "kernel/input" }
+vela-abi-native64 = { path = "amiga/abi-native64" }
+vela-abi-guest32 = { path = "amiga/abi-guest32" }
+vela-renderer2d = { path = "graphics/renderer2d" }
+vela-text = { path = "graphics/text" }
+vela-theme-classic = { path = "graphics/theme-classic" }
+vela-ramfs = { path = "fs/ramfs" }
+vela-amiga-path = { path = "fs/amiga-path" }
+vela-sys = { path = "sdk/vela-sys" }
+vela-hosted = { path = "platforms/hosted" }
+vela-workbench = { path = "userland/workbench" }
+
+spin = { version = "0.9", default-features = false, features = ["once", "spin_mutex"] }
+uefi = { version = "0.41", default-features = false }
+log = { version = "0.4", default-features = false }
+
+# Kernel images must abort on panic: unwinding needs unwinding tables and a
+# personality routine that a no_std static binary cannot provide.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
