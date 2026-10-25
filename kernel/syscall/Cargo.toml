@@ -1,0 +1,22 @@
+[package]
+name = "vela-kernel-syscall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Syscall numbers, dispatch, user copy helpers"
+
+[dependencies]
+vela-abi-native64.workspace = true
+vela-hal-common.workspace = true
+vela-hal-x86_64.workspace = true
+vela-kernel-core.workspace = true
+vela-kernel-dos.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-graphics.workspace = true
+vela-kernel-intuition.workspace = true
+vela-kernel-layers.workspace = true
+vela-kernel-vfs.workspace = true
+vela-renderer2d.workspace = true
+vela-text.workspace = true
+spin.workspace = true

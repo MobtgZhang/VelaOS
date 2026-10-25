@@ -1,0 +1,15 @@
+[package]
+name = "vela-kernel-dos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "AmigaDOS file API over the VFS"
+
+[dependencies]
+vela-amiga-path.workspace = true
+vela-kernel-vfs.workspace = true
+spin.workspace = true
+
+[dev-dependencies]
+vela-ramfs.workspace = true

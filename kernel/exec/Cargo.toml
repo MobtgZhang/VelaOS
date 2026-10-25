@@ -1,0 +1,11 @@
+[package]
+name = "vela-kernel-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Exec services: ports, messages, signals, library registry"
+
+[dependencies]
+vela-abi-native64.workspace = true
+spin.workspace = true
