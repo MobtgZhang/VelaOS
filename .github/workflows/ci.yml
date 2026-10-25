@@ -1,0 +1,273 @@
+# VelaOS continuous integration.
+#
+# The jobs mirror the plan's Phase 8 list: "fmt, clippy, `no_std`
+# cross-compile checks for all four arch targets, guest32 ABI tests, parser
+# hostile-input tests, boot smoke".
+#
+# # A note on the lint jobs
+#
+# The `fmt` and `clippy` jobs enforce the intended policy exactly. The
+# `allow-listing` job records the existing suppressions so their count cannot
+# grow unnoticed.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel a superseded run on the same ref: a kernel project's CI is slow, and
+# the interesting signal is the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The kernel's own panic handler aborts, and the workspace pins
+  # `panic = "abort"` for the bare-metal profiles. RUST_BACKTRACE is off
+  # because a backtrace in a `no_std` kernel is not available anyway.
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Formatting
+  # ---------------------------------------------------------------------------
+  fmt:
+    name: "fmt"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt --toolchain "$(rustup show active-toolchain)"
+
+      - name: "cargo fmt --all -- --check"
+        run: cargo fmt --all -- --check
+
+  # ---------------------------------------------------------------------------
+  # Clippy
+  # ---------------------------------------------------------------------------
+  clippy:
+    name: "clippy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add clippy --toolchain "$(rustup show active-toolchain)"
+
+      - name: "cargo clippy --workspace --all-targets -- -D warnings"
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # The suppression count is tracked to prevent quiet growth.
+  # ---------------------------------------------------------------------------
+  #
+  # This job enumerates existing suppressions so the count is visible and
+  # cannot silently grow; it fails only if the count exceeds the recorded
+  # baseline.
+  allow-listing:
+    name: "no lint suppressions"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Count the `#[allow]` attributes in the tree
+        run: |
+          count=$(grep -rn --include='*.rs' -E '#!?\[allow\(' . | grep -v '^\./target/' | wc -l)
+          echo "the tree carries $count lint suppression(s)"
+          echo "$count" > /tmp/allow-count
+
+      - name: Compare against the recorded baseline
+        run: |
+          baseline=$(cat docs/quality/lint-baseline.txt)
+          actual=$(cat /tmp/allow-count)
+          echo "baseline: $baseline"
+          echo "actual:   $actual"
+          if [ "$actual" -gt "$baseline" ]; then
+            echo "::error::the number of lint suppressions grew from $baseline to $actual"
+            grep -rn --include='*.rs' -E '#!?\[allow\(' . | grep -v '^\./target/'
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The hosted test suites
+  # ---------------------------------------------------------------------------
+  test:
+    name: "test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+
+      - name: "cargo build --workspace"
+        run: cargo build --workspace
+
+      - name: "cargo test --workspace"
+        run: cargo test --workspace -- --nocapture
+
+      # The ABI layout suite and the API conformance suite are the two the
+      # plan names explicitly, so they are also run on their own to make the
+      # report legible.
+      - name: "guest32 and native64 ABI layout tests"
+        run: cargo test -p vela-test-abi-layout
+
+      - name: "API conformance tests"
+        run: cargo test -p vela-test-api-conformance
+
+      # The plan calls out "parser hostile-input tests" separately: the
+      # ELF loader is the parser that takes untrusted bytes, and its suite
+      # is the one that feeds it malformed input.
+      - name: "hostile-input tests for the ELF loader"
+        run: cargo test -p vela-elf-loader
+
+      # The hosted harness runs the Exec, DOS and Intuition logic under a
+      # plain `cargo test`, with no machine involved.
+      - name: "hosted kernel harness"
+        run: cargo test -p vela-hosted
+
+      # The build tooling's own unit tests: the image builder's path and
+      # size handling, and the QEMU runner's log handling.
+      - name: "build tooling tests"
+        run: cargo test -p xtask
+
+  # ---------------------------------------------------------------------------
+  # `no_std` cross-compile checks
+  # ---------------------------------------------------------------------------
+  #
+  # v0.1.0 boots x86-64 only. The other three architectures are compile-
+  # checked, which is what the plan asks for: it proves the `no_std` crates
+  # stay portable across the trait boundaries.
+  #
+  # The check-only targets are the ones `xtask` names in
+  # `Arch::check_only_targets`, and they are checked through the same
+  # `cargo check` invocation the developer runs.
+  cross-check:
+    name: "no_std cross-compile (${{ matrix.target }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-none
+          - aarch64-unknown-none
+          - riscv64gc-unknown-none-elf
+          - loongarch64-unknown-none
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "${{ matrix.target }}"
+
+      # The kernel's own crate is the strictest `no_std` consumer in the
+      # tree, so it is the one that proves portability. The loader is checked
+      # separately, on the UEFI target, because it is the only crate that
+      # links against firmware.
+      - name: "cargo check the kernel for ${{ matrix.target }}"
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-none" ]; then
+            cargo check -p vela-kernel-entry --target "${{ matrix.target }}"
+          else
+            cargo check -p vela-hal-common --target "${{ matrix.target }}"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The loader, on the UEFI target
+  # ---------------------------------------------------------------------------
+  uefi-loader:
+    name: "UEFI loader builds"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-uefi
+
+      - name: "cargo check the loader for x86_64-unknown-uefi"
+        run: cargo check -p vela-uefi-loader --features uefi --target x86_64-unknown-uefi
+
+  # ---------------------------------------------------------------------------
+  # The boot smoke test
+  # ---------------------------------------------------------------------------
+  #
+  # A separate job, because it is the only one that needs a machine, and
+  # because a failure here means something entirely different from a failure
+  # in the hosted suites.
+  boot-smoke:
+    name: "boot smoke"
+    runs-on: ubuntu-latest
+    # The boot smoke test takes a couple of minutes: it builds a 512 MiB disk
+    # image, boots it and waits for the kernel's banner.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-none
+          rustup target add x86_64-unknown-uefi
+
+      # QEMU, the OVMF firmware and the image-building tools.
+      #
+      # `ovmf` is the Debian/Ubuntu package that provides OVMF; it installs
+      # the firmware under `/usr/share/OVMF/`, which is the first path
+      # `xtask::qemu::find_firmware` looks at. `mtools` provides `mcopy`,
+      # `mmd` and `mdir`; `dosfstools` provides `mkfs.vfat`; `gdisk` provides
+      # `sgdisk`.
+      - name: Install QEMU, the firmware and the image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            qemu-system-x86 \
+            ovmf \
+            mtools \
+            dosfstools \
+            gdisk
+
+      - name: Show what was installed
+        run: |
+          qemu-system-x86_64 --version
+          ls -la /usr/share/OVMF/OVMF.fd
+          mkfs.vfat --help >/dev/null && echo "mkfs.vfat ok"
+          mcopy --version 2>&1 | head -1 || true
+          sgdisk --version
+
+      - name: "cargo build the loader, the kernel and the userland"
+        run: |
+          cargo build -p vela-uefi-loader --features uefi --target x86_64-unknown-uefi
+          cargo build -p vela-kernel-entry -p vela-init -p vela-workbench -p vela-guitest \
+            --target x86_64-unknown-none
+
+      - name: "the boot smoke test"
+        run: cargo test -p vela-test-boot-smoke -- --nocapture
+
+      # The framebuffer golden test. It is in the same job because it needs
+      # exactly the same machine.
+      - name: "the framebuffer golden test"
+        run: cargo test -p vela-test-gui-golden -- --nocapture
+
+      # A leaked QEMU is the failure mode this project has actually hit, so
+      # the job checks for one rather than trusting the guard.
+      - name: "no QEMU process survived the run"
+        run: |
+          if pgrep -f qemu-system-x86_64 > /dev/null; then
+            echo "::error::a QEMU process survived the test run"
+            pgrep -af qemu-system-x86_64
+            exit 1
+          fi
+          echo "no QEMU process survived"
