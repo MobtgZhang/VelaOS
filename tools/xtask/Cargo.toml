@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS build, image and QEMU automation"
+
+[lib]
+name = "xtask"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
