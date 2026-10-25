@@ -1,0 +1,13 @@
+[package]
+name = "vela-test-abi-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "ABI layout and endianness tests"
+
+[dependencies]
+
+[dev-dependencies]
+vela-abi-native64.workspace = true
+vela-boot-protocol.workspace = true

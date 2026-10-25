@@ -1,0 +1,18 @@
+[package]
+name = "vela-test-api-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "API behaviour conformance tests"
+
+[dependencies]
+vela-abi-native64.workspace = true
+vela-hosted.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-graphics.workspace = true
+vela-kernel-intuition.workspace = true
+vela-kernel-layers.workspace = true
+vela-kernel-syscall.workspace = true
+vela-kernel-vfs.workspace = true
+vela-ramfs.workspace = true
