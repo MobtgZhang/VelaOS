@@ -1,0 +1,35 @@
+[package]
+name = "vela-uefi-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS UEFI loader: config, GOP splash, ELF load, ExitBootServices"
+
+[features]
+# The loader is a UEFI program: it has no `main`, only an `efi_main`, and it
+# links against the `uefi` crate's runtime. Building it for the host fails at
+# the link step with "undefined symbol: main", which is not a bug but a
+# statement of fact.
+#
+# The binary is therefore gated on this feature, and `xtask` passes it when
+# it builds the loader for `x86_64-unknown-uefi`. A plain `cargo build
+# --workspace` on the host then skips the loader rather than failing on it,
+# which is what makes the host build green.
+uefi = []
+
+[[bin]]
+name = "vela-uefi-loader"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["uefi"]
+
+[dependencies]
+vela-boot-protocol.workspace = true
+vela-elf-loader.workspace = true
+vela-theme-classic.workspace = true
+vela-renderer2d.workspace = true
+vela-text.workspace = true
+uefi = { workspace = true, features = ["alloc", "global_allocator", "logger", "log-debugcon"] }
+log.workspace = true

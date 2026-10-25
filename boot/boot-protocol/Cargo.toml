@@ -1,0 +1,12 @@
+[package]
+name = "vela-boot-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS boot handoff ABI (VelaBootInfo v1), no_std, no UEFI dependency"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

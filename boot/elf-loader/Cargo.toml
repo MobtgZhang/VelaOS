@@ -1,0 +1,12 @@
+[package]
+name = "vela-elf-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "ELF64 validation and segment loading for VelaOS, no_std"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
