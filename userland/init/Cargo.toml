@@ -1,0 +1,25 @@
+[package]
+name = "vela-init"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS init: mount, bootstrap, start desktop"
+
+[lib]
+name = "vela_init"
+path = "src/lib.rs"
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+
+[dependencies]
+vela-sys.workspace = true
+# The desktop is *linked* into `init` rather than spawned — there is no
+# `RunSeg` in v0.1.0, and adding one for a single user would be a mechanism
+# with exactly one user. See `hand_over_to_desktop`.
+vela-workbench.workspace = true
+
+[dev-dependencies]
+vela-hosted.workspace = true

@@ -1,0 +1,30 @@
+[package]
+name = "vela-workbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Workbench-style desktop shell"
+
+[lib]
+name = "vela_workbench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "workbench"
+path = "src/main.rs"
+
+[dependencies]
+vela-sys.workspace = true
+
+# The desktop's own tests drive it through the *real* syscall boundary, so
+# they need the kernel crates the boundary is made of: the ABI's message
+# layout, the PS/2 mouse decoder, and the syscall dispatch table.
+[dev-dependencies]
+vela-hosted.workspace = true
+vela-abi-native64.workspace = true
+vela-kernel-input.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-layers.workspace = true
+vela-kernel-intuition.workspace = true
+vela-kernel-syscall.workspace = true

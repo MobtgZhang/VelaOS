@@ -1,0 +1,24 @@
+[package]
+name = "vela-guitest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Acceptance demo application"
+
+[lib]
+name = "vela_guitest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "guitest"
+path = "src/main.rs"
+
+[dependencies]
+vela-sys.workspace = true
+
+[dev-dependencies]
+vela-hosted.workspace = true
+vela-kernel-input.workspace = true
+vela-kernel-syscall.workspace = true
+vela-abi-native64.workspace = true
