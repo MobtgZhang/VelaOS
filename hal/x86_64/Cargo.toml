@@ -1,0 +1,12 @@
+[package]
+name = "vela-hal-x86_64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "x86-64 HAL: paging, IDT, interrupts, port I/O, serial"
+
+[dependencies]
+vela-hal-common.workspace = true
+vela-boot-protocol.workspace = true
+spin.workspace = true
