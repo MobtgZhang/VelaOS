@@ -1,0 +1,13 @@
+[package]
+name = "vela-kernel-workbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Workbench objects, application icons, menus, windows and drop zones"
+
+[dependencies]
+vela-kernel-exec.workspace = true
+vela-kernel-intuition.workspace = true
+vela-renderer2d.workspace = true
+spin.workspace = true

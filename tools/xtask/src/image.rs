@@ -195,6 +195,7 @@ fn write_config(path: &Path, arch: Arch) -> Result<()> {
          \n\
          [entry.vela]\n\
          kernel = '\\Vela\\kernel\\vela-kernel.elf'\n\
+         initrd = '\\Vela\\bin\\vela-init'\n\
          video = \"auto\"\n\
          log_level = \"info\"\n",
         match arch {

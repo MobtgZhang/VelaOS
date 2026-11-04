@@ -495,7 +495,7 @@ mod tests {
         for lib in LibraryId::ALL {
             assert!(r.register_builtin(lib), "failed to register {lib:?}");
         }
-        assert_eq!(r.len(), 6);
+        assert_eq!(r.len(), 8);
         // Every one is openable at its own version.
         for lib in LibraryId::ALL {
             assert!(!r.open(lib.name(), lib.version()).is_null());

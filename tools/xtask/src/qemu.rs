@@ -50,6 +50,24 @@ pub const BOOT_MARKERS: &[&str] = &[
     "VELA-KERNEL: VelaOS 0.1.0 ready",
 ];
 
+/// Serial log lines that prove user space actually started.
+///
+/// The kernel banner only says the kernel came up. Ring 3 is a separate
+/// claim: the handoff has to build a user address space, enter it with
+/// `iretq`, serve the program's syscalls, and get the desktop to its event
+/// loop. Each of these markers is a checkpoint on that path, and the last one
+/// (`workbench: ready`) is printed only after the desktop has opened its
+/// screen and drawn it.
+///
+/// These are checked in addition to [`BOOT_MARKERS`], never instead of them:
+/// a kernel that never reached its banner cannot have run a user program.
+pub const USERLAND_MARKERS: &[&str] = &[
+    "VELA-KERNEL: entering user mode at",
+    "init: starting",
+    "init: starting workbench",
+    "workbench: ready",
+];
+
 /// Marker the UEFI loader prints to the debug console.
 pub const LOADER_MARKER: &str = "VELA-BOOT";
 

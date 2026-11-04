@@ -1,0 +1,11 @@
+[package]
+name = "vela-kernel-icon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Icon objects: DiskObject records, ToolTypes, tag lists and icon state"
+
+[dependencies]
+vela-abi-native64.workspace = true
+spin.workspace = true

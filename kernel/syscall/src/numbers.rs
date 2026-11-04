@@ -120,6 +120,28 @@ pub const MAP_PAGE: u64 = 18;
 /// transactional — a program that asks for more than it gets learns the real
 /// limit from the return value rather than assuming it succeeded.
 pub const BRK: u64 = 19;
+/// `exec.library`: put a port into service.
+///
+/// # What "into service" means here
+///
+/// AmigaOS's `AddPort` inserts a port into Exec's global port list, which is
+/// what makes it findable and what makes messages raised against it reach its
+/// owner. VelaOS's port table *is* that list: [`CREATE_MSG_PORT`] registers
+/// the port the moment it exists, so there is no second list to insert into
+/// and no window in which a live port is invisible.
+///
+/// What a program still needs from the call is the answer to two questions
+/// it cannot answer itself — *is this handle a port, and is it mine?* — and
+/// the one value it needs before it can wait: the signal mask the port raises
+/// in its owner's set. So `AddPort` validates the handle, checks the caller
+/// is the owner, and returns that mask. Every one of those answers comes from
+/// the kernel's own record, so a program that guessed gets told the truth
+/// rather than having its guess confirmed.
+///
+/// The value returned is the port's `mp_sig` mask, not a single bit: a port
+/// may raise several, and a caller that waited on only one of them would
+/// sleep through the others.
+pub const ADD_PORT: u64 = 20;
 
 /// `graphics.library`: reserve a pen in a palette.
 pub const GRAPHICS_ALLOC_PEN: u64 = 64;
@@ -226,13 +248,101 @@ pub const UTILITY_STRNCPY: u64 = 321;
 /// `utility.library`: compare two strings.
 pub const UTILITY_STRCMP: u64 = 322;
 
+/// `icon.library`: look up a disk object by name.
+pub const ICON_GET_DISK_OBJECT: u64 = 384;
+/// `icon.library`: look up a disk object, creating it if it is missing.
+pub const ICON_GET_DISK_OBJECT_NEW: u64 = 385;
+/// `icon.library`: attach a name to a disk object.
+pub const ICON_PUT_DISK_OBJECT: u64 = 386;
+/// `icon.library`: release a disk object.
+pub const ICON_FREE_DISK_OBJECT: u64 = 387;
+/// `icon.library`: duplicate a disk object.
+pub const ICON_DUP_DISK_OBJECT: u64 = 388;
+/// `icon.library`: remove a disk object by name.
+pub const ICON_DELETE_DISK_OBJECT: u64 = 389;
+/// `icon.library`: get the default object for an icon type.
+pub const ICON_GET_DEF_DISK_OBJECT: u64 = 390;
+/// `icon.library`: set the default object for an icon type.
+pub const ICON_PUT_DEF_DISK_OBJECT: u64 = 391;
+/// `icon.library`: create a new disk object.
+pub const ICON_NEW_DISK_OBJECT: u64 = 392;
+/// `icon.library`: find a tool type by name.
+pub const ICON_FIND_TOOL_TYPE: u64 = 393;
+/// `icon.library`: match a tool value against a type.
+pub const ICON_MATCH_TOOL_VALUE: u64 = 394;
+/// `icon.library`: read an icon's tag list.
+pub const ICON_GET_ICON_TAG_LIST: u64 = 395;
+/// `icon.library`: write an icon's tag list.
+pub const ICON_PUT_ICON_TAG_LIST: u64 = 396;
+/// `icon.library`: bump an icon's revision counter.
+pub const ICON_BUMP_REVISION: u64 = 397;
+/// `icon.library`: lay an icon out inside a rectangle.
+pub const ICON_LAYOUT_ICON: u64 = 398;
+/// `icon.library`: read an icon's rectangle.
+pub const ICON_GET_ICON_RECTANGLE: u64 = 399;
+/// `icon.library`: query or change an icon's state.
+pub const ICON_ICON_CONTROL: u64 = 400;
+/// `icon.library`: draw an icon in a given state.
+pub const ICON_DRAW_ICON_STATE: u64 = 401;
+/// `icon.library`: add an icon to the free list.
+pub const ICON_ADD_FREE_LIST: u64 = 402;
+/// `icon.library`: free the whole free list.
+pub const ICON_FREE_FREE_LIST: u64 = 403;
+/// `icon.library`: change the selected-icon colour.
+pub const ICON_CHANGE_TO_SELECTED_ICON_COLOR: u64 = 404;
+
+/// `workbench.library`: add an application icon.
+pub const WORKBENCH_ADD_APP_ICON: u64 = 448;
+/// `workbench.library`: add an application menu item.
+pub const WORKBENCH_ADD_APP_MENU_ITEM: u64 = 449;
+/// `workbench.library`: add an application window.
+pub const WORKBENCH_ADD_APP_WINDOW: u64 = 450;
+/// `workbench.library`: add a drop zone to an application window.
+pub const WORKBENCH_ADD_APP_WINDOW_DROP_ZONE: u64 = 451;
+/// `workbench.library`: close a Workbench object.
+pub const WORKBENCH_CLOSE_WORKBENCH_OBJECT: u64 = 452;
+/// `workbench.library`: iterate over the application icons.
+pub const WORKBENCH_GET_NEXT_APP_ICON: u64 = 453;
+/// `workbench.library`: make a Workbench object visible.
+pub const WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE: u64 = 454;
+/// `workbench.library`: notify the Workbench.
+pub const WORKBENCH_NOTIFY_WORKBENCH: u64 = 455;
+/// `workbench.library`: open a Workbench object.
+pub const WORKBENCH_OPEN_WORKBENCH_OBJECT: u64 = 456;
+/// `workbench.library`: quote or unquote the Workbench.
+pub const WORKBENCH_QUOTE_WORKBENCH: u64 = 457;
+/// `workbench.library`: register a Workbench.
+pub const WORKBENCH_REGISTER_WORKBENCH: u64 = 458;
+/// `workbench.library`: remove an application icon.
+pub const WORKBENCH_REMOVE_APP_ICON: u64 = 459;
+/// `workbench.library`: remove an application menu item.
+pub const WORKBENCH_REMOVE_APP_MENU_ITEM: u64 = 460;
+/// `workbench.library`: remove an application window.
+pub const WORKBENCH_REMOVE_APP_WINDOW: u64 = 461;
+/// `workbench.library`: remove a drop zone from an application window.
+pub const WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE: u64 = 462;
+/// `workbench.library`: send a message to an application window.
+pub const WORKBENCH_SEND_APP_WINDOW_MESSAGE: u64 = 463;
+/// `workbench.library`: start the Workbench.
+pub const WORKBENCH_START_WORKBENCH: u64 = 464;
+/// `workbench.library`: unregister a Workbench.
+pub const WORKBENCH_UNREGISTER_WORKBENCH: u64 = 465;
+/// `workbench.library`: update a Workbench object.
+pub const WORKBENCH_UPDATE_WORKBENCH_OBJECT: u64 = 466;
+/// `workbench.library`: read the Workbench configuration.
+pub const WORKBENCH_WB_CONFIG: u64 = 467;
+/// `workbench.library`: read the Workbench information.
+pub const WORKBENCH_WB_INFO: u64 = 468;
+/// `workbench.library`: query or change the Workbench's state.
+pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
+
 /// The number of syscalls in the `exec.library` group.
 ///
 /// The count is the number of *defined* syscalls, not the size of the
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 20;
+pub const EXEC_COUNT: u64 = 21;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.
@@ -243,9 +353,13 @@ pub const INTUITION_COUNT: u64 = 13;
 pub const DOS_COUNT: u64 = 11;
 /// The number of syscalls in the `utility.library` group.
 pub const UTILITY_COUNT: u64 = 3;
+/// The number of syscalls in the `icon.library` group.
+pub const ICON_COUNT: u64 = 21;
+/// The number of syscalls in the `workbench.library` group.
+pub const WORKBENCH_COUNT: u64 = 22;
 
 /// The highest syscall number the kernel defines.
-pub const MAX: u64 = UTILITY_STRCMP;
+pub const MAX: u64 = WORKBENCH_WORKBENCH_CONTROL;
 /// The syscall groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallGroup {
@@ -261,6 +375,10 @@ pub enum SyscallGroup {
     Dos,
     /// `utility.library`.
     Utility,
+    /// `icon.library`.
+    Icon,
+    /// `workbench.library`.
+    Workbench,
 }
 
 impl SyscallGroup {
@@ -273,6 +391,8 @@ impl SyscallGroup {
             192..=255 => Some(Self::Intuition),
             256..=319 => Some(Self::Dos),
             320..=383 => Some(Self::Utility),
+            384..=447 => Some(Self::Icon),
+            448..=511 => Some(Self::Workbench),
             _ => None,
         }
     }
@@ -286,6 +406,8 @@ impl SyscallGroup {
             Self::Intuition => 192,
             Self::Dos => 256,
             Self::Utility => 320,
+            Self::Icon => 384,
+            Self::Workbench => 448,
         }
     }
 
@@ -298,6 +420,8 @@ impl SyscallGroup {
             Self::Intuition => 64,
             Self::Dos => 64,
             Self::Utility => 64,
+            Self::Icon => 64,
+            Self::Workbench => 64,
         }
     }
 
@@ -310,6 +434,8 @@ impl SyscallGroup {
             Self::Intuition => vela_abi_native64::LibraryId::Intuition,
             Self::Dos => vela_abi_native64::LibraryId::Dos,
             Self::Utility => vela_abi_native64::LibraryId::Utility,
+            Self::Icon => vela_abi_native64::LibraryId::Icon,
+            Self::Workbench => vela_abi_native64::LibraryId::Workbench,
         }
     }
 }
@@ -438,6 +564,8 @@ pub mod errors {
     pub const RANGE: i32 = -19;
     /// The path was not found.
     pub const PATH_NOT_FOUND: i32 = -7;
+    /// The service has no port to talk to.
+    pub const NO_PORT: i32 = -33;
     /// The object exists but is not a file.
     pub const FILE_NOT_OBJECT: i32 = -17;
 }
@@ -452,7 +580,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 16] = [
+    const ALL: [(u64, SyscallGroup); 114] = [
         (CREATE_MSG_PORT, SyscallGroup::Exec),
         (DELETE_MSG_PORT, SyscallGroup::Exec),
         (PUT_MSG, SyscallGroup::Exec),
@@ -469,6 +597,110 @@ mod tests {
         (PERMIT, SyscallGroup::Exec),
         (YIELD, SyscallGroup::Exec),
         (GET_TASK_ID, SyscallGroup::Exec),
+        (PUTCHAR, SyscallGroup::Exec),
+        (POWER_OFF, SyscallGroup::Exec),
+        (MAP_PAGE, SyscallGroup::Exec),
+        (BRK, SyscallGroup::Exec),
+        (ADD_PORT, SyscallGroup::Exec),
+        (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
+        (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
+        (GRAPHICS_SET_PEN, SyscallGroup::Graphics),
+        (GRAPHICS_RECT, SyscallGroup::Graphics),
+        (GRAPHICS_FILL_RECT, SyscallGroup::Graphics),
+        (GRAPHICS_TEXT, SyscallGroup::Graphics),
+        (GRAPHICS_LINE, SyscallGroup::Graphics),
+        (GRAPHICS_SET_CLIP, SyscallGroup::Graphics),
+        (GRAPHICS_PEN_COLOR, SyscallGroup::Graphics),
+        (GRAPHICS_WRITE_PIXEL, SyscallGroup::Graphics),
+        (GRAPHICS_MOVE, SyscallGroup::Graphics),
+        (GRAPHICS_SET_PALETTE, SyscallGroup::Graphics),
+        (GRAPHICS_RASTER_INFO, SyscallGroup::Graphics),
+        (LAYERS_CREATE, SyscallGroup::Layers),
+        (LAYERS_DESTROY, SyscallGroup::Layers),
+        (LAYERS_SET_CLIP, SyscallGroup::Layers),
+        (LAYERS_FRONT, SyscallGroup::Layers),
+        (LAYERS_BACK, SyscallGroup::Layers),
+        (LAYERS_SET_VISIBLE, SyscallGroup::Layers),
+        (LAYERS_MOVE, SyscallGroup::Layers),
+        (LAYERS_COMPOSITE, SyscallGroup::Layers),
+        (LAYERS_ORDER, SyscallGroup::Layers),
+        (LAYERS_TOPMOST, SyscallGroup::Layers),
+        (INTUITION_OPEN_SCREEN, SyscallGroup::Intuition),
+        (INTUITION_CLOSE_SCREEN, SyscallGroup::Intuition),
+        (INTUITION_OPEN_WINDOW, SyscallGroup::Intuition),
+        (INTUITION_CLOSE_WINDOW, SyscallGroup::Intuition),
+        (INTUITION_SET_TITLE, SyscallGroup::Intuition),
+        (INTUITION_REFRESH, SyscallGroup::Intuition),
+        (INTUITION_SET_ATTRS, SyscallGroup::Intuition),
+        (INTUITION_ADD_GADGET, SyscallGroup::Intuition),
+        (INTUITION_REMOVE_GADGET, SyscallGroup::Intuition),
+        (INTUITION_SET_BOUNDS, SyscallGroup::Intuition),
+        (INTUITION_FRONT, SyscallGroup::Intuition),
+        (INTUITION_BACK, SyscallGroup::Intuition),
+        (INTUITION_REPAINT, SyscallGroup::Intuition),
+        (DOS_OPEN, SyscallGroup::Dos),
+        (DOS_CLOSE, SyscallGroup::Dos),
+        (DOS_READ, SyscallGroup::Dos),
+        (DOS_WRITE, SyscallGroup::Dos),
+        (DOS_SEEK, SyscallGroup::Dos),
+        (DOS_READ_DIR, SyscallGroup::Dos),
+        (DOS_DELETE, SyscallGroup::Dos),
+        (DOS_MKDIR, SyscallGroup::Dos),
+        (DOS_EXAMINE, SyscallGroup::Dos),
+        (DOS_CURRENT_DIR, SyscallGroup::Dos),
+        (DOS_EXAMINE_DIR, SyscallGroup::Dos),
+        (UTILITY_FIND_TAG, SyscallGroup::Utility),
+        (UTILITY_STRNCPY, SyscallGroup::Utility),
+        (UTILITY_STRCMP, SyscallGroup::Utility),
+        (ICON_GET_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_GET_DISK_OBJECT_NEW, SyscallGroup::Icon),
+        (ICON_PUT_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_FREE_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_DUP_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_DELETE_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_GET_DEF_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_PUT_DEF_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_NEW_DISK_OBJECT, SyscallGroup::Icon),
+        (ICON_FIND_TOOL_TYPE, SyscallGroup::Icon),
+        (ICON_MATCH_TOOL_VALUE, SyscallGroup::Icon),
+        (ICON_GET_ICON_TAG_LIST, SyscallGroup::Icon),
+        (ICON_PUT_ICON_TAG_LIST, SyscallGroup::Icon),
+        (ICON_BUMP_REVISION, SyscallGroup::Icon),
+        (ICON_LAYOUT_ICON, SyscallGroup::Icon),
+        (ICON_GET_ICON_RECTANGLE, SyscallGroup::Icon),
+        (ICON_ICON_CONTROL, SyscallGroup::Icon),
+        (ICON_DRAW_ICON_STATE, SyscallGroup::Icon),
+        (ICON_ADD_FREE_LIST, SyscallGroup::Icon),
+        (ICON_FREE_FREE_LIST, SyscallGroup::Icon),
+        (ICON_CHANGE_TO_SELECTED_ICON_COLOR, SyscallGroup::Icon),
+        (WORKBENCH_ADD_APP_ICON, SyscallGroup::Workbench),
+        (WORKBENCH_ADD_APP_MENU_ITEM, SyscallGroup::Workbench),
+        (WORKBENCH_ADD_APP_WINDOW, SyscallGroup::Workbench),
+        (WORKBENCH_ADD_APP_WINDOW_DROP_ZONE, SyscallGroup::Workbench),
+        (WORKBENCH_CLOSE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+        (WORKBENCH_GET_NEXT_APP_ICON, SyscallGroup::Workbench),
+        (
+            WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE,
+            SyscallGroup::Workbench,
+        ),
+        (WORKBENCH_NOTIFY_WORKBENCH, SyscallGroup::Workbench),
+        (WORKBENCH_OPEN_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+        (WORKBENCH_QUOTE_WORKBENCH, SyscallGroup::Workbench),
+        (WORKBENCH_REGISTER_WORKBENCH, SyscallGroup::Workbench),
+        (WORKBENCH_REMOVE_APP_ICON, SyscallGroup::Workbench),
+        (WORKBENCH_REMOVE_APP_MENU_ITEM, SyscallGroup::Workbench),
+        (WORKBENCH_REMOVE_APP_WINDOW, SyscallGroup::Workbench),
+        (
+            WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE,
+            SyscallGroup::Workbench,
+        ),
+        (WORKBENCH_SEND_APP_WINDOW_MESSAGE, SyscallGroup::Workbench),
+        (WORKBENCH_START_WORKBENCH, SyscallGroup::Workbench),
+        (WORKBENCH_UNREGISTER_WORKBENCH, SyscallGroup::Workbench),
+        (WORKBENCH_UPDATE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+        (WORKBENCH_WB_CONFIG, SyscallGroup::Workbench),
+        (WORKBENCH_WB_INFO, SyscallGroup::Workbench),
+        (WORKBENCH_WORKBENCH_CONTROL, SyscallGroup::Workbench),
     ];
 
     #[test]
@@ -510,6 +742,8 @@ mod tests {
             SyscallGroup::Intuition,
             SyscallGroup::Dos,
             SyscallGroup::Utility,
+            SyscallGroup::Icon,
+            SyscallGroup::Workbench,
         ];
         for (i, a) in groups.iter().enumerate() {
             for b in groups.iter().skip(i + 1) {
@@ -525,7 +759,7 @@ mod tests {
 
     #[test]
     fn an_unknown_syscall_number_has_no_group() {
-        assert_eq!(SyscallGroup::of(384), None);
+        assert_eq!(SyscallGroup::of(512), None);
         assert_eq!(SyscallGroup::of(u64::MAX), None);
     }
 
@@ -542,6 +776,18 @@ mod tests {
         assert_eq!(
             SyscallGroup::Dos.library(),
             vela_abi_native64::LibraryId::Dos
+        );
+        assert_eq!(
+            SyscallGroup::Utility.library(),
+            vela_abi_native64::LibraryId::Utility
+        );
+        assert_eq!(
+            SyscallGroup::Icon.library(),
+            vela_abi_native64::LibraryId::Icon
+        );
+        assert_eq!(
+            SyscallGroup::Workbench.library(),
+            vela_abi_native64::LibraryId::Workbench
         );
     }
 
@@ -634,6 +880,6 @@ mod tests {
 
     #[test]
     fn the_maximum_number_matches_the_last_defined_syscall() {
-        assert_eq!(MAX, UTILITY_STRCMP);
+        assert_eq!(MAX, WORKBENCH_WORKBENCH_CONTROL);
     }
 }

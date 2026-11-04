@@ -121,9 +121,13 @@ impl GuestHeap {
 
         let _guard = self.lock.lock();
 
-        let current_brk = self.brk.load(Ordering::Relaxed);
+        // The cursor is the next free byte and the break is the limit the
+        // kernel has already mapped. Both are needed: the difference is the
+        // slack a previous allocation left behind.
+        let mut cursor = unsafe { *self.cursor.get() };
+        let mut limit = self.brk.load(Ordering::Relaxed) as usize;
 
-        if current_brk == 0 {
+        if limit == 0 {
             // First use: ask for a starting allocation big enough to be
             // useful on its own, so a program that allocates once does not
             // make a syscall for every subsequent small allocation.
@@ -134,17 +138,13 @@ impl GuestHeap {
                 return core::ptr::null_mut();
             };
             self.brk.store(addr + first as u64, Ordering::Release);
-            // SAFETY: as above; the lock is held.
-            unsafe { *self.cursor.get() = addr as usize };
-            return self.finish(addr as usize, size, align);
+            cursor = addr as usize;
+            limit = (addr + first as u64) as usize;
         }
 
         // Bump within the region already obtained. Reusing space the kernel
         // has already given us is the entire reason this is a bump allocator.
-        // SAFETY: the lock is held.
-        let avail_start = unsafe { *self.cursor.get() };
-        let limit = self.brk.load(Ordering::Relaxed) as usize;
-        if let Some(ptr) = Self::align_up(avail_start, align) {
+        if let Some(ptr) = Self::align_up(cursor, align) {
             if ptr.saturating_add(size) <= limit {
                 // SAFETY: the lock is held and the new cursor is within the
                 // region the kernel owns and zeroed.
@@ -153,7 +153,10 @@ impl GuestHeap {
             }
         }
 
-        // Out of room: ask the kernel for another chunk.
+        // Out of room: ask the kernel for another chunk. The slack between the
+        // cursor and the old limit is abandoned; it is at most one alignment
+        // step plus the tail of the previous chunk, and a bump allocator has no
+        // way to reuse a gap it has already passed.
         let want = size
             .saturating_add(align)
             .max(GROW_CHUNK)
@@ -161,13 +164,19 @@ impl GuestHeap {
         let Some(new_brk) = self.request_break(want) else {
             return core::ptr::null_mut();
         };
-        self.brk.store(new_brk + want as u64, Ordering::Release);
+        let new_limit = new_brk + want as u64;
+        self.brk.store(new_limit, Ordering::Release);
 
-        // SAFETY: the lock is held.
-        let base = unsafe { *self.cursor.get() };
-        // SAFETY: as above.
-        unsafe { *self.cursor.get() = new_brk as usize };
-        self.finish(base, size, align)
+        let base = new_brk as usize;
+        match Self::align_up(base, align) {
+            Some(ptr) if ptr.saturating_add(size) <= new_limit as usize => {
+                // SAFETY: the lock is held, and `ptr + size` is inside the
+                // chunk the kernel just mapped.
+                unsafe { *self.cursor.get() = ptr + size };
+                ptr as *mut u8
+            }
+            _ => core::ptr::null_mut(),
+        }
     }
 
     /// Extend the break by `bytes` and return its old value, or null on
@@ -191,18 +200,6 @@ impl GuestHeap {
             return None;
         }
         Some(current)
-    }
-
-    /// Round `addr` up to `align` and check it fits, then return the pointer.
-    ///
-    /// Callers hold the lock.
-    fn finish(&self, base: usize, size: usize, align: usize) -> *mut u8 {
-        match Self::align_up(base, align) {
-            Some(ptr) if ptr.saturating_add(size) <= self.brk.load(Ordering::Acquire) as usize => {
-                ptr as *mut u8
-            }
-            _ => core::ptr::null_mut(),
-        }
     }
 
     /// Round `addr` up to a multiple of `align`, which must be a power of two.

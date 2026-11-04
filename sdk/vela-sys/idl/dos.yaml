@@ -36,6 +36,14 @@
 library: dos.library
 prefix: DOS
 functions:
+  - name: ExamineDir
+    lvo: -88
+    offset: EXAMINEDIR
+    stub: examine_dir
+    syscall: D_EXAMINE_DIR
+    number: 266
+    kernel: DOS_EXAMINE_DIR
+    status: implemented
   - name: Open
     lvo: -80
     offset: OPEN

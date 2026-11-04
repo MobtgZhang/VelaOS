@@ -111,7 +111,7 @@ The loader takes **one** contiguous reservation from firmware memory before
 
 * the kernel image;
 * the kernel's boot stack (32 pages) and the loader's own stack (64 pages);
-* the **kernel's heap** (1024 pages = 4 MiB);
+* the **kernel's heap** (8192 pages = 32 MiB);
 * the **bootstrap page tables**, whose count is computed from the firmware's
   memory map rather than guessed;
 * the persisted memory map and the boot-info page.

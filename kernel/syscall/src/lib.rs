@@ -37,6 +37,7 @@
 //! | [`graphics_handlers`] | The `graphics.library` handlers |
 //! | [`layers_handlers`] | The `layers.library` handlers |
 //! | [`intuition_handlers`] | The `intuition.library` handlers |
+//! | [`utility_handlers`] | The `utility.library` handlers |
 //! | [`gate`] | The `syscall` entry point and the MSR setup |
 //! | [`ids`] | The opaque handles user space holds |
 
@@ -55,11 +56,15 @@ pub mod dispatch;
 pub mod dos_handlers;
 pub mod gate;
 pub mod graphics_handlers;
+pub mod icon_handlers;
 pub mod ids;
 pub mod intuition_handlers;
 pub mod layers_handlers;
 pub mod numbers;
 pub mod task_space;
+pub mod userspace;
+pub mod utility_handlers;
+pub mod workbench_handlers;
 
 use alloc::boxed::Box;
 

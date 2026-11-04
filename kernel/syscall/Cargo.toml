@@ -8,15 +8,17 @@ description = "Syscall numbers, dispatch, user copy helpers"
 
 [dependencies]
 vela-abi-native64.workspace = true
+vela-elf-loader.workspace = true
 vela-hal-common.workspace = true
 vela-hal-x86_64.workspace = true
-vela-kernel-core.workspace = true
 vela-kernel-dos.workspace = true
 vela-kernel-exec.workspace = true
 vela-kernel-graphics.workspace = true
+vela-kernel-icon.workspace = true
 vela-kernel-intuition.workspace = true
 vela-kernel-layers.workspace = true
 vela-kernel-vfs.workspace = true
+vela-kernel-workbench.workspace = true
 vela-renderer2d.workspace = true
 vela-text.workspace = true
 spin.workspace = true

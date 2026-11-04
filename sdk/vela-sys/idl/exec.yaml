@@ -43,7 +43,7 @@ functions:
     syscall: MAP_PAGE
     number: 18
     kernel: MAP_PAGE
-    status: not-started
+    status: implemented
   - name: Brk
     lvo: -160
     offset: BRK
@@ -51,7 +51,7 @@ functions:
     syscall: BRK
     number: 19
     kernel: BRK
-    status: not-started
+    status: implemented
   - name: PutChar
     lvo: -152
     offset: PUTCHAR
@@ -88,8 +88,10 @@ functions:
     lvo: -120
     offset: ADDPORT
     stub: add_port
-    syscall: none
-    status: not-started
+    syscall: ADD_PORT
+    number: 20
+    kernel: ADD_PORT
+    status: implemented
   - name: Forbid
     lvo: -112
     offset: FORBID

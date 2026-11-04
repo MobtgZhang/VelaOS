@@ -1,0 +1,214 @@
+# The `workbench.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: workbench.library
+prefix: WORKBENCH
+functions:
+  - name: AddAppIconA
+    lvo: -176
+    offset: ADDAPPICONA
+    stub: add_app_icon
+    syscall: WORKBENCH_ADD_APP_ICON
+    number: 448
+    kernel: WORKBENCH_ADD_APP_ICON
+    status: implemented
+  - name: AddAppMenuItemA
+    lvo: -168
+    offset: ADDAPPMENUITEMA
+    stub: add_app_menu_item
+    syscall: WORKBENCH_ADD_APP_MENU_ITEM
+    number: 449
+    kernel: WORKBENCH_ADD_APP_MENU_ITEM
+    status: implemented
+  - name: AddAppWindowA
+    lvo: -160
+    offset: ADDAPPWINDOWA
+    stub: add_app_window
+    syscall: WORKBENCH_ADD_APP_WINDOW
+    number: 450
+    kernel: WORKBENCH_ADD_APP_WINDOW
+    status: implemented
+  - name: AddAppWindowDropZoneA
+    lvo: -152
+    offset: ADDAPPWINDOWDROPZONEA
+    stub: add_app_window_drop_zone
+    syscall: WORKBENCH_ADD_APP_WINDOW_DROP_ZONE
+    number: 451
+    kernel: WORKBENCH_ADD_APP_WINDOW_DROP_ZONE
+    status: implemented
+  - name: CloseWorkbenchObjectA
+    lvo: -144
+    offset: CLOSEWORKBENCHOBJECTA
+    stub: close_workbench_object
+    syscall: WORKBENCH_CLOSE_WORKBENCH_OBJECT
+    number: 452
+    kernel: WORKBENCH_CLOSE_WORKBENCH_OBJECT
+    status: implemented
+  - name: GetNextAppIcon
+    lvo: -136
+    offset: GETNEXTAPPICON
+    stub: get_next_app_icon
+    syscall: WORKBENCH_GET_NEXT_APP_ICON
+    number: 453
+    kernel: WORKBENCH_GET_NEXT_APP_ICON
+    status: implemented
+  - name: MakeWorkbenchObjectVisibleA
+    lvo: -128
+    offset: MAKEWORKBENCHOBJECTVISIBLEA
+    stub: make_workbench_object_visible
+    syscall: WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE
+    number: 454
+    kernel: WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE
+    status: implemented
+  - name: NotifyWorkbench
+    lvo: -120
+    offset: NOTIFYWORKBENCH
+    stub: notify_workbench
+    syscall: WORKBENCH_NOTIFY_WORKBENCH
+    number: 455
+    kernel: WORKBENCH_NOTIFY_WORKBENCH
+    status: implemented
+  - name: OpenWorkbenchObjectA
+    lvo: -112
+    offset: OPENWORKBENCHOBJECTA
+    stub: open_workbench_object
+    syscall: WORKBENCH_OPEN_WORKBENCH_OBJECT
+    number: 456
+    kernel: WORKBENCH_OPEN_WORKBENCH_OBJECT
+    status: implemented
+  - name: QuoteWorkbench
+    lvo: -104
+    offset: QUOTEWORKBENCH
+    stub: quote_workbench
+    syscall: WORKBENCH_QUOTE_WORKBENCH
+    number: 457
+    kernel: WORKBENCH_QUOTE_WORKBENCH
+    status: implemented
+  - name: RegisterWorkbench
+    lvo: -96
+    offset: REGISTERWORKBENCH
+    stub: register_workbench
+    syscall: WORKBENCH_REGISTER_WORKBENCH
+    number: 458
+    kernel: WORKBENCH_REGISTER_WORKBENCH
+    status: implemented
+  - name: RemoveAppIcon
+    lvo: -88
+    offset: REMOVEAPPICON
+    stub: remove_app_icon
+    syscall: WORKBENCH_REMOVE_APP_ICON
+    number: 459
+    kernel: WORKBENCH_REMOVE_APP_ICON
+    status: implemented
+  - name: RemoveAppMenuItem
+    lvo: -80
+    offset: REMOVEAPPMENUITEM
+    stub: remove_app_menu_item
+    syscall: WORKBENCH_REMOVE_APP_MENU_ITEM
+    number: 460
+    kernel: WORKBENCH_REMOVE_APP_MENU_ITEM
+    status: implemented
+  - name: RemoveAppWindow
+    lvo: -72
+    offset: REMOVEAPPWINDOW
+    stub: remove_app_window
+    syscall: WORKBENCH_REMOVE_APP_WINDOW
+    number: 461
+    kernel: WORKBENCH_REMOVE_APP_WINDOW
+    status: implemented
+  - name: RemoveAppWindowDropZone
+    lvo: -64
+    offset: REMOVEAPPWINDOWDROPZONE
+    stub: remove_app_window_drop_zone
+    syscall: WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE
+    number: 462
+    kernel: WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE
+    status: implemented
+  - name: SendAppWindowMessage
+    lvo: -56
+    offset: SENDAPPWINDOWMESSAGE
+    stub: send_app_window_message
+    syscall: WORKBENCH_SEND_APP_WINDOW_MESSAGE
+    number: 463
+    kernel: WORKBENCH_SEND_APP_WINDOW_MESSAGE
+    status: implemented
+  - name: StartWorkbench
+    lvo: -48
+    offset: STARTWORKBENCH
+    stub: start_workbench
+    syscall: WORKBENCH_START_WORKBENCH
+    number: 464
+    kernel: WORKBENCH_START_WORKBENCH
+    status: implemented
+  - name: UnregisterWorkbench
+    lvo: -40
+    offset: UNREGISTERWORKBENCH
+    stub: unregister_workbench
+    syscall: WORKBENCH_UNREGISTER_WORKBENCH
+    number: 465
+    kernel: WORKBENCH_UNREGISTER_WORKBENCH
+    status: implemented
+  - name: UpdateWorkbenchObjectA
+    lvo: -32
+    offset: UPDATEWORKBENCHOBJECTA
+    stub: update_workbench_object
+    syscall: WORKBENCH_UPDATE_WORKBENCH_OBJECT
+    number: 466
+    kernel: WORKBENCH_UPDATE_WORKBENCH_OBJECT
+    status: implemented
+  - name: WBConfig
+    lvo: -24
+    offset: WBCONFIG
+    stub: wb_config
+    syscall: WORKBENCH_WB_CONFIG
+    number: 467
+    kernel: WORKBENCH_WB_CONFIG
+    status: implemented
+  - name: WBInfo
+    lvo: -16
+    offset: WBINFO
+    stub: wb_info
+    syscall: WORKBENCH_WB_INFO
+    number: 468
+    kernel: WORKBENCH_WB_INFO
+    status: implemented
+  - name: WorkbenchControlA
+    lvo: -8
+    offset: WORKBENCHCONTROLA
+    stub: workbench_control
+    syscall: WORKBENCH_WORKBENCH_CONTROL
+    number: 469
+    kernel: WORKBENCH_WORKBENCH_CONTROL
+    status: implemented

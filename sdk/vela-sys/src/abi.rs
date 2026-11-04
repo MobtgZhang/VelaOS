@@ -90,6 +90,32 @@ pub use vela_abi_native64::Message;
 /// ```
 pub use vela_abi_native64::IntuiMessage;
 
+/// An `AnchorPath`: the walk state `ExamineDir` reads and writes.
+///
+/// Re-exported from the one ABI definition for the same reason as [`Message`]:
+/// the kernel copies the structure into and out of user memory, so the two
+/// sides must agree about its size and field offsets byte for byte.
+pub use vela_abi_native64::AnchorPath;
+
+/// The length of an [`AnchorPath`]'s inline path buffer.
+pub const ANCHOR_PATH_BUF_LEN: usize = vela_abi_native64::ANCHOR_PATH_BUF_LEN;
+
+/// A `TagItem`: the typed key/value pair a tag list is made of.
+///
+/// Re-exported rather than restated, for the same reason as [`Message`]: this
+/// is the structure `utility.library`'s `FindTag` walks, and a second
+/// definition would be a second place for the two to disagree about how wide
+/// `ti_Data` is — which would make the kernel read a list at the wrong stride
+/// and answer with the wrong tag's data.
+pub use vela_abi_native64::TagItem;
+
+/// The reserved tag values a tag list uses to describe its own shape.
+///
+/// `TAG_END` terminates a list, `TAG_SKIP` marks an item to step over, and
+/// `TAG_MORE` continues into the list `ti_Data` names. They are the values a
+/// caller cannot search for, because the walk consumes them on the way past.
+pub use vela_abi_native64::tags;
+
 /// The `IDCMP_*` classes a window may ask for.
 pub mod idcmp {
     /// No events.
@@ -473,6 +499,10 @@ pub enum LibraryId {
     Dos = 4,
     /// `utility.library`.
     Utility = 5,
+    /// `icon.library`.
+    Icon = 6,
+    /// `workbench.library`.
+    Workbench = 7,
 }
 
 impl LibraryId {
@@ -485,6 +515,8 @@ impl LibraryId {
             Self::Intuition => "intuition.library",
             Self::Dos => "dos.library",
             Self::Utility => "utility.library",
+            Self::Icon => "icon.library",
+            Self::Workbench => "workbench.library",
         }
     }
 
@@ -498,6 +530,8 @@ impl LibraryId {
             4 => Some(Self::Intuition),
             5 => Some(Self::Dos),
             6 => Some(Self::Utility),
+            7 => Some(Self::Icon),
+            8 => Some(Self::Workbench),
             _ => None,
         }
     }
@@ -506,6 +540,186 @@ impl LibraryId {
     pub const fn handle(self) -> LibraryHandle {
         LibraryHandle(self as u32 + 1)
     }
+}
+
+/// An opaque handle to an `icon.library` object.
+///
+/// A `u32` and not a pointer, for the same reason [`LibraryHandle`] is: the
+/// icon table lives in the kernel, and a program that held a pointer to it
+/// would hold a capability it could not be denied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct IconHandle(pub u32);
+
+impl IconHandle {
+    /// The handle that names no icon.
+    pub const NONE: IconHandle = IconHandle(0);
+
+    /// Build a handle from a raw value.
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The raw value.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// True when this handle names no icon.
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// An icon's rectangle, in screen coordinates.
+///
+/// The structure is passed by pointer across the syscall boundary rather than
+/// packed into a return value: four 16-bit fields need 64 bits, and the jump
+/// table's packed return reserves half of its word for the error code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct IconRect {
+    /// The left edge.
+    pub x: i32,
+    /// The top edge.
+    pub y: i32,
+    /// The width.
+    pub w: u32,
+    /// The height.
+    pub h: u32,
+}
+
+impl IconRect {
+    /// A rectangle at `(x, y)` of `w` by `h`.
+    pub const fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
+        Self { x, y, w, h }
+    }
+
+    /// The kernel's default icon rectangle.
+    pub const fn default_rect() -> Self {
+        Self::new(0, 0, 80, 72)
+    }
+
+    /// Pack the four fields in the kernel's order.
+    pub const fn pack(self) -> u64 {
+        (self.x as u16 as u64)
+            | ((self.y as u16 as u64) << 16)
+            | ((self.w as u64) << 32)
+            | ((self.h as u64) << 48)
+    }
+
+    /// Unpack the four fields from the kernel's order.
+    pub const fn unpack(packed: u64) -> Self {
+        Self {
+            x: (packed as u16) as i16 as i32,
+            y: ((packed >> 16) as u16) as i16 as i32,
+            w: ((packed >> 32) as u16) as u32,
+            h: ((packed >> 48) as u16) as u32,
+        }
+    }
+}
+
+/// The icon kinds `NewDiskObject` and `GetDefDiskObject` select by.
+///
+/// These are the AmigaOS `do_Type` values, and the same numbers the kernel
+/// validates against. A caller that invents one gets `INVALID_NAME`.
+pub mod icon_kind {
+    /// A disk object — the base record.
+    pub const DISK: u32 = 1;
+    /// A drawer.
+    pub const DRAWER: u32 = 2;
+    /// A tool, launched by a double-click.
+    pub const TOOL: u32 = 3;
+    /// An application icon.
+    pub const APP: u32 = 4;
+}
+
+/// The `IconControl` operations.
+pub mod icon_control {
+    /// Select the icon.
+    pub const SELECT: u32 = 1;
+    /// Deselect the icon.
+    pub const DESELECT: u32 = 2;
+    /// Report whether the icon is selected.
+    pub const GET_SELECTED: u32 = 3;
+    /// Report the icon's kind.
+    pub const GET_TYPE: u32 = 4;
+    /// Change the icon's kind.
+    pub const SET_TYPE: u32 = 5;
+}
+
+/// An opaque handle to a Workbench object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct WorkbenchHandle(pub u32);
+
+/// An opaque handle to an application icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct AppIconHandle(pub u32);
+
+/// An opaque handle to a Workbench menu item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct AppMenuItemHandle(pub u32);
+
+/// An opaque handle to an application window record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct AppWindowHandle(pub u32);
+
+/// An opaque handle to a drop zone on a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct DropZoneHandle(pub u32);
+
+/// The null-check and raw-value operations every Workbench handle shares.
+macro_rules! workbench_handle {
+    ($name:ident) => {
+        impl $name {
+            /// The handle that names no object.
+            pub const NONE: $name = $name(0);
+
+            /// Build a handle from a raw value.
+            pub const fn from_raw(raw: u32) -> Self {
+                Self(raw)
+            }
+
+            /// The raw value.
+            pub const fn raw(self) -> u32 {
+                self.0
+            }
+
+            /// True when this handle names no object.
+            pub const fn is_none(self) -> bool {
+                self.0 == 0
+            }
+        }
+    };
+}
+
+workbench_handle!(WorkbenchHandle);
+workbench_handle!(AppIconHandle);
+workbench_handle!(AppMenuItemHandle);
+workbench_handle!(AppWindowHandle);
+workbench_handle!(DropZoneHandle);
+
+/// The `WorkbenchControl` operations.
+pub mod workbench_control {
+    /// Whether the desktop has been started.
+    pub const RUNNING: u32 = 1;
+    /// The number of open Workbench objects.
+    pub const OBJECTS: u32 = 2;
+    /// The number of registered application icons.
+    pub const APP_ICONS: u32 = 3;
+    /// The number of registered menu items.
+    pub const MENU_ITEMS: u32 = 4;
+    /// The number of registered application windows.
+    pub const APP_WINDOWS: u32 = 5;
+    /// The number of registered drop zones.
+    pub const DROP_ZONES: u32 = 6;
+    /// Whether a Workbench is registered.
+    pub const REGISTERED: u32 = 7;
 }
 
 /// The signal bits Exec uses.

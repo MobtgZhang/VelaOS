@@ -18,8 +18,8 @@ indistinguishable from a working call.
 
 | API | syscall | status | verified by | notes |
 |---|---|---|---|---|
-| `FindTag` | 320 | `not-started` | — | The syscall number is reserved and reports `NOT_IMPLEMENTED`. |
-| `StrNCpy` | 321 | `not-started` | — | The syscall number is reserved and reports `NOT_IMPLEMENTED`. |
-| `StrCmp` | 322 | `not-started` | — | The syscall number is reserved and reports `NOT_IMPLEMENTED`. |
+| `FindTag` | 320 | `verified` | `utility_find_tag_returns_the_matching_items_data` | Returns the matching item's `ti_Data`, never a pointer; the first match wins and `TAG_END` ends the list. |
+| `StrNCpy` | 321 | `verified` | `utility_strncpy_copies_at_most_n_bytes` | Writes at most `n` bytes — text then a NUL — and returns how many it wrote; the SDK refuses an `n` its buffer cannot hold. |
+| `StrCmp` | 322 | `verified` | `utility_strcmp_orders_two_strings` | Byte-wise and unsigned; the kernel folds `Ordering` to a 64-bit two's-complement result (`-1` / `0` / `1`), which the `Packed` jump-table ABI carries without truncation, and the SDK maps `0 => Equal`, `1 => Greater`, else `Less`. |
 
-**Summary:** 0 of 3 entries are `verified`.
+**Summary:** 3 of 3 entries are `verified`.

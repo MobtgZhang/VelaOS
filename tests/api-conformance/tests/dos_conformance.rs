@@ -5,9 +5,51 @@
 //! copied rather than trusted, a buffer is copied rather than trusted, and a
 //! handle is opaque.
 
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
 use vela_kernel_syscall::numbers::{self, errors, SyscallArgs};
+use vela_sys::abi::AnchorPath;
+use vela_sys::api;
+use vela_sys::hosted;
 
 use vela_test_api_conformance::harness::{self, ok};
+
+/// Guards the SDK's process-global hosted services.
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The one kernel installed for the SDK-driven tests in this file.
+fn services() -> &'static vela_hosted::Kernel {
+    static SERVICES: OnceLock<&'static vela_hosted::Kernel> = OnceLock::new();
+    SERVICES.get_or_init(|| {
+        let kernel: &'static vela_hosted::Kernel = Box::leak(Box::new(harness::kernel()));
+        // SAFETY: the kernel is leaked, so every reference handed to
+        // `install` outlives the process.
+        unsafe {
+            hosted::install(
+                kernel.exec(),
+                kernel.dos(),
+                kernel.graphics(),
+                kernel.intuition(),
+                kernel.icon(),
+                kernel.workbench(),
+                kernel.table(),
+            );
+        }
+        kernel
+    })
+}
+
+/// Install the SDK services and name a task for the current thread.
+fn ready() -> MutexGuard<'static, ()> {
+    let guard = serial();
+    let kernel = services();
+    let task = harness::task(kernel);
+    kernel.exec().set_current_task(task);
+    guard
+}
 
 /// `Open`, `Write`, `Read` and `Close`: the whole file round trip.
 ///
@@ -218,4 +260,44 @@ fn dos_open_with_an_invalid_mode_is_refused() {
     );
     assert!(result.is_err(), "an invalid mode must be refused");
     assert_eq!(result.error, errors::RANGE);
+}
+
+/// `ExamineDir` walks a directory from an anchor, one entry per call.
+///
+/// The SDK call drives the whole chain from `vela_sys::api::examine_dir`
+/// through the DOS library base, its generated jump table, the stub, the
+/// hosted dispatch and the kernel's handler. The anchor is read and written
+/// by the kernel, so the second call resumes after the first entry rather
+/// than re-reading the directory.
+#[test]
+fn dos_examine_dir_walks_a_directory_from_an_anchor() {
+    let _guard = ready();
+
+    api::create_dir("RAM:walk").expect("CreateDir");
+    for name in ["a.txt", "b.txt"] {
+        let file =
+            api::open(&format!("RAM:walk/{name}"), api::mode::WRITE).expect("Open for writing");
+        api::close(file).expect("Close");
+    }
+
+    let mut anchor = AnchorPath::empty();
+    let first = api::examine_dir(&mut anchor, Some("RAM:walk")).expect("ExamineDir");
+    assert_eq!(
+        first.as_deref(),
+        Some("RAM:walk/a.txt"),
+        "the first call must produce the first entry"
+    );
+    assert_eq!(anchor.ap_First, 1, "an entry was found");
+
+    // A continuation passes no path: the kernel resumes from the anchor.
+    let second = api::examine_dir(&mut anchor, None).expect("ExamineDir");
+    assert_eq!(
+        second.as_deref(),
+        Some("RAM:walk/b.txt"),
+        "the second call must resume after the first entry"
+    );
+
+    let end = api::examine_dir(&mut anchor, None).expect("ExamineDir");
+    assert_eq!(end, None, "the walk must finish rather than repeat");
+    assert_eq!(anchor.ap_FoundBreak, 1, "the end of the walk is recorded");
 }

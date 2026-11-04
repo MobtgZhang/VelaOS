@@ -38,12 +38,14 @@ use spin::Mutex;
 use vela_kernel_dos::Dos;
 use vela_kernel_exec::Exec;
 use vela_kernel_graphics::Graphics;
+use vela_kernel_icon::IconService;
 use vela_kernel_intuition::Intuition;
 use vela_kernel_scheduler::task::TaskState;
 use vela_kernel_scheduler::Scheduler;
 use vela_kernel_syscall::dispatch::{builtin_table, DispatchTable, SyscallContext};
 use vela_kernel_syscall::numbers::SyscallArgs;
 use vela_kernel_syscall::SyscallResult;
+use vela_kernel_workbench::Workbench;
 
 /// The screen the mock kernel's window manager composites onto.
 ///
@@ -121,6 +123,10 @@ pub struct Kernel {
     /// back buffer, and the compositing is the same code that runs on bare
     /// metal.
     intuition: Intuition,
+    /// The icon service. This is the *real* one.
+    icon: IconService,
+    /// The Workbench service. This is the *real* one.
+    workbench: Workbench,
     /// The syscall dispatch table.
     table: DispatchTable,
     /// The tasks, by slot.
@@ -163,6 +169,8 @@ impl Kernel {
             dos: Dos::new(),
             graphics: Graphics::new(),
             intuition: Intuition::new(width, height),
+            icon: IconService::new(),
+            workbench: Workbench::new(),
             table: builtin_table(),
             tasks: Mutex::new(Vec::new()),
             completed: Mutex::new(0),
@@ -197,6 +205,16 @@ impl Kernel {
     /// The Intuition service.
     pub fn intuition(&self) -> &Intuition {
         &self.intuition
+    }
+
+    /// The icon service.
+    pub fn icon(&self) -> &IconService {
+        &self.icon
+    }
+
+    /// The Workbench service.
+    pub fn workbench(&self) -> &Workbench {
+        &self.workbench
     }
 
     /// How many tasks exist.
@@ -276,6 +294,8 @@ impl Kernel {
             dos: &self.dos,
             graphics: &self.graphics,
             intuition: &self.intuition,
+            icon: &self.icon,
+            workbench: &self.workbench,
         };
         self.table.dispatch(number, args, &context)
     }
@@ -372,10 +392,24 @@ impl Kernel {
 
         body(self);
 
-        // The task's body is finished. If the task did not block itself, it
-        // is not runnable again.
+        // The yield request is taken whether or not it is acted on: a task
+        // that yielded *and* blocked must not leave its request behind for
+        // the next task to inherit and be requeued for someone else's
+        // decision.
+        let yielded = self.exec.take_yield();
+
+        // Three outcomes, and the order matters. A task that blocked itself
+        // stays blocked — the waker is what puts it back on the run queue,
+        // and terminating it here would make that wake a no-op. A task that
+        // asked to yield goes to the back of its priority level, which is
+        // what gives the CPU to whoever else is runnable. Anything else is
+        // finished.
         if self.scheduler.state_of(slot) != Some(TaskState::Blocked) {
-            self.scheduler.terminate(slot);
+            if yielded {
+                self.scheduler.requeue(slot);
+            } else {
+                self.scheduler.terminate(slot);
+            }
         }
         let mut completed = self.completed.lock();
         *completed += 1;

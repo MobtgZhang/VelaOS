@@ -167,12 +167,14 @@ fn every_syscall_number_is_inside_its_library_range() {
 /// The first syscall number and the count of a library's group.
 fn range_for(library: &str) -> (u64, u64) {
     match library {
-        "exec.library" => (0, 20),
+        "exec.library" => (0, 21),
         "graphics.library" => (64, 13),
         "layers.library" => (128, 10),
         "intuition.library" => (192, 13),
         "dos.library" => (256, 11),
         "utility.library" => (320, 3),
+        "icon.library" => (384, 21),
+        "workbench.library" => (448, 22),
         other => panic!("unknown library {other}"),
     }
 }
@@ -180,7 +182,7 @@ fn range_for(library: &str) -> (u64, u64) {
 /// The matrix's libraries are exactly the ones the ABI defines.
 #[test]
 fn the_matrix_covers_every_library() {
-    assert_eq!(LIBRARIES.len(), 6);
+    assert_eq!(LIBRARIES.len(), 8);
     for library in LIBRARIES {
         assert!(
             !vela_test_api_conformance::entries_for(library).is_empty(),

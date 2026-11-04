@@ -182,17 +182,55 @@ Boot VelaOS in **QEMU with OVMF on x86-64**, display a classic-inspired desktop,
 
 ## Building
 
-The build system and bootable images are not yet established. The intended developer workflow is:
+VelaOS builds with `cargo` and the `xtask` automation in `tools/xtask`. A
+root `Makefile` provides memorable shortcuts:
 
 ```bash
-# Planned commands; not yet implemented
-cargo xtask build --arch x86_64 --profile dev
-cargo xtask image --arch x86_64
-cargo xtask qemu --arch x86_64
-cargo xtask test --suite api-conformance
+# Compile the loader, kernel and userland.
+make build
+
+# Build a bootable disk image.
+make image
+
+# Boot the image under QEMU with an SDL GUI window.
+make run
+
+# Run the formatted checks CI runs (fmt, clippy, no_std cross-checks).
+make check
+
+# Run the workspace test suite.
+make test
+
+# Boot-smoke and framebuffer-golden QEMU tests.
+make test-boot
+make test-gui
 ```
 
-Once the repository is bootstrapped, this section will include tested toolchain versions, firmware requirements, and reproducible build instructions.
+Equivalently, every target can be invoked directly through `xtask`:
+
+```bash
+cargo xtask build --arch x86-64 --profile dev
+cargo xtask image --arch x86-64
+cargo xtask run --arch x86-64 --profile dev --display --timeout 60
+cargo xtask test --suite boot-smoke
+cargo xtask test --suite gui-golden
+```
+
+`make run` (or `cargo xtask run --display`) is the fastest way to see the
+desktop: it builds the image, boots QEMU with OVMF, and opens an SDL window
+showing the Workbench-inspired screen.
+
+v0.1.0 boots x86-64 only. The other architectures CI checks
+(`aarch64-unknown-none`, `riscv64gc-unknown-none-elf`,
+`loongarch64-unknown-none`) are compile-checked through `make check`, which
+proves the `no_std` crates stay portable without a working boot path.
+
+The kernel heap is 32 MiB (8192 pages): a full-screen 1280×800 window buffer
+is 4 MiB on its own, and the ceiling must leave room for the compositor's
+layers and the frame bitmap. See [`docs/boot/entry-x86_64.md`](docs/boot/entry-x86_64.md).
+
+Once the repository is bootstrapped, this section will include tested
+toolchain versions, firmware requirements, and reproducible build instructions.
 
 ## Contributing
 

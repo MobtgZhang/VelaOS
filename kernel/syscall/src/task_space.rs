@@ -52,10 +52,20 @@ use spin::Mutex;
 
 /// Where a program's image begins.
 ///
-/// The first 64 KiB is deliberately left unmapped, so that a null or
-/// small-offset pointer faults immediately instead of reading whatever the
-/// program happened to put at its lowest address.
-pub const IMAGE_BASE: u64 = 0x0000_0000_0010_0000;
+/// # Why this is far above physical RAM
+///
+/// A user address space inherits the kernel's supervisor mappings, including
+/// the low identity map of physical memory that the kernel uses to reach the
+/// frame bitmap and to zero fresh frames. That map occupies the same virtual
+/// addresses as the physical addresses it covers, so a program placed inside
+/// RAM would collide with a supervisor large page. The image therefore lives
+/// at 16 TiB, above every physical window and well below the break at 64 TiB.
+///
+/// The image is placed at the start of a dedicated user window rather than at
+/// the bottom of the address space, so address zero remains an unmapped null
+/// guard: a null or small-offset pointer faults immediately instead of reading
+/// whatever the program happened to put at its lowest address.
+pub const IMAGE_BASE: u64 = 0x0000_1000_0000_0000;
 
 /// Where a program's heap begins.
 ///
@@ -72,18 +82,21 @@ pub const BREAK_LIMIT: u64 = 0x0000_6000_0000_0000;
 
 /// The first address *above* the user half.
 ///
-/// Everything at or above this is kernel space. It is the same bound
-/// [`crate::copy`] validates against, so "may be mapped" and "may be copied
-/// to" cannot disagree.
-pub const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+/// Everything at or above this is kernel space. The constant is re-exported
+/// from [`crate::copy`] rather than restated, so "may be mapped" and "may be
+/// copied to" cannot disagree about where the user half ends.
+pub use crate::copy::USER_SPACE_END;
 
 /// The size of a user program's stack, in bytes.
 pub const USER_STACK_SIZE: u64 = 64 * 1024;
 
 /// The user stack's top address.
 ///
-/// Just below [`USER_SPACE_END`]. The stack grows down from here.
-pub const USER_STACK_TOP: u64 = USER_STACK_SIZE - PAGE_SIZE + USER_SPACE_END - 1;
+/// One page below [`USER_SPACE_END`]: the last page of the user half is left
+/// unmapped, so a program that walks off the end of its stack faults on an
+/// unmapped page instead of reading the byte below the kernel half. The
+/// stack grows down from here and occupies [`USER_STACK_SIZE`] bytes.
+pub const USER_STACK_TOP: u64 = USER_SPACE_END - PAGE_SIZE;
 
 /// The number of user address spaces created so far.
 ///
@@ -131,8 +144,28 @@ impl TaskSpace {
     /// able to take an interrupt or a syscall the instant it exists — which
     /// is what makes it safe to activate before the image is loaded.
     pub fn new() -> Self {
+        Self::with_break(BREAK_START)
+    }
+
+    /// Create an empty user space whose break begins at `base`.
+    ///
+    /// A freshly loaded image does not want the default break: the heap must
+    /// start where the image ends, or the first allocation would land on top
+    /// of the program's own data. The loader calls this with the image's end
+    /// before the space is registered, so a `brk` syscall can never move the
+    /// break back into the image.
+    pub fn with_break(base: u64) -> Self {
         let id = NEXT_SPACE_ID.fetch_add(1, Ordering::Relaxed);
-        let mut space = AddressSpace::new(AddressSpaceId(id << 12));
+        // A user space inherits the kernel's supervisor mappings. Without
+        // them the first syscall or interrupt would fault, because the CPU
+        // does not change CR3 on the way into the kernel. Off bare metal —
+        // in the hosted tests — no kernel space is installed, and the empty
+        // space is the right answer there because the host has no page tables
+        // to inherit.
+        let mut space = match kernel_space() {
+            Some(kernel) => AddressSpace::with_kernel_mappings(AddressSpaceId(id << 12), kernel),
+            None => AddressSpace::new(AddressSpaceId(id << 12)),
+        };
         // The heap is identity-mapped during boot, so the PML4's physical
         // address is its virtual address. `set_pml4_base` refines this once
         // the kernel knows better; for a user space it is correct for the
@@ -141,8 +174,8 @@ impl TaskSpace {
         space.set_pml4_base(pa);
         Self {
             space,
-            brk: AtomicUsize::new(BREAK_START as usize),
-            brk_base: BREAK_START,
+            brk: AtomicUsize::new(base as usize),
+            brk_base: base,
         }
     }
 
@@ -164,9 +197,13 @@ impl TaskSpace {
     /// True when `va` is inside the region a process may map.
     ///
     /// The test is deliberately the same bound [`crate::copy`] uses, so
-    /// "may be mapped" and "may be copied to" cannot disagree.
+    /// "may be mapped" and "may be copied to" cannot disagree. The length is
+    /// checked with a saturating subtraction so a huge length near the end of
+    /// the user half is refused rather than wrapping around.
     pub const fn is_user_range(va: u64, len: u64) -> bool {
-        va < crate::copy::USER_SPACE_END && len <= crate::copy::USER_SPACE_END - va
+        // `USER_SPACE_BASE` is `0`, the minimum `u64`, so every `va` passes
+        // the lower bound; only the upper bound matters.
+        len <= crate::copy::USER_SPACE_END.saturating_sub(va)
     }
 
     /// Map one page of user memory, returning its virtual address.
@@ -180,6 +217,27 @@ impl TaskSpace {
     /// `frames` must be the kernel's frame allocator: handing a process
     /// memory from any other source would let two processes share a frame.
     pub unsafe fn map_user_page(&self, va: u64, frames: &dyn FrameSource) -> Result<u64, MapError> {
+        self.map_user_page_with(va, frames, PageFlags::user_rw())
+    }
+
+    /// Map one page of user memory with an explicit permission set.
+    ///
+    /// A loaded image's text must be executable but not writable, and its
+    /// data writable but not executable, so the loader needs to choose the
+    /// flags rather than accept the default. The page is zeroed as in
+    /// [`Self::map_user_page`], which also gives `.bss` its defined
+    /// all-zero content for free.
+    ///
+    /// # Safety
+    ///
+    /// `frames` must be the kernel's frame allocator: handing a process
+    /// memory from any other source would let two processes share a frame.
+    pub unsafe fn map_user_page_with(
+        &self,
+        va: u64,
+        frames: &dyn FrameSource,
+        flags: PageFlags,
+    ) -> Result<u64, MapError> {
         if !va.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::MisalignedVirtual);
         }
@@ -187,7 +245,7 @@ impl TaskSpace {
             return Err(MapError::MisalignedVirtual);
         }
         let pa = frames.alloc_frame()?;
-        if let Err(e) = self.space.map_page(va, pa, PageFlags::user_rw()) {
+        if let Err(e) = self.space.map_page(va, pa, flags) {
             // The frame is ours and nothing maps it, so returning it is not a
             // use-after-free: no address space references it.
             // SAFETY: as above.
@@ -373,6 +431,23 @@ impl SpaceRegistry {
         spaces.push((task, Arc::new(TaskSpace::new())));
     }
 
+    /// Register a space that was built before registration, replacing any
+    /// the task already had.
+    ///
+    /// The loader builds a space *and fills it* before the task may run, and
+    /// an empty [`Self::create`] space would be the wrong one: its break is
+    /// the default, not the image's end, and its page tables hold none of the
+    /// image. So the loader hands over the space it built rather than being
+    /// given a fresh one.
+    pub fn insert(&self, task: TaskId, space: Arc<TaskSpace>) {
+        let mut spaces = self.spaces.lock();
+        if let Some(slot) = spaces.iter_mut().find(|(id, _)| *id == task) {
+            slot.1 = space;
+            return;
+        }
+        spaces.push((task, space));
+    }
+
     /// Remove `task`'s space, if it has one.
     pub fn remove(&self, task: TaskId) {
         let mut spaces = self.spaces.lock();
@@ -509,6 +584,29 @@ pub unsafe fn install_frames(frames: &'static (dyn FrameSource + Sync)) {
 /// The installed frame allocator, if any.
 pub fn frames() -> Option<&'static (dyn FrameSource + Sync)> {
     *FRAMES.lock()
+}
+
+/// The kernel's own address space, installed at boot.
+///
+/// A user space is built from this space's supervisor mappings. The reference
+/// is `'static` because the kernel's space lives for the life of the machine:
+/// it is the space the kernel boots into and the one every syscall returns to.
+static KERNEL_SPACE: Mutex<Option<&'static AddressSpace>> = Mutex::new(None);
+
+/// Install the kernel's address space for user-space construction.
+///
+/// # Safety
+///
+/// Must be called once, after the kernel space is fully built (including the
+/// kernel image, the identity map and the device windows) and before any user
+/// program is loaded. `space` must outlive every user space built from it.
+pub unsafe fn install_kernel_space(space: &'static AddressSpace) {
+    *KERNEL_SPACE.lock() = Some(space);
+}
+
+/// The installed kernel address space, if any.
+pub fn kernel_space() -> Option<&'static AddressSpace> {
+    *KERNEL_SPACE.lock()
 }
 
 #[cfg(test)]

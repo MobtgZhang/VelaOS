@@ -49,3 +49,9 @@ rustflags = ["-C", "link-arg=-n"]
 
 [target.loongarch64-unknown-none]
 rustflags = ["-C", "link-arg=-n"]
+# `cargo xtask <command>` — the README and Makefile both spell the build
+# automation this way. Without the alias the only way to reach it is
+# `cargo run -p xtask -- <command>`, which is long enough that people retype it
+# wrong and end up running a stale binary from `target/debug`.
+[alias]
+xtask = "run --package xtask --"

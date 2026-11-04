@@ -57,6 +57,8 @@ pub const LIBRARIES: &[&str] = &[
     "layers.library",
     "intuition.library",
     "utility.library",
+    "icon.library",
+    "workbench.library",
 ];
 
 /// How completely an API is implemented.
@@ -250,9 +252,9 @@ pub const MATRIX: &[ApiEntry] = &[
         library: "exec.library",
         name: "Yield",
         syscall: Some(14),
-        status: Status::Stub,
-        verified_by: None,
-        notes: "Returns zero without changing anything: a placeholder, not a scheduler yield.",
+        status: Status::Verified,
+        verified_by: Some("exec_yield_requeues_the_task_after_its_body"),
+        notes: "Records the request; the scheduler requeues the caller after its body returns.",
     },
     ApiEntry {
         library: "exec.library",
@@ -282,17 +284,26 @@ pub const MATRIX: &[ApiEntry] = &[
         library: "exec.library",
         name: "MapPage",
         syscall: Some(18),
-        status: Status::NotStarted,
-        verified_by: None,
-        notes: "The number is reserved; no handler is installed.",
+        status: Status::Verified,
+        verified_by: Some("exec_map_page_maps_a_page_for_the_caller"),
+        notes: "Maps one page into the calling task's own address space.",
     },
     ApiEntry {
         library: "exec.library",
         name: "Brk",
         syscall: Some(19),
-        status: Status::NotStarted,
-        verified_by: None,
-        notes: "The number is reserved; no handler is installed.",
+        status: Status::Verified,
+        verified_by: Some("exec_brk_grows_and_shrinks_the_break"),
+        notes:
+            "Returns the break actually in force; growing maps pages and shrinking releases them.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "AddPort",
+        syscall: Some(20),
+        status: Status::Verified,
+        verified_by: Some("exec_add_port_reports_the_ports_signal_mask"),
+        notes: "Returns the port's whole `mp_sig` mask; another task's port is `NOT_OWNER`.",
     },
     // --- dos.library -----------------------------------------------------
     ApiEntry {
@@ -379,9 +390,9 @@ pub const MATRIX: &[ApiEntry] = &[
         library: "dos.library",
         name: "ExamineDir",
         syscall: Some(266),
-        status: Status::Implemented,
-        verified_by: None,
-        notes: "Walks a directory from an anchor path.",
+        status: Status::Verified,
+        verified_by: Some("dos_examine_dir_walks_a_directory_from_an_anchor"),
+        notes: "Walks a directory one entry per call, resuming from the anchor it wrote.",
     },
     // --- graphics.library ------------------------------------------------
     ApiEntry {
@@ -679,25 +690,407 @@ pub const MATRIX: &[ApiEntry] = &[
         library: "utility.library",
         name: "FindTag",
         syscall: Some(320),
-        status: Status::NotStarted,
-        verified_by: None,
-        notes: "The syscall number is reserved and reports `NOT_IMPLEMENTED`.",
+        status: Status::Verified,
+        verified_by: Some("utility_find_tag_returns_the_matching_items_data"),
+        notes: "Returns the matching item's `ti_Data`, never a pointer; \
+                the first match wins and `TAG_END` ends the list.",
     },
     ApiEntry {
         library: "utility.library",
         name: "StrNCpy",
         syscall: Some(321),
-        status: Status::NotStarted,
-        verified_by: None,
-        notes: "The syscall number is reserved and reports `NOT_IMPLEMENTED`.",
+        status: Status::Verified,
+        verified_by: Some("utility_strncpy_copies_at_most_n_bytes"),
+        notes: "Writes at most `n` bytes — text then a NUL — and returns \
+                how many it wrote; the SDK refuses an `n` its buffer cannot hold.",
     },
     ApiEntry {
         library: "utility.library",
         name: "StrCmp",
         syscall: Some(322),
-        status: Status::NotStarted,
-        verified_by: None,
-        notes: "The syscall number is reserved and reports `NOT_IMPLEMENTED`.",
+        status: Status::Verified,
+        verified_by: Some("utility_strcmp_orders_two_strings"),
+        notes: "Byte-wise and unsigned; `less` folds to `u64::MAX`, which the \
+                jump table truncates to `0xFFFF_FFFF` and the SDK still decodes as `Less`.",
+    },
+    // --- icon.library ----------------------------------------------------
+    ApiEntry {
+        library: "icon.library",
+        name: "GetDiskObject",
+        syscall: Some(384),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Finds an icon by its exact name; a missing name is `NOT_FOUND`, \
+                never a null handle.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "GetDiskObjectNew",
+        syscall: Some(385),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Finds an icon, or creates a default one under that name; the \
+                second call returns the same handle as the first.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "PutDiskObject",
+        syscall: Some(386),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Names an existing icon handle; the name is copied, not retained.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "FreeDiskObject",
+        syscall: Some(387),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Releases a handle; the slot stays reserved so other handles do \
+                not shift, and a second free is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "DupDiskObject",
+        syscall: Some(388),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Copies an icon into a fresh handle that can be freed independently.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "DeleteDiskObject",
+        syscall: Some(389),
+        status: Status::Verified,
+        verified_by: Some("icon_disk_object_lifecycle_names_and_duplicates"),
+        notes: "Removes the icon with the given name, then a lookup reports \
+                `NOT_FOUND`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "GetDefDiskObject",
+        syscall: Some(390),
+        status: Status::Verified,
+        verified_by: Some("icon_defaults_and_tool_types"),
+        notes: "Returns a copy of the default object for a kind, so editing it \
+                cannot mutate the default.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "PutDefDiskObject",
+        syscall: Some(391),
+        status: Status::Verified,
+        verified_by: Some("icon_defaults_and_tool_types"),
+        notes: "Replaces the default object for a kind; a later `GetDefDiskObject` \
+                observes the replacement.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "NewDiskObject",
+        syscall: Some(392),
+        status: Status::Verified,
+        verified_by: Some("icon_defaults_and_tool_types"),
+        notes: "A fresh default object of a kind, carrying `TYPE=<kind>` as a \
+                ToolType; an unknown kind is `INVALID_NAME`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "FindToolType",
+        syscall: Some(393),
+        status: Status::Verified,
+        verified_by: Some("icon_defaults_and_tool_types"),
+        notes: "Matches a ToolType name case-insensitively and copies the value \
+                plus its NUL terminator into the caller's buffer.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "MatchToolValue",
+        syscall: Some(394),
+        status: Status::Verified,
+        verified_by: Some("icon_defaults_and_tool_types"),
+        notes: "Compares a ToolType value case-insensitively; a missing ToolType \
+                is `false`, not an error.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "GetIconTagList",
+        syscall: Some(395),
+        status: Status::Verified,
+        verified_by: Some("icon_tag_list_round_trip"),
+        notes: "Copies up to `max_count` tags into the caller's buffer and \
+                returns how many it copied.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "PutIconTagList",
+        syscall: Some(396),
+        status: Status::Verified,
+        verified_by: Some("icon_tag_list_round_trip"),
+        notes: "Replaces an icon's tag list; more than 64 tags is `TOO_LARGE`, \
+                never a silent truncation.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "BumpRevision",
+        syscall: Some(397),
+        status: Status::Verified,
+        verified_by: Some("icon_geometry_revision_and_state"),
+        notes: "Increments and returns the icon's revision counter.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "LayoutIcon",
+        syscall: Some(398),
+        status: Status::Verified,
+        verified_by: Some("icon_geometry_revision_and_state"),
+        notes: "Stores a rectangle read from a caller buffer and writes the one \
+                in force back; a zero width or height is `BAD_RECT`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "GetIconRectangle",
+        syscall: Some(399),
+        status: Status::Verified,
+        verified_by: Some("icon_geometry_revision_and_state"),
+        notes: "Writes the icon's rectangle into a caller-owned buffer; never a \
+                kernel pointer.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "IconControl",
+        syscall: Some(400),
+        status: Status::Verified,
+        verified_by: Some("icon_geometry_revision_and_state"),
+        notes: "Selects, deselects, queries the selected state, and gets or sets \
+                the icon kind; an unknown operation is `RANGE`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "DrawIconState",
+        syscall: Some(401),
+        status: Status::Verified,
+        verified_by: Some("icon_geometry_revision_and_state"),
+        notes: "Records whether the icon is drawn selected; the desktop reads the \
+                state through `IconControl`.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "AddFreeList",
+        syscall: Some(402),
+        status: Status::Verified,
+        verified_by: Some("icon_free_list_and_selected_colour"),
+        notes: "Remembers a live handle, ignoring a duplicate, and returns the \
+                list's length.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "FreeFreeList",
+        syscall: Some(403),
+        status: Status::Verified,
+        verified_by: Some("icon_free_list_and_selected_colour"),
+        notes: "Clears the remembered handles and returns how many it dropped.",
+    },
+    ApiEntry {
+        library: "icon.library",
+        name: "ChangeToSelectedIconColor",
+        syscall: Some(404),
+        status: Status::Verified,
+        verified_by: Some("icon_free_list_and_selected_colour"),
+        notes: "Sets the selected-icon colour word and returns the previous one.",
+    },
+    // --- workbench.library -----------------------------------------------
+    ApiEntry {
+        library: "workbench.library",
+        name: "AddAppIcon",
+        syscall: Some(448),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_icons_walk_and_remove"),
+        notes: "Registers an application icon; an empty name or path, or an \
+                unknown kind, is `INVALID_NAME`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "AddAppMenuItem",
+        syscall: Some(449),
+        status: Status::Verified,
+        verified_by: Some("workbench_menu_items_lifecycle"),
+        notes: "Registers a menu item with its action code; an empty label is \
+                `INVALID_NAME`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "AddAppWindow",
+        syscall: Some(450),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_windows_drop_zones_and_messages"),
+        notes: "Registers a window owned by the calling task; an unknown window \
+                is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "AddAppWindowDropZone",
+        syscall: Some(451),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_windows_drop_zones_and_messages"),
+        notes: "Registers a drop zone on a live window; a zero-area rectangle is \
+                `BAD_RECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "CloseWorkbenchObject",
+        syscall: Some(452),
+        status: Status::Verified,
+        verified_by: Some("workbench_objects_open_update_close"),
+        notes: "Marks an object closed and invisible; the record stays so its \
+                handle remains a stable name.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "GetNextAppIcon",
+        syscall: Some(453),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_icons_walk_and_remove"),
+        notes: "Walks the icon table after a cursor; zero is a normal end of \
+                iteration, not an error.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "MakeWorkbenchObjectVisible",
+        syscall: Some(454),
+        status: Status::Verified,
+        verified_by: Some("workbench_objects_open_update_close"),
+        notes: "Sets an object's visibility; an unknown handle is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "NotifyWorkbench",
+        syscall: Some(455),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Puts an action/data message on the registered Exec port; no \
+                registered port is `NO_PORT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "OpenWorkbenchObject",
+        syscall: Some(456),
+        status: Status::Verified,
+        verified_by: Some("workbench_objects_open_update_close"),
+        notes: "Creates an open object record; an empty name or path is \
+                `INVALID_NAME`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "QuoteWorkbench",
+        syscall: Some(457),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Toggles path quoting and returns the previous state.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "RegisterWorkbench",
+        syscall: Some(458),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Binds the calling task's port; a second registration is \
+                `OBJECT_IN_USE`, and another task's port is `NOT_OWNER`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "RemoveAppIcon",
+        syscall: Some(459),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_icons_walk_and_remove"),
+        notes: "Removes an application icon, and a second removal is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "RemoveAppMenuItem",
+        syscall: Some(460),
+        status: Status::Verified,
+        verified_by: Some("workbench_menu_items_lifecycle"),
+        notes: "Removes a menu item, and a second removal is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "RemoveAppWindow",
+        syscall: Some(461),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_windows_drop_zones_and_messages"),
+        notes: "Removes a window record the caller owns; another task's record is \
+                `NOT_OWNER`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "RemoveAppWindowDropZone",
+        syscall: Some(462),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_windows_drop_zones_and_messages"),
+        notes: "Removes a drop zone, and a second removal is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "SendAppWindowMessage",
+        syscall: Some(463),
+        status: Status::Verified,
+        verified_by: Some("workbench_app_windows_drop_zones_and_messages"),
+        notes: "Puts an action/data message on the window's own port; another \
+                task's record is `NOT_OWNER`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "StartWorkbench",
+        syscall: Some(464),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Marks the desktop running; an unregistered Workbench is \
+                `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "UnregisterWorkbench",
+        syscall: Some(465),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Drops the registration and clears the running flag; a second \
+                call is `NO_OBJECT`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "UpdateWorkbenchObject",
+        syscall: Some(466),
+        status: Status::Verified,
+        verified_by: Some("workbench_objects_open_update_close"),
+        notes: "Replaces an object's path and kind; an empty path is \
+                `INVALID_NAME`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "WBConfig",
+        syscall: Some(467),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Copies the configuration line, terminator included, into the \
+                caller's buffer; a short buffer is `RANGE`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "WBInfo",
+        syscall: Some(468),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Copies the information line, terminator included, into the \
+                caller's buffer; a short buffer is `RANGE`.",
+    },
+    ApiEntry {
+        library: "workbench.library",
+        name: "WorkbenchControl",
+        syscall: Some(469),
+        status: Status::Verified,
+        verified_by: Some("workbench_register_start_and_notify"),
+        notes: "Reports running state, registration, and the live object counts; \
+                an unknown operation is `NO_OBJECT`.",
     },
 ];
 

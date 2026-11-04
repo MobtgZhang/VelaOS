@@ -45,7 +45,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use spin::Mutex;
 
@@ -190,6 +190,16 @@ pub struct Exec {
     /// for CPUs.
     #[cfg(target_os = "none")]
     current: core::sync::atomic::AtomicU32,
+    /// Set when the running task has asked to give up the rest of its slice.
+    ///
+    /// One flag rather than one per task, because there is one CPU: only the
+    /// task that is actually running can set it, and it is read by the
+    /// scheduler immediately after that task's body returns — before any
+    /// other task has had a chance to run and overwrite it. A per-task flag
+    /// would be a map keyed by a task id that is only ever consulted for the
+    /// one task that just finished, which is the same state with more places
+    /// for it to disagree with itself.
+    yield_requested: AtomicBool,
 }
 
 impl core::fmt::Debug for Exec {
@@ -224,6 +234,7 @@ impl Exec {
             tasks: Mutex::new(Vec::new()),
             #[cfg(target_os = "none")]
             current: core::sync::atomic::AtomicU32::new(0),
+            yield_requested: AtomicBool::new(false),
         }
     }
 
@@ -601,6 +612,43 @@ impl Exec {
     /// bug in the program and worth surfacing in a diagnostic.
     pub fn forced_releases(&self) -> u32 {
         self.classic.forced_releases()
+    }
+
+    /// Ask the scheduler to run somebody else once this call returns.
+    ///
+    /// This is the whole of what `Yield` can do from inside a syscall: the
+    /// handler runs on the caller's kernel stack, and a context switch in the
+    /// middle of it would abandon that stack's frame with nothing left to
+    /// return into. So the request is *recorded*, and the scheduler — which
+    /// already owns the run queue and already decides what runs next — acts
+    /// on it the moment the task's body returns.
+    ///
+    /// The request is sticky until it is taken: a task that yields twice
+    /// before the scheduler gets a look has asked twice, and the answer to
+    /// both is the same.
+    pub fn yield_task(&self) {
+        self.yield_requested.store(true, Ordering::Release);
+    }
+
+    /// Take the pending yield request, if there is one.
+    ///
+    /// Reading and clearing in one step is what makes this safe to call from
+    /// the scheduler: a plain `load` followed by a `clear` would let a second
+    /// `Yield` that landed in between be silently discarded.
+    ///
+    /// The request is taken whether or not the scheduler acts on it, so a
+    /// task that yielded *and* blocked does not leave a stale request behind
+    /// for the next task to inherit.
+    pub fn take_yield(&self) -> bool {
+        self.yield_requested.swap(false, Ordering::AcqRel)
+    }
+
+    /// True while a yield request is outstanding, without taking it.
+    ///
+    /// For tests that need to see the request the scheduler is about to
+    /// honour; taking it would remove the very thing being observed.
+    pub fn yield_pending(&self) -> bool {
+        self.yield_requested.load(Ordering::Acquire)
     }
 }
 

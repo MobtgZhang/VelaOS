@@ -111,6 +111,9 @@ impl Library {
             "layers" => "Layers",
             "intuition" => "Intuition",
             "dos" => "Dos",
+            "utility" => "Utility",
+            "icon" => "Icon",
+            "workbench" => "Workbench",
             other => panic!("no `LibraryId` variant for the module `{other}`"),
         }
     }
@@ -389,7 +392,7 @@ fn generate_library(library: &Library) -> String {
         };
         let _ = writeln!(
             out,
-            "\n    /// The stub for `{}::{}`, at library vector offset {}.\n    ///\n    /// # Safety\n    ///\n    /// Every pointer among the arguments is validated by the kernel, so a bad\n    /// one is an error rather than a fault.\n    pub unsafe extern \"sysv64\" fn stub_{}(\n        _a0: u64,\n        _a1: u64,\n        _a2: u64,\n        _a3: u64,\n        _a4: u64,\n        _a5: u64,\n    ) -> u64 {{\n{}\n    }}\n",
+            "\n    /// The stub for `{}::{}`, at library vector offset {}.\n    ///\n    /// # Safety\n    ///\n    /// Every pointer among the arguments is validated by the kernel, so a bad\n    /// one is an error rather than a fault.\n    pub unsafe extern \"sysv64\" fn stub_{}(\n        _a0: u64,\n        _a1: u64,\n        _a2: u64,\n        _a3: u64,\n        _a4: u64,\n        _a5: u64,\n    ) -> crate::library_base::Packed {{\n{}\n    }}\n",
             library.name,
             function.name,
             function.lvo,

@@ -40,6 +40,7 @@
 //! anything outside the kernel. That is the property that makes it safe for
 //! `OpenLibrary` to hand a program a number it can revoke.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::abi::{self, Bptr, LibraryHandle, Message, OpenWindowArgs};
@@ -82,7 +83,7 @@ pub mod seek {
 /// Not `unsafe`, despite what the stubs around it do: by the time a packed
 /// value reaches here the syscall is over, and there is nothing left to get
 /// wrong.
-fn check(packed: u64) -> Result<u64> {
+fn check(packed: library_base::Packed) -> Result<u64> {
     let (value, error) = unpack(packed);
     if error == 0 {
         Ok(value)
@@ -273,6 +274,28 @@ pub fn delete_port(port: Port) -> Result<()> {
         library_base::exec::base().call(offset::EXEC_DELETEMSGPORT, [port.raw(), 0, 0, 0, 0, 0])
     };
     check(packed).map(|_| ())
+}
+
+/// Put a port into service and return the signal mask it raises.
+///
+/// A port is already findable as soon as [`create_port`] made it — VelaOS's
+/// port table is the list `AddPort` would insert into — so what this call
+/// answers is the two questions a program cannot answer itself: whether the
+/// handle names a live port, and whether this task owns it. The value is the
+/// port's whole `mp_sig` mask, not one bit: a caller builds its wait from the
+/// mask the port will actually raise.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when the handle names no port, or
+/// [`errors::NOT_OWNER`] when the port belongs to another task.
+pub fn add_port(port: Port) -> Result<u32> {
+    // SAFETY: a plain integer argument; the kernel looks the handle up in its
+    // own port table and never dereferences it.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_ADDPORT, [port.raw(), 0, 0, 0, 0, 0])
+    };
+    check(packed).map(|v| v as u32)
 }
 
 /// Put a message on a port.
@@ -694,9 +717,10 @@ pub fn open_library_base(name: &str) -> Result<LibraryBase> {
     // program's own table.
     let base = unsafe { library_base::open(handle) };
     if base.is_null() {
-        // The library is open but has no table — `utility.library`, which is
-        // not implemented. The handle is released again so the reference
-        // count does not leak a library the program cannot use.
+        // The library is open but the SDK has no jump table for it, so there
+        // is no base a program could call through. The handle is released
+        // again so the reference count does not leak a library the program
+        // cannot use.
         let _ = close_library(handle);
     }
     Ok(base)
@@ -1265,7 +1289,7 @@ pub mod graphics {
 
     /// Unpack a pen handle out of a packed result, mapping a failure to
     /// [`Pen::INVALID`].
-    fn unpack_pen(packed: u64) -> u16 {
+    fn unpack_pen(packed: crate::library_base::Packed) -> u16 {
         let (value, error) = crate::library_base::unpack(packed);
         if error == 0 {
             value as u16
@@ -1472,6 +1496,825 @@ pub fn current_dir(buf: &mut [u8]) -> Result<usize> {
     check(packed).map(|v| v as usize)
 }
 
+/// Walk a directory with an `AnchorPath`.
+///
+/// `name` is the path the walk starts at on the first call, or `None` to
+/// continue from the path the previous call returned in `anchor`. The anchor
+/// is read *and written* by the kernel, so the caller owns the walk state and
+/// a large directory can be traversed without the kernel holding it whole.
+///
+/// The syscall's value is `0` when an entry was produced and `1` when the walk
+/// is finished, so `Ok(None)` is a normal end of walk rather than a failure.
+/// The entry is in `anchor.ap_Buf` after the call.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when the path does not name a directory,
+/// [`errors::BAD_POINTER`] when a pointer cannot be reached, or
+/// [`errors::BAD_STRING`] when the returned path is not UTF-8.
+pub fn examine_dir(anchor: &mut abi::AnchorPath, name: Option<&str>) -> Result<Option<String>> {
+    let anchor_ptr = anchor as *mut abi::AnchorPath as u64;
+    let name_bytes = name.map(c_string);
+    let name_ptr = name_bytes
+        .as_ref()
+        .map(|bytes| bytes.as_ptr() as u64)
+        .unwrap_or(0);
+    // SAFETY: `anchor` is a live, writable local the kernel copies out of and
+    // into; `name_bytes`, if present, is live for the call and the kernel
+    // copies the string out rather than retaining the pointer.
+    let packed = unsafe {
+        library_base::dos::base().call(offset::DOS_EXAMINEDIR, [name_ptr, anchor_ptr, 0, 0, 0, 0])
+    };
+    let value = check(packed)?;
+    if value == 1 {
+        return Ok(None);
+    }
+    let len = (anchor.ap_Strlen as usize).min(abi::ANCHOR_PATH_BUF_LEN);
+    let bytes = &anchor.ap_Buf[..len];
+    match core::str::from_utf8(bytes) {
+        Ok(text) => Ok(Some(String::from(text))),
+        Err(_) => Err(Error {
+            code: errors::BAD_STRING,
+        }),
+    }
+}
+
+/// `utility.library`: tag lists and string helpers.
+///
+/// # Why this is a module
+///
+/// The other libraries in [`super`] are reached through objects — a window, a
+/// screen, a file — and their calls are named after what they do to one.
+/// `utility.library`'s calls operate on data the caller already owns: a tag
+/// list, two strings, a buffer. Grouping them here keeps `FindTag`, `StrNCpy`
+/// and `StrCmp` together under the name a program opens to get them, and keeps
+/// a generic `strcmp` from competing with the file calls at the top level.
+pub mod utility {
+    use super::*;
+
+    /// A copy of `list` that is guaranteed to carry a `TAG_END`.
+    ///
+    /// The kernel walks a tag list until it finds `TAG_END`, so an
+    /// unterminated slice would make it read past the end of the caller's own
+    /// buffer — the same mistake a C program makes when it forgets the
+    /// terminator, and one the SDK can remove for free because it has the
+    /// slice's length. The terminator is appended unconditionally: a list
+    /// that already ends stops at its own, and one that does not stops at
+    /// this.
+    ///
+    /// The copy must outlive the call, so it is a local rather than a
+    /// temporary: a pointer into a value dropped at the end of an expression
+    /// would name freed memory by the time the kernel read it.
+    fn terminated(list: &[abi::TagItem]) -> Vec<abi::TagItem> {
+        let mut out = Vec::with_capacity(list.len() + 1);
+        out.extend_from_slice(list);
+        out.push(abi::TagItem {
+            ti_Tag: abi::tags::TAG_END,
+            ti_Data: 0,
+        });
+        out
+    }
+
+    /// `FindTag` — the data of the first item in `list` whose tag is `tag`.
+    ///
+    /// The list is scanned in order and the *first* match wins, which is what
+    /// makes a list built by layering defaults under overrides work: the
+    /// override comes first and the default is never reached.
+    ///
+    /// [`errors::NOT_FOUND`] is how "no such tag" is reported — not a zero
+    /// value, because zero is a perfectly ordinary `ti_Data` and a caller
+    /// could not tell the two apart.
+    ///
+    /// # The value's width
+    ///
+    /// A jump-table slot carries 32 bits of value (the other 32 hold the
+    /// error), so the number that comes back is the low half of `ti_Data`.
+    /// AmigaOS tag data is 32-bit by construction; a program storing a
+    /// native64 pointer in a tag should read it out of its own list instead.
+    ///
+    /// # The list
+    ///
+    /// `TAG_END`, `TAG_SKIP` and `TAG_MORE` describe the list's own shape and
+    /// so cannot be searched for. A `TAG_MORE` item continues the walk into
+    /// the list its `ti_Data` names, which is the caller's memory and the
+    /// caller's responsibility to terminate.
+    ///
+    /// # Errors
+    ///
+    /// [`errors::NOT_FOUND`] when no item carries the tag.
+    pub fn find_tag(tag: u32, list: &[abi::TagItem]) -> Result<u64> {
+        let list = terminated(list);
+        // SAFETY: `list` is a live local that outlives the call, and the
+        // kernel validates the pointer before reading it.
+        let packed = unsafe {
+            library_base::utility::base().call(
+                offset::UTILITY_FINDTAG,
+                [tag as u64, list.as_ptr() as u64, 0, 0, 0, 0],
+            )
+        };
+        check(packed)
+    }
+
+    /// `StrNCpy` — copy `src` into `dst`, at most `n` bytes.
+    ///
+    /// Returns the number of bytes written, counting the terminating NUL, so
+    /// a caller can tell a complete copy from a truncated one by comparing
+    /// the result with what it asked for.
+    ///
+    /// # Why `n` is checked against the slice
+    ///
+    /// The kernel only sees a pointer, so it cannot know that `dst` is
+    /// shorter than `n` — and a C caller who got that wrong would overwrite
+    /// whatever came after the buffer. Rust has the length, so the mismatch
+    /// is refused here with [`errors::RANGE`] instead of becoming a write
+    /// past the end of the slice.
+    ///
+    /// # Errors
+    ///
+    /// [`errors::RANGE`] when `n` exceeds `dst.len()`, and whatever the
+    /// kernel reports for an unreadable `src`.
+    pub fn strncpy(dst: &mut [u8], src: &str, n: usize) -> Result<usize> {
+        if n > dst.len() {
+            return Err(Error {
+                code: errors::RANGE,
+            });
+        }
+        let text = c_string(src);
+        // SAFETY: `dst` is a live, writable slice of at least `n` bytes — the
+        // check above is what proves it — and `text` is live for the call.
+        // The kernel writes at most `n` bytes and does not retain either
+        // pointer.
+        let packed = unsafe {
+            library_base::utility::base().call(
+                offset::UTILITY_STRNCPY,
+                [
+                    dst.as_mut_ptr() as u64,
+                    text.as_ptr() as u64,
+                    n as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        check(packed).map(|v| v as usize)
+    }
+
+    /// `StrCmp` — compare two strings.
+    ///
+    /// Byte-wise and unsigned, so the answer is the ordering a C `strcmp`
+    /// would give. The three outcomes travel as three integers because a
+    /// jump-table slot has one `u64` to give: `0` for equal, `1` for greater,
+    /// and everything else for less — the kernel folds "less" to `u64::MAX`
+    /// and the jump table truncates the value half to 32 bits, so both
+    /// spellings of it decode the same way here.
+    ///
+    /// # Errors
+    ///
+    /// [`errors::BAD_STRING`] when a string is not NUL-terminated or not
+    /// UTF-8; the buffers this builds are both by construction, so the error
+    /// can only arrive from a kernel that disagrees about the encoding.
+    pub fn strcmp(a: &str, b: &str) -> Result<core::cmp::Ordering> {
+        let left = c_string(a);
+        let right = c_string(b);
+        // SAFETY: both buffers are live locals of `len + 1` bytes, so both
+        // pointers name a NUL-terminated string for the whole call.
+        let packed = unsafe {
+            library_base::utility::base().call(
+                offset::UTILITY_STRCMP,
+                [left.as_ptr() as u64, right.as_ptr() as u64, 0, 0, 0, 0],
+            )
+        };
+        let value = check(packed)?;
+        Ok(match value {
+            0 => core::cmp::Ordering::Equal,
+            1 => core::cmp::Ordering::Greater,
+            _ => core::cmp::Ordering::Less,
+        })
+    }
+}
+
+/// `icon.library`: the disk-object surface.
+///
+/// # What an icon is here
+///
+/// An icon is a kernel-owned record, and a program holds an opaque
+/// [`IconHandle`]. Nothing in this module can name a kernel pointer: the
+/// record's fields are read through calls that copy their answers into
+/// program memory, which is the same discipline `dos.library`'s `Examine`
+/// follows.
+///
+/// # Why the tag buffer is a fixed size
+///
+/// The kernel caps one icon's tag list at [`MAX_TAGS`], so a query buffer of
+/// that size can always hold the whole list regardless of how many tags the
+/// icon carries. That is what lets `get_icon_tag_list` return a `Vec`
+/// without a two-call "ask the size, then ask the data" dance — the cap is
+/// the size.
+pub mod icon {
+    use super::*;
+
+    pub use crate::abi::{icon_control, icon_kind, IconHandle, IconRect};
+
+    /// The largest number of tags one icon may carry.
+    ///
+    /// The same cap the kernel enforces on `PutIconTagList`, so a list this
+    /// module accepts is exactly a list the kernel will store.
+    pub const MAX_TAGS: usize = 64;
+
+    /// The buffer a ToolType value, or a Workbench text line, is read into.
+    ///
+    /// A ToolType value and a configuration line are both short by
+    /// construction; the kernel refuses one that does not fit, which turns a
+    /// pathological value into `RANGE` rather than a truncated answer the
+    /// caller cannot detect.
+    const TEXT_BUFFER: usize = 256;
+
+    /// Call one icon stub, unpacking the result.
+    fn call(offset: i16, args: [u64; 6]) -> Result<u64> {
+        // SAFETY: every pointer among `args` is live for the call and the
+        // kernel validates it before reading or writing. The kernel does not
+        // retain a user pointer.
+        let packed = unsafe { library_base::icon::base().call(offset, args) };
+        check(packed)
+    }
+
+    /// `GetDiskObject` — find an icon by name.
+    pub fn get_disk_object(name: &str) -> Result<IconHandle> {
+        let name = c_string(name);
+        call(
+            offset::ICON_GETDISKOBJECT,
+            [name.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| IconHandle::from_raw(v as u32))
+    }
+
+    /// `GetDiskObjectNew` — find an icon, creating a default if absent.
+    pub fn get_disk_object_new(name: &str) -> Result<IconHandle> {
+        let name = c_string(name);
+        call(
+            offset::ICON_GETDISKOBJECTNEW,
+            [name.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| IconHandle::from_raw(v as u32))
+    }
+
+    /// `PutDiskObject` — save an icon under a name.
+    pub fn put_disk_object(icon: IconHandle, name: &str) -> Result<()> {
+        let name = c_string(name);
+        call(
+            offset::ICON_PUTDISKOBJECT,
+            [icon.raw() as u64, name.as_ptr() as u64, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `FreeDiskObject` — release an icon handle.
+    pub fn free_disk_object(icon: IconHandle) -> Result<()> {
+        call(
+            offset::ICON_FREEDISKOBJECT,
+            [icon.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `DupDiskObject` — copy an icon into a new handle.
+    pub fn dup_disk_object(icon: IconHandle) -> Result<IconHandle> {
+        call(
+            offset::ICON_DUPDISKOBJECT,
+            [icon.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| IconHandle::from_raw(v as u32))
+    }
+
+    /// `DeleteDiskObject` — remove an icon by name.
+    pub fn delete_disk_object(name: &str) -> Result<()> {
+        let name = c_string(name);
+        call(
+            offset::ICON_DELETEDISKOBJECT,
+            [name.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `GetDefDiskObject` — a copy of a default icon object.
+    pub fn get_def_disk_object(icon_type: u32) -> Result<IconHandle> {
+        call(
+            offset::ICON_GETDEFDISKOBJECT,
+            [icon_type as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| IconHandle::from_raw(v as u32))
+    }
+
+    /// `PutDefDiskObject` — replace a default icon object.
+    pub fn put_def_disk_object(icon_type: u32, icon: IconHandle) -> Result<()> {
+        call(
+            offset::ICON_PUTDEFDISKOBJECT,
+            [icon_type as u64, icon.raw() as u64, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `NewDiskObject` — a fresh default icon object.
+    pub fn new_disk_object(icon_type: u32) -> Result<IconHandle> {
+        call(
+            offset::ICON_NEWDISKOBJECT,
+            [icon_type as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| IconHandle::from_raw(v as u32))
+    }
+
+    /// `FindToolType` — the value of the named ToolType, if any.
+    ///
+    /// ToolType names are matched case-insensitively, which is what AmigaOS
+    /// does and what a `.info` file written on another machine expects.
+    ///
+    /// `Ok(None)` and an empty value are different answers: the first says the
+    /// icon has no such ToolType, the second that it has one with no value.
+    pub fn find_tool_type(icon: IconHandle, name: &str) -> Result<Option<String>> {
+        let name = c_string(name);
+        let mut buffer = [0u8; TEXT_BUFFER];
+        let found = call(
+            offset::ICON_FINDTOOLTYPE,
+            [
+                icon.raw() as u64,
+                name.as_ptr() as u64,
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+                0,
+                0,
+            ],
+        )?;
+        if found == 0 {
+            return Ok(None);
+        }
+        Ok(Some(text_of(&buffer, buffer.len())))
+    }
+
+    /// `MatchToolValue` — whether the named ToolType has `value`.
+    ///
+    /// The comparison is case-insensitive, matching `FindToolType`'s lookup.
+    pub fn match_tool_value(icon: IconHandle, name: &str, value: &str) -> Result<bool> {
+        let name = c_string(name);
+        let value = c_string(value);
+        let matched = call(
+            offset::ICON_MATCHTOOLVALUE,
+            [
+                icon.raw() as u64,
+                name.as_ptr() as u64,
+                value.as_ptr() as u64,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        Ok(matched != 0)
+    }
+
+    /// `GetIconTagList` — an icon's tag list.
+    pub fn get_icon_tag_list(icon: IconHandle) -> Result<Vec<abi::TagItem>> {
+        let mut buffer = [abi::TagItem {
+            ti_Tag: 0,
+            ti_Data: 0,
+        }; MAX_TAGS];
+        let count = call(
+            offset::ICON_GETICONTAGLIST,
+            [
+                icon.raw() as u64,
+                buffer.as_mut_ptr() as u64,
+                MAX_TAGS as u64,
+                0,
+                0,
+                0,
+            ],
+        )? as usize;
+        let count = count.min(MAX_TAGS);
+        Ok(buffer[..count].to_vec())
+    }
+
+    /// `PutIconTagList` — replace an icon's tag list.
+    ///
+    /// The list is copied into the kernel's record; it does not have to
+    /// include a `TAG_END` because the kernel stores the count. A list longer
+    /// than [`MAX_TAGS`] is refused with [`errors::TOO_LARGE`] rather than
+    /// being silently truncated.
+    pub fn put_icon_tag_list(icon: IconHandle, tags: &[abi::TagItem]) -> Result<()> {
+        if tags.len() > MAX_TAGS {
+            return Err(Error {
+                code: errors::TOO_LARGE,
+            });
+        }
+        call(
+            offset::ICON_PUTICONTAGLIST,
+            [
+                icon.raw() as u64,
+                tags.as_ptr() as u64,
+                tags.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    /// `BumpRevision` — increment and return an icon's revision.
+    pub fn bump_revision(icon: IconHandle) -> Result<u32> {
+        call(
+            offset::ICON_BUMPREVISION,
+            [icon.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| v as u32)
+    }
+
+    /// `LayoutIcon` — record an icon's rectangle, returning the effective one.
+    ///
+    /// The rectangle travels by pointer: four 16-bit fields need 64 bits, and
+    /// the jump table's packed return reserves half its word for the error
+    /// code. The kernel writes the effective rectangle back into `rect`.
+    pub fn layout_icon(icon: IconHandle, rect: IconRect) -> Result<IconRect> {
+        let mut written = rect;
+        call(
+            offset::ICON_LAYOUTICON,
+            [
+                icon.raw() as u64,
+                &mut written as *mut IconRect as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        Ok(written)
+    }
+
+    /// `GetIconRectangle` — an icon's rectangle.
+    pub fn get_icon_rectangle(icon: IconHandle) -> Result<IconRect> {
+        let mut written = IconRect::default_rect();
+        call(
+            offset::ICON_GETICONRECTANGLE,
+            [
+                icon.raw() as u64,
+                &mut written as *mut IconRect as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        Ok(written)
+    }
+
+    /// `IconControl` — apply a control operation.
+    ///
+    /// The operations are the [`icon_control`] constants; the result's
+    /// meaning depends on the operation, so it is returned raw.
+    pub fn icon_control(icon: IconHandle, operation: u32, value: u32) -> Result<u64> {
+        call(
+            offset::ICON_ICONCONTROL,
+            [icon.raw() as u64, operation as u64, value as u64, 0, 0, 0],
+        )
+    }
+
+    /// `DrawIconState` — record an icon's selected state.
+    pub fn draw_icon_state(icon: IconHandle, selected: u32) -> Result<()> {
+        call(
+            offset::ICON_DRAWICONSTATE,
+            [icon.raw() as u64, selected as u64, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `AddFreeList` — remember an icon handle.
+    pub fn add_free_list(icon: IconHandle) -> Result<u32> {
+        call(offset::ICON_ADDFREELIST, [icon.raw() as u64, 0, 0, 0, 0, 0]).map(|v| v as u32)
+    }
+
+    /// `FreeFreeList` — clear the remembered handles, returning how many.
+    pub fn free_free_list() -> Result<u32> {
+        call(offset::ICON_FREEFREELIST, [0; 6]).map(|v| v as u32)
+    }
+
+    /// `ChangeToSelectedIconColor` — set the selected colour word, returning
+    /// the previous one.
+    pub fn change_to_selected_icon_color(color: u32) -> Result<u32> {
+        call(
+            offset::ICON_CHANGETOSELECTEDICONCOLOR,
+            [color as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| v as u32)
+    }
+}
+
+/// Read a NUL-terminated string out of a buffer the kernel filled.
+///
+/// The kernel writes the terminator, so the string ends at the first zero.
+/// A buffer with no zero at all is treated as full, which is the only reading
+/// that cannot lose bytes.
+fn text_of(buffer: &[u8], written: usize) -> String {
+    let len = written.min(buffer.len());
+    let end = buffer[..len]
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(len);
+    String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
+/// `workbench.library`: the desktop's object registry.
+///
+/// # What a program gets
+///
+/// Workbench objects, application icons, menu items, windows and drop zones
+/// are all kernel-owned records behind opaque handles. The calls here
+/// register and unregister them; the desktop itself is a program that waits
+/// on an Exec port, and [`notify_workbench`] is how it hears about an event.
+///
+/// # Why registration validates ownership
+///
+/// `register_workbench`, `add_app_window`, `remove_app_window` and
+/// `send_app_window_message` all check that the object belongs to the calling
+/// task. A program cannot register another program's window as its own, and
+/// cannot remove an icon it did not add — the checks are in the kernel, and
+/// the SDK only reproduces the argument order.
+pub mod workbench {
+    use super::*;
+
+    pub use crate::abi::{
+        workbench_control, AppIconHandle, AppMenuItemHandle, AppWindowHandle, DropZoneHandle,
+        WorkbenchHandle,
+    };
+
+    /// The buffer a `WBConfig` or `WBInfo` line is read into.
+    const TEXT_BUFFER: usize = 256;
+
+    /// Call one Workbench stub, unpacking the result.
+    fn call(offset: i16, args: [u64; 6]) -> Result<u64> {
+        // SAFETY: every pointer among `args` is live for the call and the
+        // kernel validates it before reading or writing.
+        let packed = unsafe { library_base::workbench::base().call(offset, args) };
+        check(packed)
+    }
+
+    /// `AddAppIconA` — register an application icon at `(x, y)`.
+    ///
+    /// `icon_type` is one of [`crate::abi::icon_kind`]; the kernel refuses a
+    /// number that is not one of the four.
+    pub fn add_app_icon(
+        name: &str,
+        path: &str,
+        icon_type: u32,
+        x: i32,
+        y: i32,
+    ) -> Result<AppIconHandle> {
+        let name = c_string(name);
+        let path = c_string(path);
+        call(
+            offset::WORKBENCH_ADDAPPICONA,
+            [
+                name.as_ptr() as u64,
+                path.as_ptr() as u64,
+                icon_type as u64,
+                x as u64,
+                y as u64,
+                0,
+            ],
+        )
+        .map(|v| AppIconHandle::from_raw(v as u32))
+    }
+
+    /// `AddAppMenuItemA` — register a Workbench menu item.
+    pub fn add_app_menu_item(label: &str, action: u32) -> Result<AppMenuItemHandle> {
+        let label = c_string(label);
+        call(
+            offset::WORKBENCH_ADDAPPMENUITEMA,
+            [label.as_ptr() as u64, action as u64, 0, 0, 0, 0],
+        )
+        .map(|v| AppMenuItemHandle::from_raw(v as u32))
+    }
+
+    /// `AddAppWindowA` — register a window owned by the calling task.
+    pub fn add_app_window(window: u32) -> Result<AppWindowHandle> {
+        call(
+            offset::WORKBENCH_ADDAPPWINDOWA,
+            [window as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|v| AppWindowHandle::from_raw(v as u32))
+    }
+
+    /// `AddAppWindowDropZoneA` — register a drop zone on `window`.
+    pub fn add_app_window_drop_zone(
+        window: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<DropZoneHandle> {
+        call(
+            offset::WORKBENCH_ADDAPPWINDOWDROPZONEA,
+            [
+                window as u64,
+                x as u64,
+                y as u64,
+                width as u64,
+                height as u64,
+                0,
+            ],
+        )
+        .map(|v| DropZoneHandle::from_raw(v as u32))
+    }
+
+    /// `CloseWorkbenchObjectA` — close a Workbench object.
+    pub fn close_workbench_object(object: WorkbenchHandle) -> Result<()> {
+        call(
+            offset::WORKBENCH_CLOSEWORKBENCHOBJECTA,
+            [object.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `GetNextAppIcon` — the next registered icon after `cursor`.
+    ///
+    /// The first call passes `0`; each returns the next handle, and `None`
+    /// ends the walk. A null handle is a normal end, not an error, which is
+    /// what makes the loop `while let Some(icon) = next(cursor)`.
+    pub fn get_next_app_icon(cursor: u64) -> Result<Option<AppIconHandle>> {
+        let handle = call(offset::WORKBENCH_GETNEXTAPPICON, [cursor, 0, 0, 0, 0, 0])?;
+        if handle == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(AppIconHandle::from_raw(handle as u32)))
+        }
+    }
+
+    /// `MakeWorkbenchObjectVisibleA` — set whether an object is visible.
+    pub fn make_workbench_object_visible(object: WorkbenchHandle, visible: bool) -> Result<()> {
+        call(
+            offset::WORKBENCH_MAKEWORKBENCHOBJECTVISIBLEA,
+            [object.raw() as u64, visible as u64, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `NotifyWorkbench` — send a notification to the Workbench's Exec port.
+    ///
+    /// `action` and `data` are put in the message's first two payload words,
+    /// so the desktop sees them in `mn_payload`.
+    pub fn notify_workbench(action: u32, data: u64) -> Result<()> {
+        call(
+            offset::WORKBENCH_NOTIFYWORKBENCH,
+            [action as u64, data, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `OpenWorkbenchObjectA` — create and open a Workbench object.
+    pub fn open_workbench_object(
+        name: &str,
+        path: &str,
+        icon_type: u32,
+    ) -> Result<WorkbenchHandle> {
+        let name = c_string(name);
+        let path = c_string(path);
+        call(
+            offset::WORKBENCH_OPENWORKBENCHOBJECTA,
+            [
+                name.as_ptr() as u64,
+                path.as_ptr() as u64,
+                icon_type as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+        .map(|v| WorkbenchHandle::from_raw(v as u32))
+    }
+
+    /// `QuoteWorkbench` — toggle path quoting, returning the previous state.
+    pub fn quote_workbench() -> Result<bool> {
+        call(offset::WORKBENCH_QUOTEWORKBENCH, [0; 6]).map(|v| v != 0)
+    }
+
+    /// `RegisterWorkbench` — register the calling task's message port.
+    ///
+    /// The port must exist and belong to the calling task; a program cannot
+    /// register a port it does not own.
+    pub fn register_workbench(port: u32) -> Result<()> {
+        call(
+            offset::WORKBENCH_REGISTERWORKBENCH,
+            [port as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `RemoveAppIcon` — remove an application icon.
+    pub fn remove_app_icon(icon: AppIconHandle) -> Result<()> {
+        call(
+            offset::WORKBENCH_REMOVEAPPICON,
+            [icon.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `RemoveAppMenuItem` — remove a menu item.
+    pub fn remove_app_menu_item(item: AppMenuItemHandle) -> Result<()> {
+        call(
+            offset::WORKBENCH_REMOVEAPPMENUITEM,
+            [item.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `RemoveAppWindow` — remove an application window record.
+    ///
+    /// The window must belong to the calling task.
+    pub fn remove_app_window(window: AppWindowHandle) -> Result<()> {
+        call(
+            offset::WORKBENCH_REMOVEAPPWINDOW,
+            [window.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `RemoveAppWindowDropZone` — remove a drop zone.
+    pub fn remove_app_window_drop_zone(zone: DropZoneHandle) -> Result<()> {
+        call(
+            offset::WORKBENCH_REMOVEAPPWINDOWDROPZONE,
+            [zone.raw() as u64, 0, 0, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `SendAppWindowMessage` — send a message to the window's Exec port.
+    ///
+    /// The window record must belong to the calling task.
+    pub fn send_app_window_message(window: AppWindowHandle, action: u32, data: u64) -> Result<()> {
+        call(
+            offset::WORKBENCH_SENDAPPWINDOWMESSAGE,
+            [window.raw() as u64, action as u64, data, 0, 0, 0],
+        )
+        .map(|_| ())
+    }
+
+    /// `StartWorkbench` — mark the desktop as started.
+    pub fn start_workbench() -> Result<()> {
+        call(offset::WORKBENCH_STARTWORKBENCH, [0; 6]).map(|_| ())
+    }
+
+    /// `UnregisterWorkbench` — drop the registration.
+    pub fn unregister_workbench() -> Result<()> {
+        call(offset::WORKBENCH_UNREGISTERWORKBENCH, [0; 6]).map(|_| ())
+    }
+
+    /// `UpdateWorkbenchObjectA` — change an object's path and type.
+    pub fn update_workbench_object(
+        object: WorkbenchHandle,
+        path: &str,
+        icon_type: u32,
+    ) -> Result<()> {
+        let path = c_string(path);
+        call(
+            offset::WORKBENCH_UPDATEWORKBENCHOBJECTA,
+            [
+                object.raw() as u64,
+                path.as_ptr() as u64,
+                icon_type as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    /// `WBConfig` — the Workbench configuration line.
+    pub fn wb_config() -> Result<String> {
+        let mut buffer = [0u8; TEXT_BUFFER];
+        let written = call(
+            offset::WORKBENCH_WBCONFIG,
+            [buffer.as_mut_ptr() as u64, buffer.len() as u64, 0, 0, 0, 0],
+        )? as usize;
+        Ok(text_of(&buffer, written))
+    }
+
+    /// `WBInfo` — the Workbench information line.
+    pub fn wb_info() -> Result<String> {
+        let mut buffer = [0u8; TEXT_BUFFER];
+        let written = call(
+            offset::WORKBENCH_WBINFO,
+            [buffer.as_mut_ptr() as u64, buffer.len() as u64, 0, 0, 0, 0],
+        )? as usize;
+        Ok(text_of(&buffer, written))
+    }
+
+    /// `WorkbenchControlA` — query a control value.
+    pub fn workbench_control(operation: u32) -> Result<u64> {
+        call(
+            offset::WORKBENCH_WORKBENCHCONTROLA,
+            [operation as u64, 0, 0, 0, 0, 0],
+        )
+    }
+}
+
 /// Unpack a rectangle the kernel packed into a `u64`.
 ///
 /// Four 16-bit fields: `x`, `y`, `width`, `height`. The width and height are
@@ -1527,19 +2370,19 @@ mod tests {
 
     #[test]
     fn check_splits_the_packed_result() {
-        // A packed `u64` carries both halves, so a call can report a value
-        // *and* an error — which a single register could not.
-        assert_eq!(check(0), Ok(0));
-        assert_eq!(check(42), Ok(42));
+        // A jump-table result carries a value *and* an error, so a call can
+        // report both — which a single return value could not.
+        assert_eq!(check(library_base::pack(0, 0)), Ok(0));
+        assert_eq!(check(library_base::pack(42, 0)), Ok(42));
         assert_eq!(
-            check((errors::NO_OBJECT as u32 as u64) << 32),
+            check(library_base::pack(0, errors::NO_OBJECT)),
             Err(Error {
                 code: errors::NO_OBJECT
             })
         );
         // Both halves at once: a value *and* an error.
         assert_eq!(
-            check(7 | ((errors::NOT_FOUND as u32 as u64) << 32)),
+            check(library_base::pack(7, errors::NOT_FOUND)),
             Err(Error {
                 code: errors::NOT_FOUND
             })
@@ -1551,9 +2394,9 @@ mod tests {
         // The whole reason a syscall result has two fields: a library that is
         // not there succeeds and returns zero, which a single return value
         // could not distinguish from a failure.
-        assert_eq!(check(0), Ok(0));
+        assert_eq!(check(library_base::pack(0, 0)), Ok(0));
         assert_eq!(
-            check((errors::NOT_FOUND as u32 as u64) << 32),
+            check(library_base::pack(0, errors::NOT_FOUND)),
             Err(Error {
                 code: errors::NOT_FOUND
             })

@@ -48,68 +48,90 @@
 //! this implementation does.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use vela_hal_x86_64::regs;
 
-/// The `IA32_STAR` value that sets up the `syscall`/`sysret` selectors.
+/// The user stack pointer saved while a syscall is being handled.
 ///
-/// # The arithmetic, which is not negotiable
+/// # Why a static is safe here
 ///
-/// The `syscall` instruction does not take the selectors from anywhere else;
-/// it *derives* them from `IA32_STAR`, and the derivation is fixed by the
-/// architecture:
-///
-/// * On entry, `CS` is `IA32_STAR[47:32]` and `SS` is that value plus 8.
-///   Both must be **kernel** descriptors, so `IA32_STAR[47:32]` is `0x08`
-///   and `SS` becomes `0x10`.
-/// * On return, `sysret` loads `CS` from `IA32_STAR[63:48] + 16` and `SS`
-///   from `IA32_STAR[63:48] + 8`, with RPL forced to 3. Both must be **user**
-///   descriptors, so the user data descriptor must sit 8 bytes below the user
-///   code descriptor.
-///
-/// The second requirement is what dictates the GDT's *order*: the user data
-/// descriptor is at index 3 (`0x18`) and the user code descriptor at index 4
-/// (`0x20`), which makes `IA32_STAR[63:48]` equal to `0x10`.
-///
-/// # What the old value got wrong
-///
-/// The previous value used `0x33` and `0x23`, on the belief that the `syscall`
-/// selectors needed RPL 3. They do not: `syscall` is a *kernel* transition,
-/// and the CPU clears the RPL of the loaded kernel selectors itself. A
-/// selector with RPL 3 in `IA32_STAR[47:32]` would load `CS` with RPL 3 — a
-/// user-mode code segment — on a kernel entry, which is a privilege
-/// *escalation* in the wrong direction, and it names a descriptor that the
-/// kernel's GDT does not have.
-///
-/// The values here are the ones Linux uses.
-pub const STAR_VALUE: u64 = (0x10u64 << 48) | (0x08u64 << 32);
+/// `syscall` clears the interrupt-enable flag, so a handler cannot be
+/// preempted by another syscall or by an interrupt, and v0.1.0 has one CPU.
+/// The two conditions together mean only one syscall can be in flight at a
+/// time, so one slot is enough. An SMP kernel would replace this with a
+/// per-CPU value reached through `GS`.
+static SYSCALL_USER_RSP: AtomicU64 = AtomicU64::new(0);
 
-/// The `IA32_SFMASK` value.
+/// The kernel stack a syscall switches to on entry.
 ///
-/// The interrupt-enable flag is cleared on entry, so a syscall handler runs
-/// with interrupts disabled. That is the safe default: the handler may
-/// touch shared kernel state, and it may not assume that an interrupt will
-/// not arrive in the middle.
-pub const SFMASK_VALUE: u64 = 1 << 9;
+/// A syscall must not run on the user's stack: the program controls it, and a
+/// handler that trusts it could be made to write wherever the program likes.
+/// `start_init` installs the same ring-0 stack the TSS names for interrupts.
+static SYSCALL_KERNEL_RSP: AtomicU64 = AtomicU64::new(0);
 
-/// The `syscall` entry point.
+/// Install the kernel stack a syscall switches to.
 ///
 /// # Safety
 ///
-/// The CPU jumps here from user mode with the arguments in the registers
-/// described in [`crate::numbers`]. The handler must not return normally;
-/// it must `sysret`.
-#[no_mangle]
-pub unsafe extern "C" fn syscall_entry() -> ! {
-    // The user program's GS base is untrusted. `swapgs` puts the kernel's GS
-    // base in, and the kernel's GS base is the one the user program cannot
-    // reach.
-    //
-    // SAFETY: this is the documented `syscall` entry discipline.
-    unsafe {
-        asm!("swapgs", options(nostack, preserves_flags));
-    }
+/// `top` must be the top of a mapped, kernel-owned stack that stays valid for
+/// the life of the machine, and this must be called before the first syscall.
+pub fn set_kernel_stack(top: u64) {
+    SYSCALL_KERNEL_RSP.store(top, Ordering::Release);
+}
 
+// The assembly `syscall` entry stub.
+//
+// # Why this is assembly rather than a Rust function
+//
+// The CPU puts the user return address in `RCX` and the saved flags in
+// `R11`, and `sysret` reads both back. A Rust function is free to use either
+// register as scratch, so calling one directly would return to whatever
+// happened to be in `RCX` — which is exactly the failure this stub exists to
+// prevent. The registers are saved on the kernel stack before the call and
+// restored after it, so the Rust handler can clobber them freely.
+//
+// The stub also switches off the user stack before doing anything that
+// could push, and restores the user's stack pointer only after the handler
+// has returned.
+core::arch::global_asm!(
+    r#"
+    .text
+    .global syscall_entry
+    .type syscall_entry, @function
+syscall_entry:
+    swapgs
+    mov qword ptr [rip + {user_rsp}], rsp
+    mov rsp, qword ptr [rip + {kernel_rsp}]
+    push rcx
+    push r11
+    call {dispatch}
+    pop r11
+    pop rcx
+    mov rsp, qword ptr [rip + {user_rsp}]
+    swapgs
+    sysretq
+    ud2
+    .size syscall_entry, . - syscall_entry
+"#,
+    user_rsp = sym SYSCALL_USER_RSP,
+    kernel_rsp = sym SYSCALL_KERNEL_RSP,
+    dispatch = sym syscall_dispatch,
+);
+
+extern "C" {
+    /// The assembly stub above.
+    fn syscall_entry();
+}
+
+/// The Rust half of the `syscall` entry point.
+///
+/// The stub has already run `swapgs`, switched to the kernel stack, and saved
+/// the user return state. This function reads the ABI registers, dispatches,
+/// and writes the result back; the stub then restores `RCX`/`R11` and
+/// `sysret`s.
+#[no_mangle]
+unsafe extern "C" fn syscall_dispatch() {
     // The syscall number is in `rax`, and the arguments are in `rdi`, `rsi`,
     // `rdx`, `r10`, `r8` and `r9` — the System V argument registers except
     // for `r10` in place of `rcx`, because `rcx` holds the return address.
@@ -157,25 +179,48 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
             options(nostack, preserves_flags),
         );
     }
-
-    // Return to user mode. `sysret` pops the return address from `rcx` and
-    // the saved flags from `r11`, both of which the CPU set on entry.
-    //
-    // `swapgs` restores the user program's GS base before the user program
-    // can observe it.
-    //
-    // SAFETY: `rcx` and `r11` were set by the `syscall` instruction and have
-    // not been clobbered: the handler above uses only the argument
-    // registers and `rax`/`rdx`.
-    unsafe {
-        asm!("swapgs", "sysretq", options(nostack),);
-    }
-
-    // `sysretq` does not return. The trailing `ud2` makes that explicit to
-    // the CPU: if the return path were ever taken, the machine would fault
-    // loudly rather than continue into whatever follows.
-    core::arch::asm!("ud2", options(noreturn, nostack))
 }
+
+/// The `IA32_STAR` value that sets up the `syscall`/`sysret` selectors.
+///
+/// # The arithmetic, which is not negotiable
+///
+/// The `syscall` instruction does not take the selectors from anywhere else;
+/// it *derives* them from `IA32_STAR`, and the derivation is fixed by the
+/// architecture:
+///
+/// * On entry, `CS` is `IA32_STAR[47:32]` and `SS` is that value plus 8.
+///   Both must be **kernel** descriptors, so `IA32_STAR[47:32]` is `0x08`
+///   and `SS` becomes `0x10`.
+/// * On return, `sysret` loads `CS` from `IA32_STAR[63:48] + 16` and `SS`
+///   from `IA32_STAR[63:48] + 8`, with RPL forced to 3. Both must be **user**
+///   descriptors, so the user data descriptor must sit 8 bytes below the user
+///   code descriptor.
+///
+/// The second requirement is what dictates the GDT's *order*: the user data
+/// descriptor is at index 3 (`0x18`) and the user code descriptor at index 4
+/// (`0x20`), which makes `IA32_STAR[63:48]` equal to `0x10`.
+///
+/// # What the old value got wrong
+///
+/// The previous value used `0x33` and `0x23`, on the belief that the `syscall`
+/// selectors needed RPL 3. They do not: `syscall` is a *kernel* transition,
+/// and the CPU clears the RPL of the loaded kernel selectors itself. A
+/// selector with RPL 3 in `IA32_STAR[47:32]` would load `CS` with RPL 3 — a
+/// user-mode code segment — on a kernel entry, which is a privilege
+/// *escalation* in the wrong direction, and it names a descriptor that the
+/// kernel's GDT does not have.
+///
+/// The values here are the ones Linux uses.
+pub const STAR_VALUE: u64 = (0x10u64 << 48) | (0x08u64 << 32);
+
+/// The `IA32_SFMASK` value.
+///
+/// The interrupt-enable flag is cleared on entry, so a syscall handler runs
+/// with interrupts disabled. That is the safe default: the handler may
+/// touch shared kernel state, and it may not assume that an interrupt will
+/// not arrive in the middle.
+pub const SFMASK_VALUE: u64 = 1 << 9;
 
 /// Install the `syscall` gate.
 ///

@@ -36,7 +36,9 @@ use spin::Mutex;
 use vela_kernel_dos::{Bptr, Dos};
 use vela_kernel_exec::Exec;
 use vela_kernel_graphics::Graphics;
+use vela_kernel_icon::IconService;
 use vela_kernel_intuition::Intuition;
+use vela_kernel_workbench::Workbench;
 
 use vela_hal_common::MapError;
 
@@ -59,6 +61,10 @@ pub struct SyscallContext<'a> {
     /// that manipulates layers is manipulating the same stack its windows are
     /// on. Two references to "the layer stack" would be two ways to be wrong.
     pub intuition: &'a Intuition,
+    /// The icon service.
+    pub icon: &'a IconService,
+    /// The Workbench service.
+    pub workbench: &'a Workbench,
 }
 
 impl SyscallContext<'_> {
@@ -81,6 +87,8 @@ impl core::fmt::Debug for SyscallContext<'_> {
             .field("dos", &self.dos)
             .field("graphics", &self.graphics)
             .field("intuition", &self.intuition)
+            .field("icon", &self.icon)
+            .field("workbench", &self.workbench)
             .finish()
     }
 }
@@ -451,8 +459,52 @@ pub mod exec_handlers {
     }
 
     /// `Yield` — give up the rest of the time slice.
-    pub fn yield_now(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+    ///
+    /// The call records the request and returns; the scheduler is what
+    /// honours it. Recording rather than switching here is the difference
+    /// between a syscall and a context switch: a handler runs on the
+    /// *caller's* kernel stack, and switching stacks in the middle of a
+    /// handler would leave that stack's frame where nothing would ever pop
+    /// it. The scheduler, which already owns the run queue, requeues the task
+    /// as soon as the body returns — which is after this call has returned to
+    /// the program, so the program still sees a normal successful return.
+    ///
+    /// The value is always zero: a yield has no result to report, and
+    /// reporting "how long we yielded" would be a number the kernel cannot
+    /// honestly compute.
+    pub fn yield_now(_args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        ctx.exec.yield_task();
         SyscallResult::ok(0)
+    }
+
+    /// `AddPort` — put a port into service and report its signal mask.
+    ///
+    /// Arguments: `port`. Returns the port's `mp_sig` mask.
+    ///
+    /// # Why the checks are in this order
+    ///
+    /// A handle that names no port is [`errors::NO_OBJECT`] and a handle that
+    /// names someone else's port is [`errors::NOT_OWNER`], and the order
+    /// matters: telling a caller "that is not yours" about a handle that does
+    /// not exist at all would leak nothing but would send it looking for an
+    /// owner it will never find. Existence first, ownership second.
+    ///
+    /// # Why the mask and not a bit
+    ///
+    /// A port may raise several signal bits, and a caller that waited on only
+    /// one of them would sleep through the others. The whole mask is what the
+    /// caller needs to build its wait from, and it is what the kernel will
+    /// actually raise — so the value cannot disagree with the behaviour.
+    pub fn add_port(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let port = crate::ids::PortId(args.get(0) as u32);
+        let Some(owner) = ctx.exec.ports.port_owner(port) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        if owner != ctx.task {
+            return SyscallResult::err(errors::NOT_OWNER);
+        }
+        let mask = ctx.exec.ports.port_sig(port).unwrap_or(0);
+        SyscallResult::ok(mask as u64)
     }
 
     /// `GetTaskID` — the calling task's identifier.
@@ -588,6 +640,15 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::POWER_OFF, exec_handlers::power_off);
     table.install(numbers::MAP_PAGE, exec_handlers::map_page);
     table.install(numbers::BRK, exec_handlers::brk);
+    table.install(numbers::ADD_PORT, exec_handlers::add_port);
+
+    // The `utility.library` group: tag lists and string helpers. They take
+    // user pointers rather than handles, so they live in their own module —
+    // the validation they need is the copy helpers' range check and probe,
+    // not a lookup in a service's table.
+    table.install(numbers::UTILITY_FIND_TAG, crate::utility_handlers::find_tag);
+    table.install(numbers::UTILITY_STRNCPY, crate::utility_handlers::strncpy);
+    table.install(numbers::UTILITY_STRCMP, crate::utility_handlers::strcmp);
 
     // The `dos.library` group. The calls that need a user buffer or a path
     // are the adapters in [`crate::dos_handlers`]; they exist as a separate
@@ -716,6 +777,183 @@ pub fn builtin_table() -> DispatchTable {
         numbers::INTUITION_REPAINT,
         crate::intuition_handlers::repaint,
     );
+
+    // The `icon.library` group. Every call here names an icon by an opaque
+    // handle or a name in a user buffer; the adapters copy the name into
+    // kernel-owned storage before it is used.
+    table.install(
+        numbers::ICON_GET_DISK_OBJECT,
+        crate::icon_handlers::get_disk_object,
+    );
+    table.install(
+        numbers::ICON_GET_DISK_OBJECT_NEW,
+        crate::icon_handlers::get_disk_object_new,
+    );
+    table.install(
+        numbers::ICON_PUT_DISK_OBJECT,
+        crate::icon_handlers::put_disk_object,
+    );
+    table.install(
+        numbers::ICON_FREE_DISK_OBJECT,
+        crate::icon_handlers::free_disk_object,
+    );
+    table.install(
+        numbers::ICON_DUP_DISK_OBJECT,
+        crate::icon_handlers::dup_disk_object,
+    );
+    table.install(
+        numbers::ICON_DELETE_DISK_OBJECT,
+        crate::icon_handlers::delete_disk_object,
+    );
+    table.install(
+        numbers::ICON_GET_DEF_DISK_OBJECT,
+        crate::icon_handlers::get_def_disk_object,
+    );
+    table.install(
+        numbers::ICON_PUT_DEF_DISK_OBJECT,
+        crate::icon_handlers::put_def_disk_object,
+    );
+    table.install(
+        numbers::ICON_NEW_DISK_OBJECT,
+        crate::icon_handlers::new_disk_object,
+    );
+    table.install(
+        numbers::ICON_FIND_TOOL_TYPE,
+        crate::icon_handlers::find_tool_type,
+    );
+    table.install(
+        numbers::ICON_MATCH_TOOL_VALUE,
+        crate::icon_handlers::match_tool_value,
+    );
+    table.install(
+        numbers::ICON_GET_ICON_TAG_LIST,
+        crate::icon_handlers::get_icon_tag_list,
+    );
+    table.install(
+        numbers::ICON_PUT_ICON_TAG_LIST,
+        crate::icon_handlers::put_icon_tag_list,
+    );
+    table.install(
+        numbers::ICON_BUMP_REVISION,
+        crate::icon_handlers::bumps_revision,
+    );
+    table.install(numbers::ICON_LAYOUT_ICON, crate::icon_handlers::layout_icon);
+    table.install(
+        numbers::ICON_GET_ICON_RECTANGLE,
+        crate::icon_handlers::get_icon_rectangle,
+    );
+    table.install(
+        numbers::ICON_ICON_CONTROL,
+        crate::icon_handlers::icon_control,
+    );
+    table.install(
+        numbers::ICON_DRAW_ICON_STATE,
+        crate::icon_handlers::draw_icon_state,
+    );
+    table.install(
+        numbers::ICON_ADD_FREE_LIST,
+        crate::icon_handlers::add_free_list,
+    );
+    table.install(
+        numbers::ICON_FREE_FREE_LIST,
+        crate::icon_handlers::free_free_list,
+    );
+    table.install(
+        numbers::ICON_CHANGE_TO_SELECTED_ICON_COLOR,
+        crate::icon_handlers::change_to_selected_icon_color,
+    );
+
+    // The `workbench.library` group. The Workbench is one service with a
+    // registry of application icons, menu items, windows and drop zones;
+    // the handles it hands out are opaque to the caller.
+    table.install(
+        numbers::WORKBENCH_ADD_APP_ICON,
+        crate::workbench_handlers::add_app_icon,
+    );
+    table.install(
+        numbers::WORKBENCH_ADD_APP_MENU_ITEM,
+        crate::workbench_handlers::add_app_menu_item,
+    );
+    table.install(
+        numbers::WORKBENCH_ADD_APP_WINDOW,
+        crate::workbench_handlers::add_app_window,
+    );
+    table.install(
+        numbers::WORKBENCH_ADD_APP_WINDOW_DROP_ZONE,
+        crate::workbench_handlers::add_app_window_drop_zone,
+    );
+    table.install(
+        numbers::WORKBENCH_CLOSE_WORKBENCH_OBJECT,
+        crate::workbench_handlers::close_workbench_object,
+    );
+    table.install(
+        numbers::WORKBENCH_GET_NEXT_APP_ICON,
+        crate::workbench_handlers::get_next_app_icon,
+    );
+    table.install(
+        numbers::WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE,
+        crate::workbench_handlers::make_workbench_object_visible,
+    );
+    table.install(
+        numbers::WORKBENCH_NOTIFY_WORKBENCH,
+        crate::workbench_handlers::notify_workbench,
+    );
+    table.install(
+        numbers::WORKBENCH_OPEN_WORKBENCH_OBJECT,
+        crate::workbench_handlers::open_workbench_object,
+    );
+    table.install(
+        numbers::WORKBENCH_QUOTE_WORKBENCH,
+        crate::workbench_handlers::quote_workbench,
+    );
+    table.install(
+        numbers::WORKBENCH_REGISTER_WORKBENCH,
+        crate::workbench_handlers::register_workbench,
+    );
+    table.install(
+        numbers::WORKBENCH_REMOVE_APP_ICON,
+        crate::workbench_handlers::remove_app_icon,
+    );
+    table.install(
+        numbers::WORKBENCH_REMOVE_APP_MENU_ITEM,
+        crate::workbench_handlers::remove_app_menu_item,
+    );
+    table.install(
+        numbers::WORKBENCH_REMOVE_APP_WINDOW,
+        crate::workbench_handlers::remove_app_window,
+    );
+    table.install(
+        numbers::WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE,
+        crate::workbench_handlers::remove_app_window_drop_zone,
+    );
+    table.install(
+        numbers::WORKBENCH_SEND_APP_WINDOW_MESSAGE,
+        crate::workbench_handlers::send_app_window_message,
+    );
+    table.install(
+        numbers::WORKBENCH_START_WORKBENCH,
+        crate::workbench_handlers::start_workbench,
+    );
+    table.install(
+        numbers::WORKBENCH_UNREGISTER_WORKBENCH,
+        crate::workbench_handlers::unregister_workbench,
+    );
+    table.install(
+        numbers::WORKBENCH_UPDATE_WORKBENCH_OBJECT,
+        crate::workbench_handlers::update_workbench_object,
+    );
+    table.install(
+        numbers::WORKBENCH_WB_CONFIG,
+        crate::workbench_handlers::wb_config,
+    );
+    table.install(
+        numbers::WORKBENCH_WB_INFO,
+        crate::workbench_handlers::wb_info,
+    );
+    table.install(
+        numbers::WORKBENCH_WORKBENCH_CONTROL,
+        crate::workbench_handlers::workbench_control,
+    );
     table
 }
 
@@ -739,6 +977,8 @@ struct KernelState {
     dos: &'static Dos,
     graphics: &'static Graphics,
     intuition: &'static Intuition,
+    icon: &'static IconService,
+    workbench: &'static Workbench,
 }
 
 /// Install the kernel's dispatch table and services.
@@ -755,6 +995,8 @@ pub unsafe fn install(
     dos: &'static Dos,
     graphics: &'static Graphics,
     intuition: &'static Intuition,
+    icon: &'static IconService,
+    workbench: &'static Workbench,
     table: &'static DispatchTable,
 ) {
     let mut kernel = KERNEL.lock();
@@ -764,6 +1006,8 @@ pub unsafe fn install(
         dos,
         graphics,
         intuition,
+        icon,
+        workbench,
     });
 }
 
@@ -797,6 +1041,8 @@ pub fn handle_syscall(number: u64, args: SyscallArgs) -> SyscallResult {
         dos: state.dos,
         graphics: state.graphics,
         intuition: state.intuition,
+        icon: state.icon,
+        workbench: state.workbench,
     };
     state.table.dispatch(number, args, &context)
 }
@@ -817,6 +1063,8 @@ mod tests {
         let dos: &'static Dos = Box::leak(Box::new(Dos::new()));
         let graphics: &'static Graphics = Box::leak(Box::new(Graphics::new()));
         let intuition: &'static Intuition = Box::leak(Box::new(Intuition::new(640, 480)));
+        let icon: &'static IconService = Box::leak(Box::new(IconService::new()));
+        let workbench: &'static Workbench = Box::leak(Box::new(Workbench::new()));
         let task = exec.create_task();
         // The leaked services outlive every test, so the borrow is sound.
         Box::leak(Box::new(SyscallContext {
@@ -825,6 +1073,8 @@ mod tests {
             dos,
             graphics,
             intuition,
+            icon,
+            workbench,
         }))
     }
 
@@ -855,15 +1105,18 @@ mod tests {
             );
         }
         // Every group that has a library installed is installed by the
-        // built-in table. The utility group is Phase 7 and is the one that
-        // is deliberately still empty, and the count says so.
+        // built-in table, and the count says so: every number the kernel
+        // defines has a handler, and no number it does not define has one.
         assert_eq!(
             table.implemented_count(),
             (numbers::EXEC_COUNT
                 + numbers::DOS_COUNT
                 + numbers::GRAPHICS_COUNT
                 + numbers::LAYERS_COUNT
-                + numbers::INTUITION_COUNT) as usize
+                + numbers::INTUITION_COUNT
+                + numbers::UTILITY_COUNT
+                + numbers::ICON_COUNT
+                + numbers::WORKBENCH_COUNT) as usize
         );
     }
 
@@ -916,12 +1169,29 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_table_leaves_the_other_libraries_unimplemented() {
-        // `utility.library` is the one group with no slots filled in. A stub
-        // that returned success would be indistinguishable from a working
-        // call, so it must report "not implemented" honestly.
+    fn the_builtin_table_leaves_the_reserved_slots_unimplemented() {
+        // "A stub is not compatible": a number the kernel reserves but has
+        // not defined a call for must report that it does not exist, rather
+        // than answering as though it did. The three utility calls are
+        // implemented; the slot immediately after them is not.
         let table = builtin_table();
-        assert!(!table.is_implemented(numbers::UTILITY_FIND_TAG));
+        assert!(table.is_implemented(numbers::UTILITY_STRCMP));
+        assert!(!table.is_implemented(numbers::UTILITY_STRCMP + 1));
+        let ctx = context();
+        let result = table.dispatch(numbers::UTILITY_STRCMP + 1, SyscallArgs::default(), ctx);
+        assert_eq!(result.error, errors::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn the_utility_handlers_are_installed() {
+        let table = builtin_table();
+        for number in numbers::UTILITY_FIND_TAG..numbers::UTILITY_FIND_TAG + numbers::UTILITY_COUNT
+        {
+            assert!(
+                table.is_implemented(number),
+                "utility syscall {number} has no handler",
+            );
+        }
     }
 
     #[test]

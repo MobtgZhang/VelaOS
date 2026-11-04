@@ -36,6 +36,8 @@ struct Services {
     dos: &'static vela_kernel_dos::Dos,
     graphics: &'static vela_kernel_graphics::Graphics,
     intuition: &'static vela_kernel_intuition::Intuition,
+    icon: &'static vela_kernel_icon::IconService,
+    workbench: &'static vela_kernel_workbench::Workbench,
     table: &'static vela_kernel_syscall::dispatch::DispatchTable,
 }
 
@@ -54,6 +56,8 @@ pub unsafe fn install(
     dos: &'static vela_kernel_dos::Dos,
     graphics: &'static vela_kernel_graphics::Graphics,
     intuition: &'static vela_kernel_intuition::Intuition,
+    icon: &'static vela_kernel_icon::IconService,
+    workbench: &'static vela_kernel_workbench::Workbench,
     table: &'static vela_kernel_syscall::dispatch::DispatchTable,
 ) {
     *SERVICES.lock() = Some(Services {
@@ -61,15 +65,17 @@ pub unsafe fn install(
         dos,
         graphics,
         intuition,
+        icon,
+        workbench,
         table,
     });
 }
 
 /// The installed services, if any.
 fn services() -> Option<Services> {
-    // `Services` is five shared references, all `Copy` in effect, so copying
-    // the fields out of the lock is safe and avoids holding the lock across
-    // the syscall — which may itself take service locks.
+    // `Services` is a handful of shared references, all `Copy` in effect, so
+    // copying the fields out of the lock is safe and avoids holding the lock
+    // across the syscall — which may itself take service locks.
     let services = SERVICES.lock();
     let services = services.as_ref()?;
     Some(Services {
@@ -77,6 +83,8 @@ fn services() -> Option<Services> {
         dos: services.dos,
         graphics: services.graphics,
         intuition: services.intuition,
+        icon: services.icon,
+        workbench: services.workbench,
         table: services.table,
     })
 }
@@ -106,6 +114,8 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> SyscallResult {
         dos: services.dos,
         graphics: services.graphics,
         intuition: services.intuition,
+        icon: services.icon,
+        workbench: services.workbench,
     };
     let result = services.table.dispatch(number, syscall_args, &context);
     SyscallResult {

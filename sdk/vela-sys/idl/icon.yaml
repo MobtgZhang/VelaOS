@@ -1,0 +1,206 @@
+# The `icon.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: icon.library
+prefix: ICON
+functions:
+  - name: GetDiskObject
+    lvo: -168
+    offset: GETDISKOBJECT
+    stub: get_disk_object
+    syscall: ICON_GET_DISK_OBJECT
+    number: 384
+    kernel: ICON_GET_DISK_OBJECT
+    status: implemented
+  - name: GetDiskObjectNew
+    lvo: -160
+    offset: GETDISKOBJECTNEW
+    stub: get_disk_object_new
+    syscall: ICON_GET_DISK_OBJECT_NEW
+    number: 385
+    kernel: ICON_GET_DISK_OBJECT_NEW
+    status: implemented
+  - name: PutDiskObject
+    lvo: -152
+    offset: PUTDISKOBJECT
+    stub: put_disk_object
+    syscall: ICON_PUT_DISK_OBJECT
+    number: 386
+    kernel: ICON_PUT_DISK_OBJECT
+    status: implemented
+  - name: FreeDiskObject
+    lvo: -144
+    offset: FREEDISKOBJECT
+    stub: free_disk_object
+    syscall: ICON_FREE_DISK_OBJECT
+    number: 387
+    kernel: ICON_FREE_DISK_OBJECT
+    status: implemented
+  - name: DupDiskObject
+    lvo: -136
+    offset: DUPDISKOBJECT
+    stub: dup_disk_object
+    syscall: ICON_DUP_DISK_OBJECT
+    number: 388
+    kernel: ICON_DUP_DISK_OBJECT
+    status: implemented
+  - name: DeleteDiskObject
+    lvo: -128
+    offset: DELETEDISKOBJECT
+    stub: delete_disk_object
+    syscall: ICON_DELETE_DISK_OBJECT
+    number: 389
+    kernel: ICON_DELETE_DISK_OBJECT
+    status: implemented
+  - name: GetDefDiskObject
+    lvo: -120
+    offset: GETDEFDISKOBJECT
+    stub: get_def_disk_object
+    syscall: ICON_GET_DEF_DISK_OBJECT
+    number: 390
+    kernel: ICON_GET_DEF_DISK_OBJECT
+    status: implemented
+  - name: PutDefDiskObject
+    lvo: -112
+    offset: PUTDEFDISKOBJECT
+    stub: put_def_disk_object
+    syscall: ICON_PUT_DEF_DISK_OBJECT
+    number: 391
+    kernel: ICON_PUT_DEF_DISK_OBJECT
+    status: implemented
+  - name: NewDiskObject
+    lvo: -104
+    offset: NEWDISKOBJECT
+    stub: new_disk_object
+    syscall: ICON_NEW_DISK_OBJECT
+    number: 392
+    kernel: ICON_NEW_DISK_OBJECT
+    status: implemented
+  - name: FindToolType
+    lvo: -96
+    offset: FINDTOOLTYPE
+    stub: find_tool_type
+    syscall: ICON_FIND_TOOL_TYPE
+    number: 393
+    kernel: ICON_FIND_TOOL_TYPE
+    status: implemented
+  - name: MatchToolValue
+    lvo: -88
+    offset: MATCHTOOLVALUE
+    stub: match_tool_value
+    syscall: ICON_MATCH_TOOL_VALUE
+    number: 394
+    kernel: ICON_MATCH_TOOL_VALUE
+    status: implemented
+  - name: GetIconTagList
+    lvo: -80
+    offset: GETICONTAGLIST
+    stub: get_icon_tag_list
+    syscall: ICON_GET_ICON_TAG_LIST
+    number: 395
+    kernel: ICON_GET_ICON_TAG_LIST
+    status: implemented
+  - name: PutIconTagList
+    lvo: -72
+    offset: PUTICONTAGLIST
+    stub: put_icon_tag_list
+    syscall: ICON_PUT_ICON_TAG_LIST
+    number: 396
+    kernel: ICON_PUT_ICON_TAG_LIST
+    status: implemented
+  - name: BumpRevision
+    lvo: -64
+    offset: BUMPREVISION
+    stub: bump_revision
+    syscall: ICON_BUMP_REVISION
+    number: 397
+    kernel: ICON_BUMP_REVISION
+    status: implemented
+  - name: LayoutIcon
+    lvo: -56
+    offset: LAYOUTICON
+    stub: layout_icon
+    syscall: ICON_LAYOUT_ICON
+    number: 398
+    kernel: ICON_LAYOUT_ICON
+    status: implemented
+  - name: GetIconRectangle
+    lvo: -48
+    offset: GETICONRECTANGLE
+    stub: get_icon_rectangle
+    syscall: ICON_GET_ICON_RECTANGLE
+    number: 399
+    kernel: ICON_GET_ICON_RECTANGLE
+    status: implemented
+  - name: IconControl
+    lvo: -40
+    offset: ICONCONTROL
+    stub: icon_control
+    syscall: ICON_ICON_CONTROL
+    number: 400
+    kernel: ICON_ICON_CONTROL
+    status: implemented
+  - name: DrawIconState
+    lvo: -32
+    offset: DRAWICONSTATE
+    stub: draw_icon_state
+    syscall: ICON_DRAW_ICON_STATE
+    number: 401
+    kernel: ICON_DRAW_ICON_STATE
+    status: implemented
+  - name: AddFreeList
+    lvo: -24
+    offset: ADDFREELIST
+    stub: add_free_list
+    syscall: ICON_ADD_FREE_LIST
+    number: 402
+    kernel: ICON_ADD_FREE_LIST
+    status: implemented
+  - name: FreeFreeList
+    lvo: -16
+    offset: FREEFREELIST
+    stub: free_free_list
+    syscall: ICON_FREE_FREE_LIST
+    number: 403
+    kernel: ICON_FREE_FREE_LIST
+    status: implemented
+  - name: ChangeToSelectedIconColor
+    lvo: -8
+    offset: CHANGETOSELECTEDICONCOLOR
+    stub: change_to_selected_icon_color
+    syscall: ICON_CHANGE_TO_SELECTED_ICON_COLOR
+    number: 404
+    kernel: ICON_CHANGE_TO_SELECTED_ICON_COLOR
+    status: implemented

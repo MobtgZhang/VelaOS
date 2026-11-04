@@ -583,12 +583,20 @@ fn an_unimplemented_library_syscall_says_so_honestly() {
     // "A stub is not compatible": a call that has no handler must report that
     // it is not implemented rather than silently returning success.
     //
-    // `utility.library` is the last group with no slots filled in. Graphics,
-    // Layers and Intuition all have real handlers now, so they are exercised
-    // in `gui_syscalls.rs` rather than here.
+    // Every *defined* syscall now has a handler — Exec, DOS, Graphics, Layers,
+    // Intuition and Utility alike — so the numbers below are the reserved
+    // slots just past each group's last defined call. A group reserves
+    // sixty-four numbers and defines a handful of them, and a program that
+    // asks for one of the rest must get an honest "no such call" rather than
+    // an answer that happens to look like one.
     let k = Kernel::new();
     let task = k.exec().create_task();
-    for number in [numbers::UTILITY_FIND_TAG, numbers::UTILITY_STRNCPY] {
+    let reserved = [
+        numbers::INTUITION_REPAINT + 1,
+        numbers::DOS_EXAMINE_DIR + 1,
+        numbers::UTILITY_STRCMP + 1,
+    ];
+    for number in reserved {
         let result = k.syscall(task, number, SyscallArgs::default());
         assert_eq!(
             result.error,
@@ -605,7 +613,13 @@ fn a_gui_syscall_no_longer_reports_not_implemented() {
     // removed and something has silently become a stub.
     let k = Kernel::new();
     let task = k.exec().create_task();
-    for number in [numbers::GRAPHICS_ALLOC_PEN, numbers::INTUITION_OPEN_WINDOW] {
+    for number in [
+        numbers::GRAPHICS_ALLOC_PEN,
+        numbers::INTUITION_OPEN_WINDOW,
+        numbers::UTILITY_FIND_TAG,
+        numbers::UTILITY_STRNCPY,
+        numbers::UTILITY_STRCMP,
+    ] {
         let result = k.syscall(task, number, SyscallArgs::default());
         assert_ne!(
             result.error,

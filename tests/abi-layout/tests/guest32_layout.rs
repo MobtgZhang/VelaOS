@@ -2,9 +2,9 @@
 //!
 //! # What is being tested
 //!
-//! The `amiga/abi-guest32` crate is still a placeholder, so these tests
-//! exercise the reference implementation carried in this crate's library
-//! (`vela_test_abi_layout`). They assert two separate things:
+//! The `amiga/abi-guest32` crate defines the guest32 layouts; this crate
+//! re-exports them as `vela_test_abi_layout`, so these tests exercise the
+//! real definition rather than a copy of it. They assert two separate things:
 //!
 //! 1. **Layout** — the in-memory offsets of each 68k structure, which is
 //!    what a 68k program reads out of memory.

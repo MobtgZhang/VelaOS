@@ -78,14 +78,19 @@ pub const KERNEL_VIRT_SIZE: u64 = 0x1000_0000; // 256 MiB
 
 /// How much of physical memory the kernel reserves for its bump heap.
 ///
-/// 4 MiB is enough for the kernel's own structures — the frame bitmap, the
-/// scheduler's task tables, the Exec port lists — with room to spare.
+/// A full-screen window's back buffer is one `u32` per pixel: 1280x800 is
+/// 4 MiB on its own, and the desktop opens a screen-sized backdrop window as
+/// well as the windows on top of it. 32 MiB leaves room for the compositor's
+/// layers, the frame bitmap, the scheduler's task tables and the Exec port
+/// lists, all of which live in this heap. The bump allocator never reclaims,
+/// so the size is also the ceiling on how much window buffering a session may
+/// create.
 ///
 /// The *actual* heap the kernel uses is the one the loader reserved before
 /// `ExitBootServices`, and its address comes from the boot handoff. This
 /// constant is the size the memory plan asks for; the loader's reservation is
 /// the authority, and the two are checked against each other at boot.
-pub const KERNEL_HEAP_BYTES: u64 = 4 * 1024 * 1024;
+pub const KERNEL_HEAP_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The size of the kernel's boot stack, in bytes.
 ///
@@ -112,6 +117,12 @@ pub const EXIT_BAD_HANDOFF: u32 = 3;
 
 /// The exit status the kernel uses when physical memory cannot be planned.
 pub const EXIT_NO_MEMORY: u32 = 4;
+
+/// The exit status the kernel uses when the initrd is not a loadable program.
+///
+/// Distinct from [`EXIT_NO_MEMORY`] so a boot log says whether the machine
+/// ran out of frames or was handed the wrong image.
+pub const EXIT_BAD_INITRD: u32 = 5;
 
 /// Whether the kernel has finished booting.
 ///
@@ -312,9 +323,11 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     serial::puts("\n");
 
     // --- 7. Physical memory plan -------------------------------------------
-    // The bitmap must describe every frame from 0 to the highest address the
-    // map mentions, so its size is known before it can be placed.
-    let highest = map.highest_address();
+    // The bitmap must describe every frame the allocator can hand out, so its
+    // size is known before it can be placed: the highest *allocatable*
+    // address, not the highest address the map mentions. The map's device
+    // windows sit far above RAM and must not inflate the bitmap.
+    let highest = map.highest_allocatable_address();
     let frame_count = highest / PAGE_SIZE;
     let bitmap_bytes = frame_count.div_ceil(64) * 8;
 
@@ -650,9 +663,20 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
 
     // Switch to the new address space. From here on, the kernel runs from the
     // higher half.
+    //
+    // The space is leaked rather than left as a local because user address
+    // spaces are built by cloning its supervisor mappings: the clone needs a
+    // `'static` source, and the kernel's own page tables must outlive every
+    // task in any case. `Box::leak` expresses that lifetime once, here, rather
+    // than making every later user of the space pretend it has one.
+    let space: &'static AddressSpace = Box::leak(Box::new(space));
     // SAFETY: the space is built, its tables live in the heap, and it stays
     // alive for the rest of the kernel's life.
-    unsafe { activate(&space) };
+    unsafe { activate(space) };
+    // Hand the space to the syscall layer so that a task's space can inherit
+    // the kernel mappings. This must happen before any user program is loaded.
+    // SAFETY: the space is leaked, so the reference outlives the kernel.
+    unsafe { vela_kernel_syscall::task_space::install_kernel_space(space) };
 
     // --- 10. Segments ------------------------------------------------------
     //
@@ -713,10 +737,20 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     let intuition: &'static vela_kernel_intuition::Intuition = Box::leak(Box::new(
         vela_kernel_intuition::Intuition::new(screen_width, screen_height),
     ));
+    // The icon and Workbench services. Both are kernel-owned registries of
+    // opaque handles, so a user program never sees a kernel pointer.
+    let icon: &'static vela_kernel_icon::IconService =
+        Box::leak(Box::new(vela_kernel_icon::IconService::new()));
+    let workbench: &'static vela_kernel_workbench::Workbench =
+        Box::leak(Box::new(vela_kernel_workbench::Workbench::new()));
     let table: &'static DispatchTable = Box::leak(Box::new(builtin_table()));
     // SAFETY: the kernel is single-CPU and this runs once, during boot,
     // before any user code runs.
-    unsafe { vela_kernel_syscall::dispatch::install(exec, dos, graphics, intuition, table) };
+    unsafe {
+        vela_kernel_syscall::dispatch::install(
+            exec, dos, graphics, intuition, icon, workbench, table,
+        )
+    };
     serial::puts("VELA-KERNEL: services installed\n");
     serial::puts("VELA-KERNEL: screen ");
     serial::puts_dec(screen_width as u64);
@@ -728,14 +762,133 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     serial::puts("VELA-KERNEL: VelaOS 0.1.0 ready\n");
     BOOTED.store(true, Ordering::Release);
 
-    // --- 11. Idle -----------------------------------------------------------
-    // The kernel has no userland yet (that is Phase 4), so it idles with
-    // interrupts enabled. The timer tick keeps the machine alive and gives
-    // the boot-smoke test something to observe.
+    // --- 11. Ring 3 ---------------------------------------------------------
+    //
+    // The banner is printed *before* the first user instruction so that a
+    // program that faults on its very first instruction still leaves a boot
+    // log that says how far the machine got. The boot smoke test keys on this
+    // marker for the same reason.
+    if boot_info.initrd_paddr != 0 && boot_info.initrd_bytes > 0 {
+        serial::puts("VELA-KERNEL: starting init from ");
+        serial::puts_hex(boot_info.initrd_paddr);
+        serial::puts(" (");
+        serial::puts_dec(boot_info.initrd_bytes);
+        serial::puts(" bytes)\n");
+        start_init(&boot_info, heap, exec);
+    } else {
+        serial::puts("VELA-KERNEL: no initrd; idling\n");
+    }
+
+    // --- 12. Idle -----------------------------------------------------------
+    // Reached when there is no user program to run. If `init` is present the
+    // machine never gets here: `enter_user` does not return, and the program
+    // powers the machine off when its session ends.
     loop {
         // SAFETY: halting with interrupts enabled wakes on the next tick.
         regs::hlt();
     }
+}
+
+/// Load and enter the first user program.
+///
+/// # What this does, in order
+///
+/// 1. Copies the initrd bytes out of the loader's pool. The pool is inside
+///    the kernel's identity map, so a physical address is directly readable.
+/// 2. Creates a task and makes it current, so the first syscall reports the
+///    right caller.
+/// 3. Builds the user address space. It inherits the kernel's supervisor
+///    mappings, which is what lets a syscall or interrupt continue running
+///    under the program's `CR3`.
+/// 4. Registers the space and gives the task a ring-0 stack for the TSS to
+///    switch to on an interrupt taken from ring 3.
+/// 5. Activates the space, builds the `iretq` frame on the user stack, and
+///    drops to ring 3.
+///
+/// # Why every failure powers the machine off
+///
+/// There is no shell to return to and no second process to report to. A
+/// kernel that idled after failing to start `init` would look identical to a
+/// desktop that had simply drawn nothing, which is the hardest kind of boot
+/// failure to diagnose. Each failure names itself on the serial log and stops
+/// with a distinct status.
+fn start_init(
+    boot_info: &VelaBootInfo,
+    heap: &'static KernelHeap,
+    exec: &'static vela_kernel_exec::Exec,
+) -> ! {
+    // SAFETY: the loader guarantees the initrd's bytes are in the pool, the
+    // pool is inside the kernel's identity map, and the length came from the
+    // same handoff that named the address.
+    let image = unsafe {
+        core::slice::from_raw_parts(
+            boot_info.initrd_paddr as *const u8,
+            boot_info.initrd_bytes as usize,
+        )
+    };
+
+    let Some(frames) = vela_kernel_syscall::task_space::frames() else {
+        serial::puts("VELA-KERNEL: no frame allocator is installed for user space\n");
+        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+    };
+
+    let task = exec.create_task();
+    exec.set_current_task(task);
+
+    // SAFETY: `frames` is the kernel's allocator, installed above, and `image`
+    // is a complete ELF file in the loader's pool.
+    let (space, loaded) =
+        match unsafe { vela_kernel_syscall::userspace::load_user_program(image, frames) } {
+            Ok(pair) => pair,
+            Err(e) => {
+                serial::puts("VELA-KERNEL: cannot load init: ");
+                serial::puts(&e.to_string());
+                serial::puts("\n");
+                vela_hal_x86_64::qemu_exit::power_off(EXIT_BAD_INITRD);
+            }
+        };
+
+    let space = alloc::sync::Arc::new(space);
+    vela_kernel_syscall::task_space::spaces().insert(task, alloc::sync::Arc::clone(&space));
+
+    // The TSS's `RSP0` is the stack the CPU switches to on an interrupt taken
+    // from ring 3. It must be a kernel address; the program cannot reach or
+    // change it. It lives in the heap, which the user space inherited, so it
+    // stays mapped across the CR3 switch.
+    let stack_base = heap.alloc(KERNEL_STACK_BYTES as usize, 16).unwrap_or(0);
+    if stack_base == 0 {
+        serial::puts("VELA-KERNEL: cannot allocate init's kernel stack\n");
+        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+    }
+    // SAFETY: the stack is live heap memory, it is not aliased, and this runs
+    // once before any ring-3 code exists.
+    unsafe { vela_hal_x86_64::gdt::set_ring0_stack(stack_base as u64 + KERNEL_STACK_BYTES) };
+    // The syscall stub needs a kernel stack of its own: the user's stack is
+    // under the program's control and must not be trusted by a handler. It
+    // reuses the interrupt stack, which is safe because `syscall` clears the
+    // interrupt-enable flag.
+    vela_kernel_syscall::gate::set_kernel_stack(stack_base as u64 + KERNEL_STACK_BYTES);
+
+    // SAFETY: the space is registered and stays alive through the registry's
+    // `Arc`. The current CPU is the only one that will run in it.
+    unsafe { activate(space.address_space()) };
+
+    // SAFETY: the image was loaded at `loaded.entry`, and the user stack is
+    // mapped by the loader. The context is written into that stack before the
+    // switch.
+    let context = unsafe {
+        vela_kernel_syscall::userspace::user_context(
+            loaded.entry,
+            vela_kernel_syscall::userspace::USER_STACK_TOP,
+        )
+    };
+
+    serial::puts("VELA-KERNEL: entering user mode at ");
+    serial::puts_hex(loaded.entry);
+    serial::puts("\n");
+    // SAFETY: the context is a valid `iretq` frame in the active space, and
+    // the GDT and TSS are installed. This does not return.
+    unsafe { vela_kernel_syscall::userspace::enter_user(context) }
 }
 
 /// One piece of the kernel's identity map.
@@ -1082,7 +1235,7 @@ mod tests {
         // A power-of-two heap size makes the alignment of the bump pointer
         // trivial and the reservation easy to reason about.
         assert_eq!(KERNEL_HEAP_BYTES & (KERNEL_HEAP_BYTES - 1), 0);
-        assert_eq!(KERNEL_HEAP_BYTES, 4 * 1024 * 1024);
+        assert_eq!(KERNEL_HEAP_BYTES, 32 * 1024 * 1024);
     }
 
     #[test]

@@ -167,6 +167,55 @@ impl Node {
             *self.table.0.get_unchecked_mut(index) = entry;
         }
     }
+
+    /// Deep-copy this subtree into fresh tables.
+    ///
+    /// A naive entry copy would copy the *physical addresses* of the source's
+    /// lower tables, so the clone would share the source's tables instead of
+    /// owning its own. That is not merely a lifetime problem: a user address
+    /// space must be able to add and remove its own mappings without changing
+    /// the kernel's, and two tasks must not see each other's user pages.
+    ///
+    /// So each table is allocated fresh and every table-pointer entry is
+    /// rewritten to name the new child's physical address. Leaf entries — 4 KiB
+    /// pages and the 2 MiB pages the kernel's identity map uses — are copied
+    /// verbatim.
+    fn deep_clone(&self, phys_of: fn(*const u8) -> u64) -> Self {
+        let mut out = Node::new();
+        for index in 0..ENTRIES_PER_TABLE {
+            let entry = self.read(index);
+            if !entry.is_present() {
+                continue;
+            }
+            if entry.is_table_pointer() {
+                let Some(child) = self.children[index].as_deref() else {
+                    // A table-pointer entry with no child is not something the
+                    // tree constructors produce. Leaving the entry out would
+                    // silently drop a mapping; keeping the original address
+                    // would alias the source's table. Neither is acceptable, so
+                    // the inconsistency is caught in debug builds.
+                    debug_assert!(false, "a table pointer without a child table");
+                    continue;
+                };
+                let cloned = child.deep_clone(phys_of);
+                let child_pa = phys_of(cloned.table.0.as_ptr() as *const u8);
+                // Preserve every flag — including the software `AVAILABLE`
+                // marker that identifies a pointer — and replace only the
+                // address.
+                out.write(
+                    index,
+                    PageTableEntry(
+                        (child_pa & entry_flags::ADDRESS_MASK)
+                            | (entry.0 & !entry_flags::ADDRESS_MASK),
+                    ),
+                );
+                out.children[index] = Some(Box::new(cloned));
+            } else {
+                out.write(index, entry);
+            }
+        }
+        out
+    }
 }
 
 /// A whole address space: a PML4 and the tables reachable from it.
@@ -223,8 +272,53 @@ impl AddressSpace {
             lock: Mutex::new(()),
             phys_of: identity_phys,
         };
-        space.ensure_path(KERNEL_VIRTUAL_BASE);
+        space.ensure_path(KERNEL_VIRTUAL_BASE, false);
         space
+    }
+
+    /// Create a user address space that inherits every supervisor mapping.
+    ///
+    /// # Why the kernel must be reachable from a user CR3
+    ///
+    /// There is no address-space switch on the syscall path: `syscall` changes
+    /// the privilege level but leaves `CR3` alone, and an interrupt likewise
+    /// continues to use the tables the interrupted code was running under. A
+    /// user space therefore has to contain the kernel's own mappings or the
+    /// first syscall or timer tick would fault before the kernel could even
+    /// print a diagnostic.
+    ///
+    /// The inherited mappings are *supervisor* pages. They are present but not
+    /// user-accessible, so inheriting them does not give a program any access
+    /// it did not have: the low identity map and the device windows are mapped
+    /// without the `USER` bit, and the higher-half kernel image is outside the
+    /// user half entirely.
+    ///
+    /// # Why a deep clone rather than a shared PML4
+    ///
+    /// User mappings are added and removed per task, so two spaces cannot share
+    /// the lower tables that contain them. The kernel's *own* subtrees are
+    /// immutable after boot, but the root's children are not: a shared root
+    /// would make every task's user mapping visible to the others. Cloning
+    /// keeps each task's tree private while still copying the kernel's fixed
+    /// leaves into it.
+    ///
+    /// # Where the user mappings go
+    ///
+    /// Because the identity map covers physical RAM at its own addresses, a
+    /// program cannot be placed anywhere inside RAM without colliding with it.
+    /// The user image base and the stack are therefore above every physical
+    /// window; see `kernel/syscall::task_space`.
+    pub fn with_kernel_mappings(id: AddressSpaceId, kernel: &AddressSpace) -> Self {
+        Self {
+            id,
+            root: kernel.root.deep_clone(kernel.phys_of),
+            // The clone contains the same number of leaf mappings as the
+            // source. Counting them here keeps the diagnostic honest; user
+            // mappings added later increment it as usual.
+            mapped_frames: AtomicUsize::new(kernel.mapped_frames.load(Ordering::Relaxed)),
+            lock: Mutex::new(()),
+            phys_of: kernel.phys_of,
+        }
     }
 
     /// This space's identity, which is also the physical base of its PML4 once
@@ -261,18 +355,25 @@ impl AddressSpace {
     }
 
     /// Create every table on the path to `va`. Caller holds the lock.
-    fn ensure_path(&self, va: u64) {
+    fn ensure_path(&self, va: u64, user: bool) {
         let _guard = self.lock.lock();
-        self.ensure_path_locked(va, INTERMEDIATE_LEVELS.len());
+        self.ensure_path_locked(va, INTERMEDIATE_LEVELS.len(), user);
     }
 
     /// Create the tables on the path to `va`, down to `depth` levels.
-    fn ensure_path_to_depth(&self, va: u64, depth: usize) {
+    fn ensure_path_to_depth(&self, va: u64, depth: usize, user: bool) {
         let _guard = self.lock.lock();
-        self.ensure_path_locked(va, depth);
+        self.ensure_path_locked(va, depth, user);
     }
 
     /// Create the tables on the path to `va`, down to `depth` levels.
+    ///
+    /// `user` makes every intermediate entry on the path user-accessible. The
+    /// CPU checks the `USER` bit at *every* level, not only at the leaf, so a
+    /// user page whose PML4 or page-directory entry is supervisor-only is
+    /// unreachable from ring 3: the walk itself is a protection violation.
+    /// Kernel paths pass `false`, which is what keeps a userspace walk from
+    /// leaving the kernel half even transiently.
     ///
     /// `depth` counts the levels *below* the root, so `1` creates only the
     /// PDPT, `2` creates the PDPT and the page directory, and `3` creates the
@@ -288,7 +389,7 @@ impl AddressSpace {
     /// Creating the page table costs 8 KiB of heap per 2 MiB slot as well,
     /// which for a 512 MiB identity map is 2 MiB of heap spent on tables the
     /// hardware never reads.
-    fn ensure_path_locked(&self, va: u64, depth: usize) {
+    fn ensure_path_locked(&self, va: u64, depth: usize, user: bool) {
         let mut node = &self.root as *const Node as *mut Node;
         // SAFETY: the lock is held for the whole walk, and every `children`
         // entry is created here under the same lock.
@@ -328,22 +429,30 @@ impl AddressSpace {
                     // page-table entry, and it must be the table's address.
                     let child_pa = (self.phys_of)(child.table.0.as_ptr() as *const u8);
                     (*node).children[index] = Some(child);
-                    // Intermediate entries are always supervisor-present and
-                    // writable. Never `user`: a userspace walk must not be able
-                    // to leave the kernel half even transiently.
+                    // Intermediate entries are supervisor-present and
+                    // writable by default. A user path additionally needs
+                    // `USER` here, because the CPU checks that bit at every
+                    // level; see this function's documentation.
                     //
                     // The `AVAILABLE` bit marks the entry as a table pointer
                     // rather than a leaf, which is how `find_leaf_locked`
                     // tells the two apart.
-                    (*node).write(
-                        index,
-                        PageTableEntry(
-                            child_pa
-                                | entry_flags::PRESENT
-                                | entry_flags::WRITABLE
-                                | entry_flags::AVAILABLE,
-                        ),
-                    );
+                    let mut entry = child_pa
+                        | entry_flags::PRESENT
+                        | entry_flags::WRITABLE
+                        | entry_flags::AVAILABLE;
+                    if user {
+                        entry |= entry_flags::USER;
+                    }
+                    (*node).write(index, PageTableEntry(entry));
+                } else if user {
+                    // The path already exists (a second user page in the same
+                    // 2 MiB region, or a user page sharing a table with an
+                    // earlier mapping). It must still be user-traversable.
+                    let existing = (*node).read(index);
+                    if existing.0 & entry_flags::USER == 0 {
+                        (*node).write(index, PageTableEntry(existing.0 | entry_flags::USER));
+                    }
                 }
                 node = (*node).children[index].as_deref_mut().unwrap() as *mut Node;
             }
@@ -389,7 +498,7 @@ impl AddressSpace {
         if !pa.is_multiple_of(LARGE) {
             return Err(MapError::MisalignedPhysical);
         }
-        self.ensure_path_to_depth(va, 2);
+        self.ensure_path_to_depth(va, 2, flags.user);
         let _guard = self.lock.lock();
         // The page *directory* is the level a 2 MiB leaf lives in, so the
         // walk stops one level above the leaf table. The root is the PML4,
@@ -529,7 +638,7 @@ impl AddressSpace {
         if !pa.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::MisalignedPhysical);
         }
-        self.ensure_path(va);
+        self.ensure_path(va, flags.user);
         let _guard = self.lock.lock();
         let node = self.find_leaf_locked(va).ok_or(MapError::NotMapped)?;
         let index = PageLevel::PageTable.index(va);

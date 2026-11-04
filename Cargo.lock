@@ -431,11 +431,13 @@ dependencies = [
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
+ "vela-kernel-icon",
  "vela-kernel-input",
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-scheduler",
  "vela-kernel-syscall",
+ "vela-kernel-workbench",
  "vela-ramfs",
  "vela-renderer2d",
  "vela-text",
@@ -480,11 +482,13 @@ dependencies = [
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
+ "vela-kernel-icon",
  "vela-kernel-input",
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-memory",
  "vela-kernel-syscall",
+ "vela-kernel-workbench",
  "vela-ramfs",
 ]
 
@@ -504,6 +508,14 @@ dependencies = [
  "vela-boot-protocol",
  "vela-renderer2d",
  "vela-text",
+]
+
+[[package]]
+name = "vela-kernel-icon"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-abi-native64",
 ]
 
 [[package]]
@@ -561,15 +573,17 @@ version = "0.1.0"
 dependencies = [
  "spin",
  "vela-abi-native64",
+ "vela-elf-loader",
  "vela-hal-common",
  "vela-hal-x86_64",
- "vela-kernel-core",
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
+ "vela-kernel-icon",
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-vfs",
+ "vela-kernel-workbench",
  "vela-renderer2d",
  "vela-text",
 ]
@@ -579,6 +593,16 @@ name = "vela-kernel-vfs"
 version = "0.1.0"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "vela-kernel-workbench"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-exec",
+ "vela-kernel-intuition",
+ "vela-renderer2d",
 ]
 
 [[package]]
@@ -606,14 +630,17 @@ dependencies = [
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
+ "vela-kernel-icon",
  "vela-kernel-intuition",
  "vela-kernel-syscall",
+ "vela-kernel-workbench",
 ]
 
 [[package]]
 name = "vela-test-abi-layout"
 version = "0.1.0"
 dependencies = [
+ "vela-abi-guest32",
  "vela-abi-native64",
  "vela-boot-protocol",
 ]
@@ -623,6 +650,7 @@ name = "vela-test-api-conformance"
 version = "0.1.0"
 dependencies = [
  "vela-abi-native64",
+ "vela-hal-common",
  "vela-hosted",
  "vela-kernel-exec",
  "vela-kernel-graphics",
@@ -631,6 +659,7 @@ dependencies = [
  "vela-kernel-syscall",
  "vela-kernel-vfs",
  "vela-ramfs",
+ "vela-sys",
 ]
 
 [[package]]

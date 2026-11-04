@@ -113,6 +113,8 @@ fn harness() -> &'static vela_hosted::Kernel {
                 kernel.dos(),
                 kernel.graphics(),
                 kernel.intuition(),
+                kernel.icon(),
+                kernel.workbench(),
                 kernel.table(),
             )
         };

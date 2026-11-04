@@ -56,7 +56,12 @@ const KERNEL_STACK_PAGES: u64 = 32;
 /// kernel must know before it can build its own page tables, because the
 /// tables themselves live in it. The loader reserves it here and hands it
 /// over in the boot info.
-const KERNEL_HEAP_PAGES: u64 = 1024;
+///
+/// 8192 pages is 32 MiB, which is what `vela_kernel_entry::KERNEL_HEAP_BYTES`
+/// asks for. The two must agree: the kernel logs and uses the loader's
+/// reservation, and the constant is the plan the reservation is checked
+/// against. A full-screen 1280x800 window buffer alone is 4 MiB.
+const KERNEL_HEAP_PAGES: u64 = 8192;
 /// The kernel image is placed here: 1 MiB aligned, well clear of the low
 /// memory the firmware uses for itself.
 const KERNEL_LOAD_ADDR: u64 = 0x0040_0000;
@@ -173,6 +178,31 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
     };
     log::info!("kernel: {} bytes", kernel_bytes.len());
 
+    // The initrd is read here, before the pool is sized, so its pages are
+    // part of the reservation. Reading it later and hoping the pool had room
+    // was a sizing bug: the pool never grows, so an initrd that did not fit
+    // turned into a silent `OUT_OF_RESOURCES` after the kernel had already
+    // been placed.
+    let initrd = match entry_cfg.initrd_full_path() {
+        None => None,
+        Some(path) => {
+            let c = OwnedPath::new(&path);
+            match fs.read(c.as_cstr()) {
+                Ok(bytes) => {
+                    log::info!("initrd {path}: {} bytes", bytes.len());
+                    Some(bytes)
+                }
+                Err(_) => {
+                    log::warn!("initrd {path} not found");
+                    None
+                }
+            }
+        }
+    };
+    let initrd_pages = initrd
+        .as_ref()
+        .map_or(0, |bytes| (bytes.len() as u64).div_ceil(4096));
+
     // --- B-03: GOP and splash -----------------------------------------------
     let gop_handle =
         uefi::boot::get_handle_for_protocol::<GraphicsOutput>().map_err(|e| e.status())?;
@@ -278,6 +308,7 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
         + KERNEL_STACK_PAGES
         + LOADER_STACK_PAGES
         + KERNEL_HEAP_PAGES
+        + initrd_pages
         + table_pages
         + mem::size_of::<VelaBootInfo>() as u64;
     let mut pool = match pool::Pool::new(need_pages) {
@@ -370,28 +401,21 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
     let heap_bytes = KERNEL_HEAP_PAGES * 4096;
     log::info!("kernel heap {heap_bytes} bytes at {heap_paddr:#x}");
 
-    // --- initrd (optional) ---------------------------------------------------
-    let (initrd_paddr, initrd_len) = match entry_cfg.initrd_full_path() {
+    // --- initrd --------------------------------------------------------------
+    // `initrd` was read before the pool was sized; placing it is now only a
+    // copy into pages the reservation already contains.
+    let (initrd_paddr, initrd_len) = match initrd {
         None => (0u64, 0u64),
-        Some(path) => {
-            let c = OwnedPath::new(&path);
-            match fs.read(c.as_cstr()) {
-                Err(_) => {
-                    log::warn!("initrd {path} not found");
-                    (0, 0)
-                }
-                Ok(bytes) => {
-                    let len = bytes.len() as u64;
-                    let p = pool.alloc_pages(len, 8)?;
-                    // SAFETY: the pool was sized to include the initrd, and
-                    // `bytes` is a live allocation of exactly `len` bytes.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, len as usize);
-                    }
-                    log::info!("initrd {len} bytes at {p:#x}");
-                    (p, len)
-                }
+        Some(bytes) => {
+            let len = bytes.len() as u64;
+            let p = pool.alloc_pages(len, 8)?;
+            // SAFETY: the pool was sized to include `initrd_pages`, and
+            // `bytes` is a live allocation of exactly `len` bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, len as usize);
             }
+            log::info!("initrd {len} bytes at {p:#x}");
+            (p, len)
         }
     };
 

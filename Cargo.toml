@@ -68,6 +68,8 @@ vela-kernel-graphics = { path = "kernel/graphics" }
 vela-kernel-layers = { path = "kernel/layers" }
 vela-kernel-intuition = { path = "kernel/intuition" }
 vela-kernel-input = { path = "kernel/input" }
+vela-kernel-icon = { path = "kernel/icon" }
+vela-kernel-workbench = { path = "kernel/workbench" }
 vela-abi-native64 = { path = "amiga/abi-native64" }
 vela-abi-guest32 = { path = "amiga/abi-guest32" }
 vela-renderer2d = { path = "graphics/renderer2d" }

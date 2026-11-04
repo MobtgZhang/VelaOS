@@ -199,8 +199,15 @@ pub fn run_boot(root: &Path, image: &Path, tag: &str, timeout: Duration) -> Resu
     // exit: the desktop is designed to stay up. Once the markers are present
     // the VM has proven itself and can be stopped immediately; the deadline
     // still bounds a broken boot.
+    //
+    // Reaching the kernel banner is necessary but not sufficient in v0.1.0:
+    // the machine has to get into ring 3 and bring the desktop up. The
+    // userland markers are waited for *after* the banner, with the same
+    // deadline, so a kernel that boots and then hangs before `init` is a
+    // failure rather than a pass on the strength of its banner.
     let ready = vm.wait_for_markers(qemu::BOOT_MARKERS, timeout);
-    let stopped = if ready { true } else { vm.wait_for(1)? };
+    let userland = ready && vm.wait_for_markers(qemu::USERLAND_MARKERS, timeout);
+    let stopped = if userland { true } else { vm.wait_for(1)? };
     let serial = vm.serial_log();
     let debugcon = vm.debugcon_log();
 
@@ -224,15 +231,16 @@ pub fn run_boot(root: &Path, image: &Path, tag: &str, timeout: Duration) -> Resu
 /// loader that ran and then failed to hand off would satisfy it while the
 /// kernel banner is absent — so it can never stand in for the banner.
 pub fn assert_markers(outcome: &BootOutcome) -> Result<()> {
+    let clean = qemu::strip_ansi(&outcome.serial);
     let mut missing = Vec::new();
-    for marker in qemu::BOOT_MARKERS {
-        if !qemu::strip_ansi(&outcome.serial).contains(marker) {
+    for marker in qemu::BOOT_MARKERS.iter().chain(qemu::USERLAND_MARKERS) {
+        if !clean.contains(marker) {
             missing.push(*marker);
         }
     }
     if !missing.is_empty() {
         bail!(
-            "the boot did not produce every kernel marker.\n\
+            "the boot did not produce every kernel and userland marker.\n\
              Missing: {missing:?}\n{}",
             outcome.summary()
         );

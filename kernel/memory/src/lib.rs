@@ -306,6 +306,30 @@ impl MemoryMap {
         self.regions.iter().map(|r| r.end()).max().unwrap_or(0)
     }
 
+    /// The end of the highest region the frame allocator may hand out.
+    ///
+    /// This is *not* [`Self::highest_address`]. The firmware map mentions
+    /// device windows — a framebuffer BAR, an MMIO aperture at tens of
+    /// gigabytes — and those are reserved, so no frame inside them will ever
+    /// be allocated. Sizing the frame bitmap from the highest *mentioned*
+    /// address therefore describes gigabytes of memory that do not exist: on
+    /// a 512 MiB machine with a 12 GiB aperture it asks for a 32 MiB bitmap to
+    /// track 505 MiB of RAM, and carving that bitmap out of RAM is itself a
+    /// layout problem.
+    ///
+    /// The bitmap only has to cover frames the allocator can return, so the
+    /// highest *allocatable* region is the correct bound. Reserved regions
+    /// above it are ignored, which [`FrameAllocator::reserve_range`] already
+    /// tolerates: it clamps to the frame count.
+    pub fn highest_allocatable_address(&self) -> u64 {
+        self.regions
+            .iter()
+            .filter(|r| r.is_allocatable())
+            .map(|r| r.end())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// A human-readable summary, for the boot banner.
     pub fn summary(&self) -> alloc::string::String {
         let mut s = alloc::string::String::new();
@@ -916,9 +940,11 @@ impl MemoryPlan {
         heap_bytes: u64,
         must_reserve: &[(u64, u64)],
     ) -> Result<Self, PlanError> {
-        // The bitmap must describe every frame from the lowest to the highest
-        // address the map mentions, so the covered range is the map's extent.
-        let highest = map.highest_address();
+        // The bitmap must describe every frame the allocator can hand out, so
+        // its size is bounded by the highest *allocatable* address rather than
+        // by the highest address the map mentions. See
+        // [`MemoryMap::highest_allocatable_address`].
+        let highest = map.highest_allocatable_address();
         if map.usable_bytes() == 0 {
             return Err(PlanError::NothingUsable);
         }
@@ -1292,6 +1318,22 @@ mod tests {
         );
         assert_eq!(map.usable_bytes(), 16 * PAGE_SIZE);
         assert_eq!(map.highest_address(), 0x20_000 + 4 * PAGE_SIZE);
+    }
+
+    #[test]
+    fn the_allocatable_extent_ignores_device_windows() {
+        // A 512 MiB machine with a device BAR far above RAM: the bitmap must
+        // cover the RAM, not the BAR. Sizing it from the highest mentioned
+        // address is how a 32 MiB bitmap ends up describing 13 GiB of which
+        // 505 MiB exists.
+        let (buf, stride) = build_map(&[
+            (mem_type::CONVENTIONAL, 0x0, 16),
+            (mem_type::MMIO, 0x1_0000_0000, 4),
+            (mem_type::CONVENTIONAL, 0x20_000, 8),
+        ]);
+        let map = MemoryMap::parse(&buf, stride);
+        assert_eq!(map.highest_address(), 0x1_0000_0000 + 4 * PAGE_SIZE);
+        assert_eq!(map.highest_allocatable_address(), 0x20_000 + 8 * PAGE_SIZE);
     }
 
     #[test]

@@ -139,17 +139,23 @@ pub enum LibraryId {
     Dos = 4,
     /// `utility.library` — tags, string and list helpers.
     Utility = 5,
+    /// `icon.library` — disk icons and icon objects.
+    Icon = 6,
+    /// `workbench.library` — the desktop shell and its application hooks.
+    Workbench = 7,
 }
 
 impl LibraryId {
     /// Every library, in registry order.
-    pub const ALL: [LibraryId; 6] = [
+    pub const ALL: [LibraryId; 8] = [
         LibraryId::Exec,
         LibraryId::Graphics,
         LibraryId::Layers,
         LibraryId::Intuition,
         LibraryId::Dos,
         LibraryId::Utility,
+        LibraryId::Icon,
+        LibraryId::Workbench,
     ];
 
     /// The library's AmigaOS-style name, without the `.library` suffix.
@@ -164,6 +170,8 @@ impl LibraryId {
             Self::Intuition => "intuition",
             Self::Dos => "dos",
             Self::Utility => "utility",
+            Self::Icon => "icon",
+            Self::Workbench => "workbench",
         }
     }
 
@@ -176,6 +184,8 @@ impl LibraryId {
             Self::Intuition => "intuition.library",
             Self::Dos => "dos.library",
             Self::Utility => "utility.library",
+            Self::Icon => "icon.library",
+            Self::Workbench => "workbench.library",
         }
     }
 
@@ -191,6 +201,8 @@ impl LibraryId {
             Self::Intuition => 40,
             Self::Dos => 40,
             Self::Utility => 40,
+            Self::Icon => 40,
+            Self::Workbench => 40,
         }
     }
 
@@ -212,6 +224,8 @@ impl LibraryId {
             3 => Some(Self::Intuition),
             4 => Some(Self::Dos),
             5 => Some(Self::Utility),
+            6 => Some(Self::Icon),
+            7 => Some(Self::Workbench),
             _ => None,
         }
     }
@@ -712,7 +726,7 @@ impl Eq for Message {}
 ///
 /// Tags are how AmigaOS passes optional arguments: a list of them, terminated
 /// by `TAG_END`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 #[allow(
     non_snake_case,
@@ -1002,6 +1016,28 @@ pub struct AnchorPath {
 /// The size of an `AnchorPath`'s path buffer.
 pub const ANCHOR_PATH_BUF_LEN: usize = 256;
 
+impl AnchorPath {
+    /// An `AnchorPath` with no walk state: the first call of a walk.
+    ///
+    /// Every field is zeroed, including `ap_Buf`. The kernel fills the buffer
+    /// with the first entry it finds, and the caller resumes the walk by
+    /// passing the previous result back — or by passing `None`, in which case
+    /// the kernel reads this buffer itself.
+    pub const fn empty() -> Self {
+        Self {
+            ap_First: 0,
+            ap_FoundBreak: 0,
+            ap_Flags: 0,
+            ap_Reserved: 0,
+            ap_Strlen: 0,
+            ap_SearchFlags: 0,
+            ap_SegListBlock: 0,
+            ap_Reserved1: 0,
+            ap_Buf: [0; ANCHOR_PATH_BUF_LEN],
+        }
+    }
+}
+
 /// A library handle as seen by user space.
 ///
 /// A user process never receives a kernel pointer. It receives this opaque
@@ -1146,7 +1182,8 @@ mod tests {
         for lib in LibraryId::ALL {
             assert_eq!(LibraryId::from_raw(lib as u32), Some(lib));
         }
-        assert_eq!(LibraryId::from_raw(6), None);
+        // 8 and above are not in `ALL`: they name no library.
+        assert_eq!(LibraryId::from_raw(8), None);
         assert_eq!(LibraryId::from_raw(u32::MAX), None);
     }
 

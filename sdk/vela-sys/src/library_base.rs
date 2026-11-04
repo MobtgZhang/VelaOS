@@ -108,14 +108,36 @@ pub use tables::offset;
 /// A caller writes `library_base::exec::base()` rather than reaching through
 /// `library_base::tables::exec`: the generated module *is* the library, and
 /// `tables` is an implementation detail of how it is generated.
-pub use tables::{dos, exec, graphics, intuition, layers};
+pub use tables::{dos, exec, graphics, icon, intuition, layers, utility, workbench};
+
+/// The result of a jump-table call: a value and an error, in two registers.
+///
+/// # Why this is a struct rather than one packed `u64`
+///
+/// VelaOS user space is 64-bit and lives at 16 TiB, so a returned address is a
+/// full 64-bit value. Folding the error into the value's high half would
+/// silently truncate every such address to its low 32 bits — `brk` would report
+/// a break of zero, and the guest heap could never grow. Keeping the two in
+/// separate registers is the same shape as the syscall ABI itself: `rax` holds
+/// the value, `rdx` the error.
+///
+/// `#[repr(C)]` with two integer fields is returned in `rax:rdx` by the System
+/// V convention, which is exactly the register pair VelaOS uses.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Packed {
+    /// The call's value. A full 64 bits, including user pointers and breaks.
+    pub value: u64,
+    /// Zero on success, a negative [`crate::numbers::errors`] code otherwise.
+    pub error: i32,
+}
 
 /// The signature of a jump-table slot.
 ///
 /// `extern "sysv64"` because that is the convention VelaOS's stubs are built
 /// for, and it is what the kernel's syscall ABI is derived from: arguments in
-/// the System V integer registers, result in `rax`.
-pub type Slot = unsafe extern "sysv64" fn(u64, u64, u64, u64, u64, u64) -> u64;
+/// the System V integer registers, the value in `rax` and the error in `rdx`.
+pub type Slot = unsafe extern "sysv64" fn(u64, u64, u64, u64, u64, u64) -> Packed;
 
 /// How many slots every library's table has.
 ///
@@ -130,23 +152,21 @@ pub type JumpTable = [Slot; SLOTS];
 /// The size of one table slot, in bytes.
 pub const SLOT_SIZE: u16 = core::mem::size_of::<Slot>() as u16;
 
-/// Pack a value and an error into one `u64`.
+/// Pack a value and an error into a jump-table result.
 ///
-/// ```text
-///   bits  0..31  the value
-///   bits 32..63  the error, two's complement
-/// ```
-pub const fn pack(value: u64, error: i32) -> u64 {
-    ((error as u32 as u64) << 32) | (value & 0xFFFF_FFFF)
+/// The value keeps all 64 of its bits; the error travels beside it rather than
+/// in its high half. See [`Packed`] for why the value cannot be truncated.
+pub const fn pack(value: u64, error: i32) -> Packed {
+    Packed { value, error }
 }
 
-/// Split a jump table's packed return value.
+/// Split a jump table's result into its value and its error.
 ///
 /// The inverse of [`pack`], and the reason a VelaOS library function can
-/// report a NULL pointer *and* an error, which a single `u64` return could
+/// report a NULL pointer *and* an error, which a single return value could
 /// not express.
-pub const fn unpack(packed: u64) -> (u64, i32) {
-    (packed & 0xFFFF_FFFF, ((packed >> 32) as u32) as i32)
+pub const fn unpack(packed: Packed) -> (u64, i32) {
+    (packed.value, packed.error)
 }
 
 /// Issue a syscall and pack the result for a jump-table slot.
@@ -155,7 +175,7 @@ pub const fn unpack(packed: u64) -> (u64, i32) {
 ///
 /// The arguments are the caller's. Every pointer among them is validated by
 /// the kernel, so a bad one is an error rather than a fault.
-pub(crate) unsafe fn issue(number: u64, args: [u64; 6]) -> u64 {
+pub(crate) unsafe fn issue(number: u64, args: [u64; 6]) -> Packed {
     // SAFETY: forwarded from the caller, which makes the same promise.
     let result = unsafe { crate::syscall::syscall(number, args) };
     pack(result.value, result.error)
@@ -233,7 +253,7 @@ unsafe extern "sysv64" fn filler_stub(
     _a3: u64,
     _a4: u64,
     _a5: u64,
-) -> u64 {
+) -> Packed {
     pack(0, crate::numbers::errors::NOT_IMPLEMENTED)
 }
 
@@ -313,9 +333,9 @@ fn table_start(id: LibraryId) -> Option<usize> {
         LibraryId::Layers => tables::layers::TABLE.as_ptr() as usize,
         LibraryId::Intuition => tables::intuition::TABLE.as_ptr() as usize,
         LibraryId::Dos => tables::dos::TABLE.as_ptr() as usize,
-        // `utility.library` is not implemented, and giving it a table would
-        // imply otherwise.
-        LibraryId::Utility => return None,
+        LibraryId::Utility => tables::utility::TABLE.as_ptr() as usize,
+        LibraryId::Icon => tables::icon::TABLE.as_ptr() as usize,
+        LibraryId::Workbench => tables::workbench::TABLE.as_ptr() as usize,
     };
     Some(start)
 }
@@ -443,7 +463,7 @@ impl LibraryBase {
     /// filler, which reports `NOT_IMPLEMENTED`. The failure mode of a wrong
     /// offset is therefore a clear error — not a call through a wild pointer,
     /// and not a silent call to some *other* function.
-    pub unsafe fn call(self, offset: i16, args: [u64; 6]) -> u64 {
+    pub unsafe fn call(self, offset: i16, args: [u64; 6]) -> Packed {
         if self.is_null() {
             return pack(0, crate::numbers::errors::NO_OBJECT);
         }
@@ -473,12 +493,15 @@ impl LibraryBase {
         // Each table is an immutable `static`, so a shared reference to one is
         // sound for the rest of the program's life.
         {
-            let tables: [(&'static JumpTable, Layout); 5] = [
+            let tables: [(&'static JumpTable, Layout); 8] = [
                 (&tables::exec::TABLE, tables::exec::LAYOUT),
                 (&tables::graphics::TABLE, tables::graphics::LAYOUT),
                 (&tables::intuition::TABLE, tables::intuition::LAYOUT),
                 (&tables::layers::TABLE, tables::layers::LAYOUT),
                 (&tables::dos::TABLE, tables::dos::LAYOUT),
+                (&tables::utility::TABLE, tables::utility::LAYOUT),
+                (&tables::icon::TABLE, tables::icon::LAYOUT),
+                (&tables::workbench::TABLE, tables::workbench::LAYOUT),
             ];
             debug_assert_eq!(tables.len(), TABLE_PTRS.len());
             for (table, layout) in tables {
@@ -526,11 +549,16 @@ mod tests {
     }
 
     #[test]
-    fn utility_library_has_no_base() {
-        // It is not implemented, and a base for it would imply otherwise.
-        // SAFETY: a utility handle resolves to a library with no table.
+    fn utility_library_has_a_base() {
+        // `utility.library` used to be the one library with no table, which
+        // is why opening it produced a null base. It has a real jump table
+        // now, so the base must resolve — and the test that used to assert
+        // the opposite is what would catch a table being removed again.
+        // SAFETY: utility's own handle, which is what `open` documents.
         let base = unsafe { open(LibraryId::Utility.handle()) };
-        assert!(base.is_null());
+        assert!(!base.is_null(), "utility.library must have a base");
+        assert_eq!(base.name(), "utility.library");
+        assert_eq!(base.layout.count as usize, tables::utility::OFFSETS.len());
         assert_eq!(LibraryBase::NULL.name(), "none");
     }
 
@@ -769,9 +797,12 @@ mod tests {
             (u32::MAX as u64, crate::numbers::errors::BAD_POINTER),
             (7, -1),
             (0x8000_0000, -2),
+            // The regression this ABI exists for: a 16 TiB user address must
+            // survive the trip through a jump-table result.
+            (0x0000_4000_0000_0000, 0),
         ] {
             let (got_value, got_error) = unpack(pack(value, error));
-            assert_eq!(got_value, value & 0xFFFF_FFFF, "value for error {error}");
+            assert_eq!(got_value, value, "value for error {error}");
             assert_eq!(got_error, error, "error");
         }
     }
@@ -780,7 +811,7 @@ mod tests {
     fn the_tables_are_distinct_addresses() {
         // If two libraries shared a table, opening one would change what the
         // other calls.
-        let mut starts: [usize; 5] = core::array::from_fn(|i| table_start(TABLES[i].0).unwrap());
+        let mut starts: [usize; 8] = core::array::from_fn(|i| table_start(TABLES[i].0).unwrap());
         starts.sort_unstable();
         for pair in starts.windows(2) {
             assert_ne!(

@@ -15,4 +15,11 @@ vela-kernel-intuition.workspace = true
 vela-kernel-layers.workspace = true
 vela-kernel-syscall.workspace = true
 vela-kernel-vfs.workspace = true
+vela-hal-common.workspace = true
 vela-ramfs.workspace = true
+# The SDK, for the libraries whose conformance is a property of the whole
+# chain: IDL → jump table → stub → syscall → handler. Driving `utility.library`
+# through `vela_sys::api` is the only way to assert that chain end to end;
+# dispatching the syscall by hand would assert the handler and nothing about
+# the table that reaches it.
+vela-sys.workspace = true

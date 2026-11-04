@@ -28,6 +28,6 @@ indistinguishable from a working call.
 | `MakeDir` | 263 | `implemented` | — | Creates a directory in an existing parent. |
 | `Examine` | 264 | `implemented` | — | Fills in a `FileInfo` in user space. |
 | `CurrentDir` | 265 | `implemented` | — | Returns the process's current directory as a NUL-terminated string. |
-| `ExamineDir` | 266 | `implemented` | — | Walks a directory from an anchor path. |
+| `ExamineDir` | 266 | `verified` | `dos_examine_dir_walks_a_directory_from_an_anchor` | Walks a directory one entry per call, resuming from the anchor it wrote. |
 
-**Summary:** 5 of 11 entries are `verified`.
+**Summary:** 6 of 11 entries are `verified`.

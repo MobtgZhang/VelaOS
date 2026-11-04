@@ -85,7 +85,7 @@ pub fn session() -> ! {
     use vela_init::run;
     use vela_sys::api;
 
-    log("init: starting");
+    log("init: starting\n");
 
     let report = run();
     log("init: RAM:");

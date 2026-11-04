@@ -12,9 +12,10 @@
 //!
 //! # The tests that keep the two in step
 //!
-//! `api-conformance` asserts that every number here matches the kernel's, and
-//! that every kernel number has a stub. That test is the real enforcement;
-//! this comment is the explanation.
+//! `api-conformance`'s `numbers_parity` test asserts that every syscall number
+//! and every error code here matches the kernel's. The SDK's build script
+//! additionally checks the IDL's numbers against this table. Those two checks
+//! are the real enforcement; this comment is the explanation.
 
 /// `exec.library`: create a message port.
 pub const CREATE_MSG_PORT: u64 = 0;
@@ -56,6 +57,8 @@ pub const POWER_OFF: u64 = 17;
 pub const MAP_PAGE: u64 = 18;
 /// `exec.library`: move the program break.
 pub const BRK: u64 = 19;
+/// `exec.library`: put a port into service and report its signal mask.
+pub const ADD_PORT: u64 = 20;
 
 /// The size of a program page, in bytes.
 ///
@@ -169,6 +172,94 @@ pub const U_STRNCPY: u64 = 321;
 /// `utility.library`: compare two strings.
 pub const U_STRCMP: u64 = 322;
 
+/// `icon.library`: find an icon by name.
+pub const ICON_GET_DISK_OBJECT: u64 = 384;
+/// `icon.library`: find an icon, creating a default if absent.
+pub const ICON_GET_DISK_OBJECT_NEW: u64 = 385;
+/// `icon.library`: save an icon under a name.
+pub const ICON_PUT_DISK_OBJECT: u64 = 386;
+/// `icon.library`: release an icon handle.
+pub const ICON_FREE_DISK_OBJECT: u64 = 387;
+/// `icon.library`: copy an icon into a new handle.
+pub const ICON_DUP_DISK_OBJECT: u64 = 388;
+/// `icon.library`: remove an icon by name.
+pub const ICON_DELETE_DISK_OBJECT: u64 = 389;
+/// `icon.library`: a copy of a default icon object.
+pub const ICON_GET_DEF_DISK_OBJECT: u64 = 390;
+/// `icon.library`: replace a default icon object.
+pub const ICON_PUT_DEF_DISK_OBJECT: u64 = 391;
+/// `icon.library`: a fresh default icon object.
+pub const ICON_NEW_DISK_OBJECT: u64 = 392;
+/// `icon.library`: look up a ToolType.
+pub const ICON_FIND_TOOL_TYPE: u64 = 393;
+/// `icon.library`: compare a ToolType's value.
+pub const ICON_MATCH_TOOL_VALUE: u64 = 394;
+/// `icon.library`: copy an icon's tags into a user buffer.
+pub const ICON_GET_ICON_TAG_LIST: u64 = 395;
+/// `icon.library`: replace an icon's tags from a user list.
+pub const ICON_PUT_ICON_TAG_LIST: u64 = 396;
+/// `icon.library`: increment an icon's revision.
+pub const ICON_BUMP_REVISION: u64 = 397;
+/// `icon.library`: set an icon's rectangle.
+pub const ICON_LAYOUT_ICON: u64 = 398;
+/// `icon.library`: return an icon's rectangle.
+pub const ICON_GET_ICON_RECTANGLE: u64 = 399;
+/// `icon.library`: apply a control operation.
+pub const ICON_ICON_CONTROL: u64 = 400;
+/// `icon.library`: record an icon's selected state.
+pub const ICON_DRAW_ICON_STATE: u64 = 401;
+/// `icon.library`: remember an icon handle.
+pub const ICON_ADD_FREE_LIST: u64 = 402;
+/// `icon.library`: clear the remembered handles.
+pub const ICON_FREE_FREE_LIST: u64 = 403;
+/// `icon.library`: set the service's selected colour word.
+pub const ICON_CHANGE_TO_SELECTED_ICON_COLOR: u64 = 404;
+
+/// `workbench.library`: register an application icon.
+pub const WORKBENCH_ADD_APP_ICON: u64 = 448;
+/// `workbench.library`: register a Workbench menu item.
+pub const WORKBENCH_ADD_APP_MENU_ITEM: u64 = 449;
+/// `workbench.library`: register an application window.
+pub const WORKBENCH_ADD_APP_WINDOW: u64 = 450;
+/// `workbench.library`: register a drop zone on a window.
+pub const WORKBENCH_ADD_APP_WINDOW_DROP_ZONE: u64 = 451;
+/// `workbench.library`: close a Workbench object.
+pub const WORKBENCH_CLOSE_WORKBENCH_OBJECT: u64 = 452;
+/// `workbench.library`: the next registered icon after a cursor.
+pub const WORKBENCH_GET_NEXT_APP_ICON: u64 = 453;
+/// `workbench.library`: set whether an object is visible.
+pub const WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE: u64 = 454;
+/// `workbench.library`: send a notification to the Workbench's port.
+pub const WORKBENCH_NOTIFY_WORKBENCH: u64 = 455;
+/// `workbench.library`: create and open a Workbench object.
+pub const WORKBENCH_OPEN_WORKBENCH_OBJECT: u64 = 456;
+/// `workbench.library`: toggle path quoting.
+pub const WORKBENCH_QUOTE_WORKBENCH: u64 = 457;
+/// `workbench.library`: register the Workbench's owner and port.
+pub const WORKBENCH_REGISTER_WORKBENCH: u64 = 458;
+/// `workbench.library`: remove an application icon.
+pub const WORKBENCH_REMOVE_APP_ICON: u64 = 459;
+/// `workbench.library`: remove a menu item.
+pub const WORKBENCH_REMOVE_APP_MENU_ITEM: u64 = 460;
+/// `workbench.library`: remove an application window record.
+pub const WORKBENCH_REMOVE_APP_WINDOW: u64 = 461;
+/// `workbench.library`: remove a drop zone.
+pub const WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE: u64 = 462;
+/// `workbench.library`: send a message to a window's Exec port.
+pub const WORKBENCH_SEND_APP_WINDOW_MESSAGE: u64 = 463;
+/// `workbench.library`: mark the desktop as started.
+pub const WORKBENCH_START_WORKBENCH: u64 = 464;
+/// `workbench.library`: drop the registration.
+pub const WORKBENCH_UNREGISTER_WORKBENCH: u64 = 465;
+/// `workbench.library`: change an object's path and type.
+pub const WORKBENCH_UPDATE_WORKBENCH_OBJECT: u64 = 466;
+/// `workbench.library`: copy the configuration line into a user buffer.
+pub const WORKBENCH_WB_CONFIG: u64 = 467;
+/// `workbench.library`: copy the information line into a user buffer.
+pub const WORKBENCH_WB_INFO: u64 = 468;
+/// `workbench.library`: query a control value.
+pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
+
 /// The error codes the syscall layer returns.
 ///
 /// These are the AmigaOS `ERROR_*` values, so a program written against
@@ -216,4 +307,6 @@ pub mod errors {
     pub const BAD_RANGE: i32 = -31;
     /// The user string was not NUL-terminated within the limit.
     pub const BAD_STRING: i32 = -32;
+    /// The port did not exist.
+    pub const NO_PORT: i32 = -33;
 }

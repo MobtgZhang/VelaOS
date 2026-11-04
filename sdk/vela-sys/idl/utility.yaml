@@ -1,0 +1,62 @@
+# The `utility.library` IDL.
+#
+# One file per library, in the subset of YAML the SDK's build script parses.
+# The script reads `library`, `prefix` and a `functions` list whose entries
+# have `name`, `lvo`, `offset`, `stub`, `syscall`, `number`, `kernel` and
+# `status` keys.
+#
+# The `lvo` values are the library vector offsets: negative, and one 8-byte
+# word apart, so that `base + lvo` addresses the jump-table slot that holds
+# the function. The build script *checks* that spacing and refuses to
+# generate anything if it does not hold, which is what makes the table
+# coherent by construction rather than by review.
+#
+# The `offset` value is the AmigaOS spelling of the function's name, without
+# underscores — `PUTMSG`, `OPENWINDOW` — because that is the name a ported
+# program is already using. The generated constant is
+# `<PREFIX>_<OFFSET>_OFFSET`.
+#
+# The `stub` value is the generated stub function's name. It is spelled out
+# rather than derived because the stub names are the SDK's public API, and a
+# mechanical snake-case rule would have renamed `CreateMsgPort` to
+# `create_msg_port` and `FindTask` to `find_task` — neither of which is what
+# the SDK calls them.
+#
+# The `number` values are the kernel's syscall numbers. The build script
+# checks each one against the SDK's own `numbers.rs`, and the SDK's hosted
+# test checks each one against the kernel's `numbers` module — so a drift
+# between this file and the kernel is a build-time or test-time failure
+# rather than a wrong call at runtime.
+#
+# `syscall: none` marks a function the kernel does not expose. Its stub
+# reports `NOT_IMPLEMENTED` rather than issuing some other library's call,
+# because a stub that quietly did the wrong thing would be worse than one
+# that says it does nothing.
+
+library: utility.library
+prefix: UTILITY
+functions:
+  - name: FindTag
+    lvo: -24
+    offset: FINDTAG
+    stub: find_tag
+    syscall: U_FIND_TAG
+    number: 320
+    kernel: UTILITY_FIND_TAG
+    status: implemented
+  - name: StrNCpy
+    lvo: -16
+    offset: STRNCPY
+    stub: strncpy
+    syscall: U_STRNCPY
+    number: 321
+    kernel: UTILITY_STRNCPY
+    status: implemented
+  - name: StrCmp
+    lvo: -8
+    offset: STRCMP
+    stub: strcmp
+    syscall: U_STRCMP
+    number: 322
+    kernel: UTILITY_STRCMP
+    status: implemented

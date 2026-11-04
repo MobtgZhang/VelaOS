@@ -102,7 +102,7 @@ pub mod hosted;
 
 pub use api::power_off;
 pub use api::{Gadget, Port, Screen, Window};
-pub use library_base::{LibraryBase, Slot};
+pub use library_base::{LibraryBase, Packed, Slot};
 pub use syscall::SyscallResult;
 
 /// A failed call.
@@ -188,8 +188,8 @@ mod tests {
 
     #[test]
     fn a_packed_stub_result_carries_both_halves() {
-        // The jump table's return convention is the boundary's, narrowed to
-        // one register.
+        // The jump table's return convention is the boundary's: the value in
+        // one register, the error beside it in another.
         let packed = pack(0x1234, errors::NO_MESSAGE);
         let (value, error) = unpack(packed);
         assert_eq!(value, 0x1234);

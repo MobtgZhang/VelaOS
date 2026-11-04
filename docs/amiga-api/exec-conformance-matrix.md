@@ -32,11 +32,12 @@ indistinguishable from a working call.
 | `CloseLibrary` | 11 | `verified` | `exec_library_open_and_close` | Closing a handle that was never opened reports `NO_OBJECT`. |
 | `Forbid` | 12 | `verified` | `exec_forbid_and_permit_are_balanced` | Returns the new depth of the classic critical section. |
 | `Permit` | 13 | `verified` | `exec_forbid_and_permit_are_balanced` | Returns the remaining depth. |
-| `Yield` | 14 | `stub` | — | Returns zero without changing anything: a placeholder, not a scheduler yield. |
+| `Yield` | 14 | `verified` | `exec_yield_requeues_the_task_after_its_body` | Records the request; the scheduler requeues the caller after its body returns. |
 | `GetTaskID` | 15 | `verified` | `exec_get_task_id_returns_the_caller` | Returns the calling task's identifier. |
 | `PutChar` | 16 | `implemented` | — | Writes one byte to the console. |
 | `PowerOff` | 17 | `implemented` | — | Stops the machine through QEMU's debug-exit device. |
-| `MapPage` | 18 | `not-started` | — | The number is reserved; no handler is installed. |
-| `Brk` | 19 | `not-started` | — | The number is reserved; no handler is installed. |
+| `MapPage` | 18 | `verified` | `exec_map_page_maps_a_page_for_the_caller` | Maps one page into the calling task's own address space. |
+| `Brk` | 19 | `verified` | `exec_brk_grows_and_shrinks_the_break` | Returns the break actually in force; growing maps pages and shrinking releases them. |
+| `AddPort` | 20 | `verified` | `exec_add_port_reports_the_ports_signal_mask` | Returns the port's whole `mp_sig` mask; another task's port is `NOT_OWNER`. |
 
-**Summary:** 10 of 20 entries are `verified`.
+**Summary:** 14 of 21 entries are `verified`.
