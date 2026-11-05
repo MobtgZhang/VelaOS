@@ -448,8 +448,18 @@ name = "vela-init"
 version = "0.1.0"
 dependencies = [
  "vela-hosted",
+ "vela-shell",
  "vela-sys",
- "vela-workbench",
+]
+
+[[package]]
+name = "vela-kernel-console"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-hal-x86_64",
+ "vela-kernel-input",
+ "vela-text",
 ]
 
 [[package]]
@@ -478,6 +488,7 @@ dependencies = [
  "vela-boot-protocol",
  "vela-hal-common",
  "vela-hal-x86_64",
+ "vela-kernel-console",
  "vela-kernel-core",
  "vela-kernel-dos",
  "vela-kernel-exec",
@@ -576,6 +587,7 @@ dependencies = [
  "vela-elf-loader",
  "vela-hal-common",
  "vela-hal-x86_64",
+ "vela-kernel-console",
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
@@ -619,6 +631,14 @@ version = "0.1.0"
 dependencies = [
  "vela-boot-protocol",
  "vela-text",
+]
+
+[[package]]
+name = "vela-shell"
+version = "0.1.0"
+dependencies = [
+ "vela-hosted",
+ "vela-sys",
 ]
 
 [[package]]

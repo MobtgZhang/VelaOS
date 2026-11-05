@@ -64,8 +64,7 @@ pub const BOOT_MARKERS: &[&str] = &[
 pub const USERLAND_MARKERS: &[&str] = &[
     "VELA-KERNEL: entering user mode at",
     "init: starting",
-    "init: starting workbench",
-    "workbench: ready",
+    "init: starting shell",
 ];
 
 /// Marker the UEFI loader prints to the debug console.

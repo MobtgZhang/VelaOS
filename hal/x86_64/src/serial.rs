@@ -193,6 +193,23 @@ pub fn puts(s: &str) {
     }
 }
 
+/// Read one byte from the port, without blocking.
+///
+/// Returns `None` when no byte has arrived yet. The caller must hold no lock
+/// — the UART's line-status register is read directly, and the data register
+/// only when a byte is known to be waiting. This is what makes `GetChar` a
+/// poll rather than a block: a shell spins on it between redraws.
+pub fn getc() -> Option<u8> {
+    // SAFETY: `LSR` is the COM1 line-status register and is always readable.
+    let ready = unsafe { regs::inb(LSR) & LSR_DATA_READY != 0 };
+    if !ready {
+        return None;
+    }
+    // SAFETY: `DATA` is the COM1 data register; reading it when LSR says a
+    // byte is ready is the defined way to fetch it.
+    Some(unsafe { regs::inb(DATA) })
+}
+
 /// Write a hex number, no `0x` prefix, lowercase, without leading zeros.
 pub fn puts_hex(value: u64) {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";

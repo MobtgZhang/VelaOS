@@ -732,6 +732,20 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // nothing to write to.
     let (screen_width, screen_height, framebuffer) = display_geometry(&boot_info);
     install_framebuffer(framebuffer);
+    // The boot-time text console, over the same framebuffer. It renders the
+    // guest's `PutChar` output on the screen the user is looking at; without
+    // it the QEMU window stays silent and the boot log is serial-only.
+    // SAFETY: the geometry comes from the boot handoff via
+    // `display_geometry`, which the loader validated against the GOP, and
+    // the framebuffer is mapped for the kernel's life.
+    unsafe {
+        vela_kernel_console::init(
+            framebuffer.address,
+            framebuffer.width,
+            framebuffer.height,
+            framebuffer.stride_bytes,
+        );
+    }
     let graphics: &'static vela_kernel_graphics::Graphics =
         Box::leak(Box::new(vela_kernel_graphics::Graphics::new()));
     let intuition: &'static vela_kernel_intuition::Intuition = Box::leak(Box::new(

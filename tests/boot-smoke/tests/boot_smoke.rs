@@ -71,6 +71,58 @@ fn the_kernel_boots_and_reports_its_banner() {
     }
 }
 
+/// The keystrokes the round-trip test types, as QEMU `sendkey` names them.
+///
+/// `ver` — the shortest command whose response is unambiguous: the shell's
+/// version line appears nowhere else in the log, so its presence proves the
+/// machine answered *this* input rather than echoing something earlier.
+const ROUNDTRIP_KEYS: &[&str] = &["v", "e", "r", "ret"];
+
+/// The tag this test namespaces its image and sockets under.
+///
+/// Separate from [`TAG`] because the two tests run in parallel and the image
+/// builder stages its files under the tag's name — a shared tag would make
+/// the two builds race over the same staging tree.
+const KEYS_TAG: &str = "smoke-keys";
+
+#[test]
+fn the_shell_responds_to_keys_typed_into_the_machine() {
+    let root = smoke::workspace_root();
+
+    if let Some(reason) = smoke::precondition_failure() {
+        assert!(smoke::skip(&reason), "the skip must be reported as a skip");
+        return;
+    }
+
+    // --- build ------------------------------------------------------------
+    let image = match smoke::build_image(&root, KEYS_TAG, "dev") {
+        Ok(p) => p,
+        Err(e) => panic!("building the bootable image failed: {e:#}"),
+    };
+
+    // --- boot, type, wait for the response ---------------------------------
+    let serial = match smoke::run_shell_roundtrip(
+        &root,
+        &image,
+        KEYS_TAG,
+        ROUNDTRIP_KEYS,
+        "VelaOS 0.1.0",
+        BOOT_TIMEOUT,
+    ) {
+        Ok(s) => s,
+        Err(e) => panic!("the keyboard round trip failed: {e:#}"),
+    };
+
+    // The echo of the typed keys must be there too: the response without the
+    // echo would mean the shell printed its version for some other reason.
+    let clean = xtask::qemu::strip_ansi(&serial);
+    assert!(
+        clean.contains("vela>"),
+        "the shell's prompt never appeared on the console\n{}",
+        clean
+    );
+}
+
 #[test]
 fn the_environment_precondition_check_is_honest() {
     // The precondition check is what makes the test skippable, so it is worth

@@ -60,6 +60,12 @@ pub const BRK: u64 = 19;
 /// `exec.library`: put a port into service and report its signal mask.
 pub const ADD_PORT: u64 = 20;
 
+/// `exec.library`: read one byte from the console.
+///
+/// Returns the byte as the value, or `RANGE` when nothing has arrived yet.
+/// Polled, not blocking — a shell spins on it between redraws.
+pub const GETCHAR: u64 = 21;
+
 /// The size of a program page, in bytes.
 ///
 /// Mirrored from the kernel. `brk` is rounded to this granularity on both

@@ -29,7 +29,7 @@
 //! There is no `RunSeg` in v0.1.0, and adding one for a single user would be a
 //! mechanism with exactly one user and no second user to justify it. So the
 //! desktop is linked in and called, through one named function. The seam is
-//! deliberate: [`hand_over_to_desktop`] is the single line that becomes a
+//! deliberate: [`hand_over_to_shell`] is the single line that becomes a
 //! spawn when there is a second thing to spawn, and everything above it already
 //! returns — so the change is local rather than a redesign.
 //!
@@ -104,24 +104,23 @@ pub fn session() -> ! {
         api::power_off();
     }
 
-    log("init: starting workbench\n");
-    hand_over_to_desktop();
+    log("init: starting shell\n");
+    hand_over_to_shell();
 
-    // The desktop returned. In v0.1.0 that means it decided the session was
-    // over — most likely because the user closed the last window — so the
-    // machine stops rather than sitting on a desktop nobody is driving.
+    // The shell returned. In v0.1.0 that means the user typed `exit`, so the
+    // machine stops rather than sitting on a shell nobody is driving.
     log("init: session ended\n");
     api::power_off()
 }
 
-/// Where the desktop takes over.
+/// Where the shell takes over.
 ///
 /// A separate function so the *handover* is one identifiable step. When the
 /// desktop becomes a real second task, this body becomes the spawn and
 /// everything around it stays exactly where it is.
 #[cfg(target_os = "none")]
-fn hand_over_to_desktop() {
-    vela_workbench::run();
+fn hand_over_to_shell() {
+    vela_shell::Shell::new().run();
 }
 
 /// The bare-metal entry point.

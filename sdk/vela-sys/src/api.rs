@@ -487,6 +487,24 @@ pub fn putchar(byte: u8) -> Result<()> {
     check(packed).map(|_| ())
 }
 
+/// Read one byte from the console.
+///
+/// Returns the byte when one has arrived, or [`errors::RANGE`] when the
+/// console is idle. Polled, not blocking: a shell loops on this between
+/// redraws rather than sleeping the CPU.
+pub fn getchar() -> Result<u8> {
+    // SAFETY: no pointers among the arguments. `GETCHAR` is a raw syscall
+    // rather than a jump-table slot because adding it to the IDL would
+    // renumber every Exec LVO — an ABI break for a single console call.
+    let packed = unsafe { library_base::issue(crate::numbers::GETCHAR, [0, 0, 0, 0, 0, 0]) };
+    let (value, error) = unpack(packed);
+    if error == 0 {
+        Ok(value as u8)
+    } else {
+        Err(Error { code: error })
+    }
+}
+
 /// Write a string to the console, one byte at a time.
 ///
 /// Not a single syscall: the kernel's `PutChar` takes one byte, so this is the

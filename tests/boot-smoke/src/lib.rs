@@ -224,6 +224,72 @@ pub fn run_boot(root: &Path, image: &Path, tag: &str, timeout: Duration) -> Resu
     })
 }
 
+/// Boot `image`, wait for the shell's prompt, type the `keys` into the
+/// machine through the QEMU monitor, and return the serial log once the
+/// shell's response has appeared.
+///
+/// # Why this exercises the keyboard rather than the serial console
+///
+/// The shell reads its input through `GetChar`, which polls the PS/2
+/// controller — the keys a user types into the QEMU *window* — before the
+/// serial port. `sendkey` injects scancodes at the emulated keyboard, so the
+/// bytes this test's keystrokes produce travel the whole real path:
+/// controller → console poll → `GetChar` → shell → `PutChar`. A marker in
+/// the serial log afterwards proves the round trip, because the shell's
+/// response is written through the same `PutChar` call that drew it on the
+/// framebuffer.
+///
+/// # The guarantee
+///
+/// The same as [`run_boot`]: the [`Vm`] guard kills and reaps the child on
+/// every path out of this function, and the deadline bounds the run.
+pub fn run_shell_roundtrip(
+    root: &Path,
+    image: &Path,
+    tag: &str,
+    keys: &[&str],
+    response: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let paths = Paths::tagged(root, tag);
+    let vm = Vm::start(image, paths, false).context("starting QEMU")?;
+
+    // The shell must be at its prompt before the first key lands, or the
+    // bytes are read as noise by whatever is running instead.
+    anyhow::ensure!(
+        vm.wait_for_markers(qemu::BOOT_MARKERS, timeout),
+        "the kernel never reached its banner, so there is no shell to type into"
+    );
+    anyhow::ensure!(
+        vm.wait_for_markers(qemu::USERLAND_MARKERS, timeout),
+        "the userland never reached the shell"
+    );
+    // The prompt itself is printed by the shell just after the last marker;
+    // a short settle keeps the first keystroke from racing it.
+    std::thread::sleep(Duration::from_secs(1));
+
+    for key in keys {
+        vm.monitor_command(&format!("sendkey {key}"))?;
+        // QEMU needs the keystrokes separated; a burst can arrive as one
+        // packet the guest's poll reads out of order.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let seen = vm.wait_for_markers(&[response], timeout);
+    let serial = vm.serial_log();
+
+    // `vm` is dropped here — on every path — and its `Drop` kills and reaps
+    // the child, exactly as in `run_boot`.
+    drop(vm);
+
+    anyhow::ensure!(
+        seen,
+        "the shell never responded to the typed keys.\n--- serial log ---\n{}",
+        qemu::strip_ansi(&serial)
+    );
+    Ok(serial)
+}
+
 /// Assert that the boot produced the expected markers.
 ///
 /// The kernel's own banner is the authoritative signal. The loader's marker

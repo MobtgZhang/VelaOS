@@ -143,6 +143,17 @@ pub const BRK: u64 = 19;
 /// sleep through the others.
 pub const ADD_PORT: u64 = 20;
 
+/// `exec.library`: read one byte from the console.
+///
+/// The console is the same COM1 serial port [`PutChar`] writes to. A program
+/// that wants a command line needs a way to read the keys the user types, and
+/// this is that way: it returns the next available byte as a `u64` value with
+/// error `0`, or error [`errors::RANGE`] (-19) when no byte has arrived yet.
+/// Because the UART is polled (there is no receive interrupt in v0.1.0), the
+/// call does not block — a shell that wants to wait for input spins on this
+/// call between redraws.
+pub const GETCHAR: u64 = 21;
+
 /// `graphics.library`: reserve a pen in a palette.
 pub const GRAPHICS_ALLOC_PEN: u64 = 64;
 /// `graphics.library`: release a pen.
@@ -342,7 +353,7 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 21;
+pub const EXEC_COUNT: u64 = 22;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.
@@ -580,7 +591,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 114] = [
+    const ALL: [(u64, SyscallGroup); 115] = [
         (CREATE_MSG_PORT, SyscallGroup::Exec),
         (DELETE_MSG_PORT, SyscallGroup::Exec),
         (PUT_MSG, SyscallGroup::Exec),
@@ -602,6 +613,7 @@ mod tests {
         (MAP_PAGE, SyscallGroup::Exec),
         (BRK, SyscallGroup::Exec),
         (ADD_PORT, SyscallGroup::Exec),
+        (GETCHAR, SyscallGroup::Exec),
         (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
         (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
         (GRAPHICS_SET_PEN, SyscallGroup::Graphics),

@@ -11,6 +11,7 @@ members = [
   # kernel
   "kernel/entry",
   "kernel/core",
+  "kernel/console",
   "kernel/memory",
   "kernel/scheduler",
   "kernel/exec",
@@ -34,6 +35,7 @@ members = [
   # userland
   "sdk/vela-sys",
   "userland/init",
+  "userland/shell",
   "userland/workbench",
   "userland/apps/guitest",
   # tooling + tests
@@ -68,6 +70,7 @@ vela-kernel-graphics = { path = "kernel/graphics" }
 vela-kernel-layers = { path = "kernel/layers" }
 vela-kernel-intuition = { path = "kernel/intuition" }
 vela-kernel-input = { path = "kernel/input" }
+vela-kernel-console = { path = "kernel/console" }
 vela-kernel-icon = { path = "kernel/icon" }
 vela-kernel-workbench = { path = "kernel/workbench" }
 vela-abi-native64 = { path = "amiga/abi-native64" }
@@ -79,7 +82,7 @@ vela-ramfs = { path = "fs/ramfs" }
 vela-amiga-path = { path = "fs/amiga-path" }
 vela-sys = { path = "sdk/vela-sys" }
 vela-hosted = { path = "platforms/hosted" }
-vela-workbench = { path = "userland/workbench" }
+vela-shell = { path = "userland/shell" }
 
 spin = { version = "0.9", default-features = false, features = ["once", "spin_mutex"] }
 uefi = { version = "0.41", default-features = false }

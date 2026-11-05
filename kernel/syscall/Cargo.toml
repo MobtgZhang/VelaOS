@@ -11,6 +11,7 @@ vela-abi-native64.workspace = true
 vela-elf-loader.workspace = true
 vela-hal-common.workspace = true
 vela-hal-x86_64.workspace = true
+vela-kernel-console.workspace = true
 vela-kernel-dos.workspace = true
 vela-kernel-exec.workspace = true
 vela-kernel-graphics.workspace = true

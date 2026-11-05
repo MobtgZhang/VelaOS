@@ -1,0 +1,16 @@
+[package]
+name = "vela-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VelaOS shell: a command-line interpreter for the guest console"
+
+[[bin]]
+name = "shell"
+path = "src/main.rs"
+
+[dependencies]
+vela-sys.workspace = true
+
+[dev-dependencies]
+vela-hosted.workspace = true

@@ -14,7 +14,7 @@ use vela_sys::numbers as sdk;
 /// derived from a spelling rule.
 #[test]
 fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
-    let pairs: [(u64, u64); 35] = [
+    let pairs: [(u64, u64); 36] = [
         (sdk::CREATE_MSG_PORT, kernel::CREATE_MSG_PORT),
         (sdk::DELETE_MSG_PORT, kernel::DELETE_MSG_PORT),
         (sdk::PUT_MSG, kernel::PUT_MSG),
@@ -36,6 +36,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::MAP_PAGE, kernel::MAP_PAGE),
         (sdk::BRK, kernel::BRK),
         (sdk::ADD_PORT, kernel::ADD_PORT),
+        (sdk::GETCHAR, kernel::GETCHAR),
         (sdk::G_ALLOC_PEN, kernel::GRAPHICS_ALLOC_PEN),
         (sdk::G_FREE_PEN, kernel::GRAPHICS_FREE_PEN),
         (sdk::G_SET_PEN, kernel::GRAPHICS_SET_PEN),

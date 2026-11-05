@@ -21,6 +21,7 @@ path = "src/main.rs"
 vela-boot-protocol.workspace = true
 vela-hal-common.workspace = true
 vela-hal-x86_64.workspace = true
+vela-kernel-console.workspace = true
 vela-kernel-core.workspace = true
 vela-kernel-dos.workspace = true
 vela-kernel-exec.workspace = true

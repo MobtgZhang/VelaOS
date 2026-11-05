@@ -1,0 +1,13 @@
+[package]
+name = "vela-kernel-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Framebuffer text console and PS/2 keyboard polling"
+
+[dependencies]
+vela-text.workspace = true
+vela-kernel-input.workspace = true
+vela-hal-x86_64.workspace = true
+spin.workspace = true

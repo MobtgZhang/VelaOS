@@ -534,6 +534,11 @@ pub mod exec_handlers {
         // an error — it is passing a number, and truncating it is the defined
         // behaviour rather than a fault, exactly as `putchar` would.
         vela_hal_x86_64::serial::putc(args.get(0) as u8);
+        // The same byte onto the framebuffer console, so the output is
+        // visible in the QEMU window rather than only in the serial log.
+        // When there is no display the console is a no-op, and serial alone
+        // is the whole story — the headless configuration.
+        vela_kernel_console::putc(args.get(0) as u8);
         SyscallResult::ok(0)
     }
 
@@ -547,6 +552,23 @@ pub mod exec_handlers {
     /// it, "the guest stopped" and "the guest hung" look identical.
     pub fn power_off(args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
         vela_hal_x86_64::qemu_exit::power_off(args.get(0) as u32)
+    }
+
+    /// `GetChar` — read one byte from the console.
+    ///
+    /// No arguments. Returns the byte as the value, or `RANGE` when nothing
+    /// has arrived yet. The PS/2 keyboard is polled first — the keys the user
+    /// types into the QEMU window — and the serial port falls back second, so
+    /// a host-driven session through `-serial stdio` still works. The UART is
+    /// polled, so this never blocks: a shell spins on it between redraws.
+    pub fn get_char(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+        if let Some(byte) = vela_kernel_console::keyboard::read_char() {
+            return SyscallResult::ok(byte as u64);
+        }
+        match vela_hal_x86_64::serial::getc() {
+            Some(byte) => SyscallResult::ok(byte as u64),
+            None => SyscallResult::err(errors::RANGE),
+        }
     }
 
     /// `MapPage` — map one page of user memory.
@@ -638,6 +660,7 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::GET_TASK_ID, exec_handlers::get_task_id);
     table.install(numbers::PUTCHAR, exec_handlers::put_char);
     table.install(numbers::POWER_OFF, exec_handlers::power_off);
+    table.install(numbers::GETCHAR, exec_handlers::get_char);
     table.install(numbers::MAP_PAGE, exec_handlers::map_page);
     table.install(numbers::BRK, exec_handlers::brk);
     table.install(numbers::ADD_PORT, exec_handlers::add_port);

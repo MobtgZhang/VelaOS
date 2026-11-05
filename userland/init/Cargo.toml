@@ -16,10 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 vela-sys.workspace = true
-# The desktop is *linked* into `init` rather than spawned — there is no
+# The shell is *linked* into `init` rather than spawned — there is no
 # `RunSeg` in v0.1.0, and adding one for a single user would be a mechanism
-# with exactly one user. See `hand_over_to_desktop`.
-vela-workbench.workspace = true
+# with exactly one user. See `hand_over_to_shell`.
+vela-shell.workspace = true
 
 [dev-dependencies]
 vela-hosted.workspace = true
