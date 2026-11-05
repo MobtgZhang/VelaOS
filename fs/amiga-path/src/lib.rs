@@ -33,6 +33,7 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 /// The maximum length of a path, in bytes.
 ///
@@ -124,17 +125,41 @@ impl AmigaPath {
     ///
     /// A relative path — one with no volume and no leading `/` — is taken
     /// relative to `current`. An absolute path is not.
+    ///
+    /// # Why the splice uses the raw text
+    ///
+    /// The obvious implementation parses first and splices second, and it
+    /// eats `..` on the way: `parse("..")` normalises the lone `..` against
+    /// the volume-less root, which has no parent to climb to, so `cd ..`
+    /// from `RAM:/work/deeper` would politely land in `RAM:/work/deeper`
+    /// again. The `..` only means "the parent of the *current* directory"
+    /// once `current` is in the path, so the raw text is spliced onto
+    /// `current` and the whole is normalised once — then `..` has
+    /// `/work/deeper` under it and climbs to `/work`.
     pub fn parse_relative_to(input: &str, current: &AmigaPath) -> Result<Self, i32> {
-        let parsed = Self::parse(input)?;
-        if parsed.volume.is_some() || input.starts_with('/') {
-            return Ok(parsed);
+        if input.is_empty() {
+            return Err(errors::NO_PATH);
+        }
+        if input.len() > MAX_PATH_LEN {
+            return Err(errors::TOO_LONG);
+        }
+        if let Some((name, _)) = split_volume(input) {
+            if name.is_empty() {
+                return Err(errors::BAD_SYNTAX);
+            }
+        }
+        let absolute = split_volume(input).is_some() || input.starts_with('/');
+        if absolute {
+            return Self::parse(input);
         }
         // Relative: splice it onto the current directory, keeping the
-        // current volume.
+        // current volume. The separator is explicit, so `sub` and `./sub`
+        // both join as `…/work/sub` and never as `…/worksub`.
         let base = current.path.trim_end_matches('/');
-        let mut path = String::with_capacity(base.len() + parsed.path.len());
+        let mut path = String::with_capacity(base.len() + input.len() + 1);
         path.push_str(base);
-        path.push_str(&parsed.path);
+        path.push('/');
+        path.push_str(input);
         let path = normalise_path(&path)?;
         Ok(Self {
             volume: current.volume.clone(),
@@ -457,12 +482,28 @@ impl PathProbe for AnyPath {
 ///
 /// It holds the assign table and resolves an AmigaDOS path into a backend
 /// path, searching a multi-target assign's targets in order.
-#[derive(Debug, Clone)]
+/// The path resolver.
+///
+/// It holds the assign table and resolves an AmigaDOS path into a backend
+/// path, searching a multi-target assign's targets in order.
+///
+/// # Why it is not `Clone`
+///
+/// The current directory is behind a lock — see [`Resolver::current`]'s
+/// documentation — and a resolver clone wearing a lock is a value a second
+/// `cd` would not reach. There are no clones, so the derive would only
+/// promise one that behaves.
+#[derive(Debug)]
 pub struct Resolver {
     /// The assigns.
     pub assigns: AssignTable,
     /// The current directory.
-    pub current: AmigaPath,
+    ///
+    /// A lock rather than a plain field, because the process that *is* the
+    /// repository of the current directory is long-lived and shared — the DOS
+    /// service hands out `&Dos` everywhere — so a current directory that a
+    /// `cd` can change must change through shared access.
+    current: Mutex<AmigaPath>,
     /// The directory of the running program, for `PROGDIR:`.
     ///
     /// This is resolved per-process, so it is not an assign: it is a field
@@ -482,17 +523,22 @@ impl Resolver {
     pub fn new() -> Self {
         Self {
             assigns: AssignTable::with_builtins(),
-            current: AmigaPath {
+            current: Mutex::new(AmigaPath {
                 volume: None,
                 path: "/".to_string(),
-            },
+            }),
             progdir: None,
         }
     }
 
     /// Set the current directory.
-    pub fn set_current(&mut self, current: AmigaPath) {
-        self.current = current;
+    pub fn set_current(&self, current: AmigaPath) {
+        *self.current.lock() = current;
+    }
+
+    /// The current directory.
+    pub fn current(&self) -> AmigaPath {
+        self.current.lock().clone()
     }
 
     /// Resolve a path against the current directory.
@@ -510,7 +556,7 @@ impl Resolver {
     /// path resolves whether or not the file exists, because a program that
     /// is about to *create* the file needs the path anyway.
     pub fn resolve<P: PathProbe>(&self, input: &str, probe: &P) -> Result<Resolved, i32> {
-        let parsed = AmigaPath::parse_relative_to(input, &self.current)?;
+        let parsed = AmigaPath::parse_relative_to(input, &self.current())?;
         self.resolve_parsed(&parsed, probe)
     }
 
@@ -733,6 +779,20 @@ mod tests {
         let p = AmigaPath::parse_relative_to("sub/file", &current).unwrap();
         assert_eq!(p.volume.as_deref(), Some("SYS"));
         assert_eq!(p.path, "/Workbench/sub/file");
+    }
+
+    #[test]
+    fn a_relative_dotdot_climbs_the_current_directory() {
+        let current = AmigaPath::parse("RAM:work/deeper").unwrap();
+        // A lone `..` is the parent of the *current* directory, not of the
+        // volume-less root, which is where `parse`'s normalisation would
+        // have consumed it first.
+        let p = AmigaPath::parse_relative_to("..", &current).unwrap();
+        assert_eq!(p.volume.as_deref(), Some("RAM"));
+        assert_eq!(p.path, "/work");
+        // And a sibling through it.
+        let p = AmigaPath::parse_relative_to("../sister", &current).unwrap();
+        assert_eq!(p.path, "/work/sister");
     }
 
     #[test]

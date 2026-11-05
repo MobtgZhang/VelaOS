@@ -1088,6 +1088,14 @@ fn build_dos() -> vela_kernel_dos::Dos {
     dos.mount("/ramfs", "RAM", ram);
     let system = alloc::sync::Arc::new(vela_ramfs::RamFs::new());
     dos.mount("/System", "SYS", system);
+    // The current directory starts on a volume: the resolver's default is
+    // the volume-less `/`, which belongs to no mount, so relative paths and
+    // `pwd` would resolve and print nothing useful. `RAM:` is where a
+    // Workbench's transient state lives, and where `init` puts the
+    // directories a desktop session wants, so it is the anchor a fresh
+    // shell can actually work from.
+    dos.set_current_dir("RAM:")
+        .expect("RAM: is mounted a line above; the current directory must anchor");
     dos
 }
 

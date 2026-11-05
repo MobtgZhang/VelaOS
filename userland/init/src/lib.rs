@@ -98,8 +98,38 @@ pub fn run() -> Report {
         report.ram_ready += create(path, &mut report);
     }
 
+    seed_readme(&mut report);
+
     report
 }
+
+/// Create the one file `RAM:T` comes with, counting the outcome.
+///
+/// A fresh AmigaOS boots into a filesystem with content — AmigaOS used to
+/// drop a `ReadMe` into `RAM:T` — and a VelaOS shell whose `catalog` has no
+/// files in it leaves its file commands (`cat`, redirection-adjacent paths)
+/// more hypothetical than demonstrable. One seeded text file is what a user
+/// can run `cat` against on the first boot, and its absence is no failure:
+/// `RAM:` is a ramfs, so every boot starts empty anyway.
+fn seed_readme(report: &mut Report) {
+    let Ok(file) = api::open("RAM:T/ReadMe", api::mode::WRITE) else {
+        report.failures += 1;
+        return;
+    };
+    let written = api::write(file, READ_ME.as_bytes());
+    // The handle must be closed whether the write worked or not: a computer
+    // that reboots cannot leak handles, but the *code* should not depend on
+    // that.
+    let _ = api::close(file);
+    match written {
+        Ok(_) => {}
+        Err(_) => report.failures += 1,
+    }
+}
+
+/// The text `seed_readme` writes.
+const READ_ME: &str = "This is the source for VelaOS's transient state.\n\
+Boot a fresh session and this file returns.\n";
 
 /// Create one directory, counting the outcome.
 ///

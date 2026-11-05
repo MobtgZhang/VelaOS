@@ -1514,6 +1514,34 @@ pub fn current_dir(buf: &mut [u8]) -> Result<usize> {
     check(packed).map(|v| v as usize)
 }
 
+/// Change the calling program's current directory.
+///
+/// A relative path is resolved against the directory the program is already
+/// in — `set_current_dir("Utilities")` from `RAM:` means `RAM:/Utilities` —
+/// and the directory must exist and be a directory, or the call fails and
+/// leaves the current directory where it was.
+///
+/// Adopted as its own call rather than folded into [`current_dir`] because
+/// the latter returns a path string, which leaves no honest way to also
+/// carry a failure back — a caller would have to guess between "it worked,
+/// the answer is empty" and "it failed".
+///
+/// # Errors
+///
+/// [`errors::PATH_NOT_FOUND`] when the path names no directory, or
+/// [`errors::FILE_NOT_OBJECT`] when it names a file.
+pub fn set_current_dir(path: &str) -> Result<()> {
+    let bytes = c_string(path);
+    // SAFETY: `bytes` is live for the call; the kernel copies it out.
+    let packed = unsafe {
+        library_base::dos::base().call(
+            offset::DOS_SETCURRENTDIR,
+            [bytes.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
 /// Walk a directory with an `AnchorPath`.
 ///
 /// `name` is the path the walk starts at on the first call, or `None` to

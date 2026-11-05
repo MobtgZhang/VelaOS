@@ -376,6 +376,28 @@ pub fn current_dir(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult
     }
 }
 
+/// `SetCurrentDir` — change the calling process's current directory.
+///
+/// Arguments: `name_ptr` (a user pointer to the path's NUL-terminated text).
+/// The path may be relative, in which case it is resolved against the
+/// current directory, and the target must exist and be a directory.
+///
+/// AmigaOS's `CurrentDir` both reads and writes through one call, but that
+/// call works in `BPTRs` — lock numbers the caller already holds. VelaOS's
+/// user space works in path strings, so the read half (`CurrentDir`) and the
+/// write half (`SetCurrentDir`) are two calls over that convention.
+pub fn set_current_dir(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let name_ptr = args.get(0);
+    let path = match copy_path(name_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    match ctx.dos.set_current_dir(&path) {
+        Ok(()) => SyscallResult::ok(0),
+        Err(e) => SyscallResult::err(e),
+    }
+}
+
 /// Copy a path from user space, refusing one that is too long.
 fn copy_path(ptr: u64) -> Result<String, i32> {
     let path = copy_string_alloc(ptr)?;

@@ -29,5 +29,6 @@ indistinguishable from a working call.
 | `Examine` | 264 | `implemented` | — | Fills in a `FileInfo` in user space. |
 | `CurrentDir` | 265 | `implemented` | — | Returns the process's current directory as a NUL-terminated string. |
 | `ExamineDir` | 266 | `verified` | `dos_examine_dir_walks_a_directory_from_an_anchor` | Walks a directory one entry per call, resuming from the anchor it wrote. |
+| `SetCurrentDir` | 267 | `verified` | `dos_set_current_dir_resolves_relative_paths` | Sets the current directory from a path; a relative path is resolved against the current one. |
 
-**Summary:** 6 of 11 entries are `verified`.
+**Summary:** 7 of 12 entries are `verified`.

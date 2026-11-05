@@ -171,7 +171,7 @@ fn range_for(library: &str) -> (u64, u64) {
         "graphics.library" => (64, 13),
         "layers.library" => (128, 10),
         "intuition.library" => (192, 13),
-        "dos.library" => (256, 11),
+        "dos.library" => (256, 12),
         "utility.library" => (320, 3),
         "icon.library" => (384, 21),
         "workbench.library" => (448, 22),

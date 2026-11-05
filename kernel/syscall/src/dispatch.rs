@@ -691,6 +691,10 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::DOS_EXAMINE, crate::dos_handlers::examine);
     table.install(numbers::DOS_CURRENT_DIR, crate::dos_handlers::current_dir);
     table.install(numbers::DOS_EXAMINE_DIR, crate::dos_handlers::examine_dir);
+    table.install(
+        numbers::DOS_SET_CURRENT_DIR,
+        crate::dos_handlers::set_current_dir,
+    );
 
     // The `graphics.library` group: pens and raster drawing. Every drawing
     // call names a *window* rather than a rast port, because a program does

@@ -394,6 +394,14 @@ pub const MATRIX: &[ApiEntry] = &[
         verified_by: Some("dos_examine_dir_walks_a_directory_from_an_anchor"),
         notes: "Walks a directory one entry per call, resuming from the anchor it wrote.",
     },
+    ApiEntry {
+        library: "dos.library",
+        name: "SetCurrentDir",
+        syscall: Some(267),
+        status: Status::Verified,
+        verified_by: Some("dos_set_current_dir_resolves_relative_paths"),
+        notes: "Sets the current directory from a path; a relative path is resolved against the current one.",
+    },
     // --- graphics.library ------------------------------------------------
     ApiEntry {
         library: "graphics.library",

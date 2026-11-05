@@ -593,7 +593,7 @@ fn an_unimplemented_library_syscall_says_so_honestly() {
     let task = k.exec().create_task();
     let reserved = [
         numbers::INTUITION_REPAINT + 1,
-        numbers::DOS_EXAMINE_DIR + 1,
+        numbers::DOS_SET_CURRENT_DIR + 1,
         numbers::UTILITY_STRCMP + 1,
     ];
     for number in reserved {

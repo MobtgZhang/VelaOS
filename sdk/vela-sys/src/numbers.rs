@@ -170,6 +170,8 @@ pub const D_EXAMINE: u64 = 264;
 pub const D_CURRENT_DIR: u64 = 265;
 /// `dos.library`: walk a directory with an anchor.
 pub const D_EXAMINE_DIR: u64 = 266;
+/// `dos.library`: change the current directory.
+pub const D_SET_CURRENT_DIR: u64 = 267;
 
 /// `utility.library`: find a tag in a tag list.
 pub const U_FIND_TAG: u64 = 320;

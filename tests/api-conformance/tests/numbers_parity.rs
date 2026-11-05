@@ -89,7 +89,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
     }
 
     // The remaining Intuition, DOS and utility numbers.
-    let tail: [(u64, u64); 20] = [
+    let tail: [(u64, u64); 21] = [
         (sdk::I_SET_ATTRS, kernel::INTUITION_SET_ATTRS),
         (sdk::I_ADD_GADGET, kernel::INTUITION_ADD_GADGET),
         (sdk::I_REMOVE_GADGET, kernel::INTUITION_REMOVE_GADGET),
@@ -107,6 +107,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::D_EXAMINE, kernel::DOS_EXAMINE),
         (sdk::D_CURRENT_DIR, kernel::DOS_CURRENT_DIR),
         (sdk::D_EXAMINE_DIR, kernel::DOS_EXAMINE_DIR),
+        (sdk::D_SET_CURRENT_DIR, kernel::DOS_SET_CURRENT_DIR),
         (sdk::U_FIND_TAG, kernel::UTILITY_FIND_TAG),
         (sdk::U_STRNCPY, kernel::UTILITY_STRNCPY),
         (sdk::U_STRCMP, kernel::UTILITY_STRCMP),

@@ -36,6 +36,14 @@
 library: dos.library
 prefix: DOS
 functions:
+  - name: SetCurrentDir
+    lvo: -96
+    offset: SETCURRENTDIR
+    stub: set_current_dir
+    syscall: D_SET_CURRENT_DIR
+    number: 267
+    kernel: DOS_SET_CURRENT_DIR
+    status: implemented
   - name: ExamineDir
     lvo: -88
     offset: EXAMINEDIR

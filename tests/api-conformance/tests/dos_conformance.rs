@@ -301,3 +301,56 @@ fn dos_examine_dir_walks_a_directory_from_an_anchor() {
     assert_eq!(end, None, "the walk must finish rather than repeat");
     assert_eq!(anchor.ap_FoundBreak, 1, "the end of the walk is recorded");
 }
+
+/// `SetCurrentDir` resolves a relative path against the current directory.
+///
+/// The SDK call drives the whole chain from `vela_sys::api::set_current_dir`
+/// through the DOS library base, its generated jump table, the stub, the
+/// hosted dispatch and the kernel's handler. The directory must exist and be
+/// a directory, and the change has to be visible to the calls a shell makes
+/// afterwards: `current_dir` reads it back and `read_dir` resolves a bare
+/// name against it.
+#[test]
+fn dos_set_current_dir_resolves_relative_paths() {
+    let _guard = ready();
+
+    api::create_dir("RAM:work").expect("CreateDir");
+    api::create_dir("RAM:work/deeper").expect("CreateDir");
+    let file = api::open("RAM:work/deeper/leaf.txt", api::mode::WRITE).expect("Open");
+    api::close(file).expect("Close");
+
+    // An absolute change first, then a relative chain: `deeper` is resolved
+    // against `RAM:/work`, not against the root.
+    api::set_current_dir("RAM:work").expect("SetCurrentDir");
+    api::set_current_dir("deeper").expect("SetCurrentDir");
+    let mut buf = [0u8; 64];
+    let len = api::current_dir(&mut buf).expect("CurrentDir");
+    assert_eq!(
+        core::str::from_utf8(&buf[..len]).ok(),
+        Some("RAM:/work/deeper"),
+        "the chained relative change must be the new current directory"
+    );
+
+    // A bare name now names a directory *inside* the current one, which is
+    // what `ls` with no arguments and `cd deeper` both rely on.
+    let mut entries = [api::DirEntry {
+        de_size: 0,
+        de_type: 0,
+        de_name_len: 0,
+        de_name: [0; api::DIR_NAME_LEN],
+    }; 4];
+    let count = api::read_dir(".", &mut entries).expect("ReadDir");
+    assert_eq!(count, 1, "the leaf directory holds exactly its one file");
+    assert_eq!(entries[0].name(), "leaf.txt");
+
+    // A change to a non-directory is refused, and leaves the current
+    // directory where it was.
+    api::set_current_dir("RAM:work/deeper/leaf.txt")
+        .expect_err("SetCurrentDir to a file must be refused");
+    let len = api::current_dir(&mut buf).expect("CurrentDir");
+    assert_eq!(
+        core::str::from_utf8(&buf[..len]).ok(),
+        Some("RAM:/work/deeper"),
+        "a refused change must leave the current directory alone"
+    );
+}

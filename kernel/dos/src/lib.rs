@@ -228,10 +228,20 @@ impl Dos {
     }
 
     /// Set the current directory.
-    pub fn set_current_dir(&mut self, path: &str) -> Result<(), i32> {
-        let parsed = AmigaPath::parse(path)?;
-        // The directory must exist, or `CurrentDir` to it would leave the
-        // process somewhere that does not exist.
+    ///
+    /// A relative path is taken relative to the directory the process is
+    /// already in — `cd Utilities` from `RAM:` means `RAM:/Utilities` — which
+    /// is what makes `cd` chainable. The directory must exist, or `cd` would
+    /// leave the process somewhere that does not exist.
+    ///
+    /// This takes `&self` because the DOS service is shared: the current
+    /// directory is behind its own lock, like every other mutable piece of
+    /// the service, so a `cd` issued while files are open is a lock acquisition
+    /// rather than a second handle on the whole service.
+    pub fn set_current_dir(&self, path: &str) -> Result<(), i32> {
+        let parsed = AmigaPath::parse_relative_to(path, &self.resolver.current())?;
+        // The directory must exist and be a directory, or `CurrentDir` to it
+        // would leave the process somewhere that does not exist.
         let resolved = self.resolve(&parsed)?;
         let info = self.backend_lookup(&resolved)?;
         if !info.is_dir() {
@@ -243,7 +253,7 @@ impl Dos {
 
     /// The current directory, in AmigaDOS form.
     pub fn current_dir(&self) -> String {
-        self.resolver.current.to_amiga_string()
+        self.resolver.current().to_amiga_string()
     }
 
     /// Resolve an AmigaDOS path into a backend path.
@@ -256,7 +266,7 @@ impl Dos {
 
     /// Resolve a path string.
     pub fn resolve_path(&self, path: &str) -> Result<vela_amiga_path::Resolved, i32> {
-        let parsed = AmigaPath::parse_relative_to(path, &self.resolver.current)?;
+        let parsed = AmigaPath::parse_relative_to(path, &self.resolver.current())?;
         self.resolve(&parsed)
     }
 
@@ -946,7 +956,7 @@ mod tests {
 
     #[test]
     fn the_current_directory_can_be_changed() {
-        let mut d = dos();
+        let d = dos();
         d.create_dir("RAM:work").unwrap();
         d.set_current_dir("RAM:work").unwrap();
         assert_eq!(d.current_dir(), "RAM:/work");
@@ -958,14 +968,49 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_current_directory_change_is_chained() {
+        let d = dos();
+        d.create_dir("RAM:work").unwrap();
+        d.create_dir("RAM:work/deeper").unwrap();
+        d.set_current_dir("RAM:work").unwrap();
+        // A relative `cd` is relative to the directory the process is in,
+        // and the answer becomes the new current directory in full.
+        d.set_current_dir("deeper").unwrap();
+        assert_eq!(d.current_dir(), "RAM:/work/deeper");
+        // `..` goes back up the same way.
+        d.set_current_dir("..").unwrap();
+        assert_eq!(d.current_dir(), "RAM:/work");
+        // A relative change to a directory that is not there fails, and
+        // leaves the current directory where it was.
+        assert!(d.set_current_dir("absent").is_err());
+        assert_eq!(d.current_dir(), "RAM:/work");
+    }
+
+    #[test]
     fn the_current_directory_must_exist() {
-        let mut d = dos();
+        let d = dos();
         assert!(d.set_current_dir("RAM:nope").is_err());
     }
 
     #[test]
+    fn the_current_directory_can_anchor_on_a_fresh_volume() {
+        // What `build_dos` does at boot: mount an *empty* ramfs and anchor
+        // the current directory on it, before `init` has created anything
+        // under the volume. A root always exists, so this has to work at
+        // boot rather than after seeding.
+        let d = dos();
+        d.set_current_dir("RAM:").unwrap();
+        assert_eq!(d.current_dir(), "RAM:/");
+        // Paths the shell types before any seeding still behave: an absent
+        // directory is a failure, while the root — an empty ramfs volume —
+        // lists as nothing rather than failing.
+        assert!(d.set_current_dir("Utilities").is_err());
+        assert!(d.read_dir("RAM:").is_ok());
+    }
+
+    #[test]
     fn the_current_directory_must_be_a_directory() {
-        let mut d = dos();
+        let d = dos();
         let bptr = d.open("RAM:f.txt", AccessMode::ReadWrite).unwrap();
         d.close(bptr).unwrap();
         assert!(d.set_current_dir("RAM:f.txt").is_err());

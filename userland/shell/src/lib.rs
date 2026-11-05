@@ -174,7 +174,7 @@ impl Shell {
             "clear" | "cls" => Self::cmd_clear(),
             "exit" | "quit" | "halt" => CommandResult::Halt,
             "pwd" => Self::cmd_pwd(),
-            "ls" => Self::cmd_ls(&cmd.args),
+            "ls" | "dir" => Self::cmd_ls(&cmd.args),
             "cd" => Self::cmd_cd(&cmd.args),
             "echo" => Self::cmd_echo(&cmd.args),
             "cat" => Self::cmd_cat(&cmd.args),
@@ -198,8 +198,8 @@ impl Shell {
         api::print("  clear           - clear the screen\n");
         api::print("  exit            - leave the shell and stop the machine\n");
         api::print("  pwd             - print the current directory\n");
-        api::print("  ls [path]       - list a directory\n");
-        api::print("  cd <path>       - change the current directory\n");
+        api::print("  ls [path]       - list a directory (dir is a synonym)\n");
+        api::print("  cd <path>       - change the current directory; cd alone prints it\n");
         api::print("  echo <text>     - print text to the console\n");
         api::print("  cat <file>      - print a file's contents\n");
         api::print("  whoami          - print the current user\n");
@@ -233,7 +233,21 @@ impl Shell {
     }
 
     fn cmd_ls(args: &[String]) -> CommandResult {
-        let path = args.first().map(String::as_str).unwrap_or("");
+        // No directory named means the one the shell is in. The kernel's
+        // resolver treats a bare name as relative to its current directory,
+        // so `ls` reads back the path first and lists that: passing an empty
+        // string would fail long before any filesystem, because an empty
+        // path parses to nothing at all.
+        let path = match args.first() {
+            Some(arg) => arg.clone(),
+            None => match Self::current_dir_path() {
+                Some(dir) => dir,
+                None => {
+                    api::print("vela: ls: cannot read current directory\n");
+                    return CommandResult::Continue;
+                }
+            },
+        };
         let mut buf = [vela_sys::api::DirEntry {
             de_size: 0,
             de_type: 0,
@@ -241,7 +255,7 @@ impl Shell {
             de_name: [0; vela_sys::api::DIR_NAME_LEN],
         }; DIR_BUFFER_ENTRIES];
 
-        match api::read_dir(path, &mut buf) {
+        match api::read_dir(&path, &mut buf) {
             Ok(count) => {
                 for entry in buf.iter().take(count) {
                     let kind = if entry.is_dir() { "dir" } else { "file" };
@@ -253,7 +267,7 @@ impl Shell {
             }
             Err(_) => {
                 api::print("vela: ls: cannot read directory ");
-                api::print(path);
+                api::print(&path);
                 api::print("\n");
             }
         }
@@ -261,15 +275,34 @@ impl Shell {
     }
 
     fn cmd_cd(args: &[String]) -> CommandResult {
-        if args.is_empty() {
-            api::print("vela: cd: missing path\n");
-            return CommandResult::Continue;
+        // `cd` with no path prints the current directory — the convention
+        // AmigaDOS users expect from `cd` in a CLI, and the same answer
+        // `pwd` gives.
+        let Some(path) = args.first() else {
+            return Self::cmd_pwd();
+        };
+        match api::set_current_dir(path) {
+            Ok(()) => {}
+            Err(_) => {
+                api::print("vela: cd: cannot change to ");
+                api::print(path);
+                api::print("\n");
+            }
         }
-        // VelaOS does not have a per-process current directory syscall that
-        // changes it: `current_dir` only reads. Recording the directory here
-        // would be a shell-side fiction, so say so rather than pretend.
-        api::print("vela: cd: changing directories is not implemented in v0.1.0\n");
         CommandResult::Continue
+    }
+
+    /// The current directory, as a path string.
+    ///
+    /// A separate function because two commands read it and neither can deal
+    /// with a failure by inventing a directory: a read the kernel refuses is
+    /// reported, not papered over with `""`.
+    fn current_dir_path() -> Option<String> {
+        let mut buf = [0u8; 256];
+        let len = api::current_dir(&mut buf).ok()?;
+        core::str::from_utf8(&buf[..len.min(buf.len() - 1)])
+            .ok()
+            .map(|s| s.to_string())
     }
 
     fn cmd_echo(args: &[String]) -> CommandResult {

@@ -252,6 +252,9 @@ pub const DOS_CURRENT_DIR: u64 = 265;
 /// `dos.library`: walk a directory with an anchor.
 pub const DOS_EXAMINE_DIR: u64 = 266;
 
+/// `dos.library`: change the current directory.
+pub const DOS_SET_CURRENT_DIR: u64 = 267;
+
 /// `utility.library`: find a tag in a tag list.
 pub const UTILITY_FIND_TAG: u64 = 320;
 /// `utility.library`: copy a string.
@@ -361,7 +364,7 @@ pub const LAYERS_COUNT: u64 = 10;
 /// The number of syscalls in the `intuition.library` group.
 pub const INTUITION_COUNT: u64 = 13;
 /// The number of syscalls in the `dos.library` group.
-pub const DOS_COUNT: u64 = 11;
+pub const DOS_COUNT: u64 = 12;
 /// The number of syscalls in the `utility.library` group.
 pub const UTILITY_COUNT: u64 = 3;
 /// The number of syscalls in the `icon.library` group.
@@ -591,7 +594,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 115] = [
+    const ALL: [(u64, SyscallGroup); 116] = [
         (CREATE_MSG_PORT, SyscallGroup::Exec),
         (DELETE_MSG_PORT, SyscallGroup::Exec),
         (PUT_MSG, SyscallGroup::Exec),
@@ -661,6 +664,7 @@ mod tests {
         (DOS_EXAMINE, SyscallGroup::Dos),
         (DOS_CURRENT_DIR, SyscallGroup::Dos),
         (DOS_EXAMINE_DIR, SyscallGroup::Dos),
+        (DOS_SET_CURRENT_DIR, SyscallGroup::Dos),
         (UTILITY_FIND_TAG, SyscallGroup::Utility),
         (UTILITY_STRNCPY, SyscallGroup::Utility),
         (UTILITY_STRCMP, SyscallGroup::Utility),
