@@ -158,22 +158,67 @@ impl KeyCode {
     }
 }
 
-/// The scancode set 1 translation table.
+/// The scancode set 1 translation tables.
 ///
-/// Set 1 is the original PC scancode set, and it is what a PS/2 keyboard
-/// sends. The table is indexed by scancode and gives the key's code; the
-/// shifted variant is a second table.
+/// Set 1 is the original PC scancode set, and it is what the guest receives:
+/// the keyboard itself speaks set 2, and the controller's translator — which
+/// the firmware leaves enabled — converts before the byte reaches port
+/// `0x60`. The tables are indexed by scancode and give the key's code.
 ///
 /// A scancode's high bit is the "released" flag, so only the low seven bits
 /// index the table.
+///
+/// # Why the rows are strings rather than arithmetic
+///
+/// The letter rows look temptingly regular — scancodes `0x10..=0x19` are
+/// consecutive, so `b'Q' + code - 0x10` looks like the top row. It is not:
+/// the *scancodes* are consecutive but the *letters* are not, because the
+/// rows spell QWERTY rather than the alphabet. `b'Q' + 1` is `R`, not `W`,
+/// and a decoder built on the arithmetic types `RST` for `qwe`, `BCD` for
+/// `asd`, and `:;` for `0-` — every one of them a plausible-looking,
+/// completely wrong character. (Only the bottom row gets away with the
+/// arithmetic by accident, and only as far as `n`.) Every row is therefore a
+/// literal string indexed by the scancode's offset, so the rows are spelled
+/// out and cannot drift.
 mod scancodes {
     use super::KeyCode;
 
-    /// The unshifted mapping.
+    /// The number row's unshifted characters, scancodes `0x02..=0x0B`.
     ///
-    /// The `None` entries are keys that have no unshifted character — the
-    /// function keys, the arrows, the modifiers — and which therefore need
-    /// their own codes.
+    /// The row has twelve keys but only ten digits: the last two keys are
+    /// `-` and `=`, which have their own arms below.
+    const NUMBERS: &[u8] = b"1234567890";
+
+    /// The top letter row, scancodes `0x10..=0x19`.
+    const TOP_ROW: &[u8] = b"qwertyuiop";
+
+    /// The home letter row, scancodes `0x1E..=0x26`.
+    const HOME_ROW: &[u8] = b"asdfghjkl";
+
+    /// The bottom letter row, scancodes `0x2C..=0x32`.
+    const BOTTOM_ROW: &[u8] = b"zxcvbnm";
+
+    /// The number row's shifted characters, scancodes `0x02..=0x0D`.
+    const SHIFTED_NUMBERS: &[u8] = b"!@#$%^&*()_+";
+
+    /// The top letter row's shifted characters, scancodes `0x10..=0x19`.
+    const SHIFTED_TOP_ROW: &[u8] = b"QWERTYUIOP";
+
+    /// The home letter row's shifted characters, scancodes `0x1E..=0x26`.
+    const SHIFTED_HOME_ROW: &[u8] = b"ASDFGHJKL";
+
+    /// The bottom letter row's shifted characters, scancodes `0x2C..=0x32`.
+    const SHIFTED_BOTTOM_ROW: &[u8] = b"ZXCVBNM";
+
+    /// A byte's key code, for the character tables above.
+    const fn ascii(ch: u8) -> KeyCode {
+        KeyCode::from_ascii(ch as char)
+    }
+
+    /// The unshifted mapping: the character a key types on its own.
+    ///
+    /// The letters are the *lowercase* ones — an unshifted key types
+    /// lowercase, and the decoder's shift and caps state decides the case.
     pub const fn unshifted(code: u8) -> Option<KeyCode> {
         Some(match code {
             0x01 => KeyCode::ESCAPE,
@@ -182,65 +227,72 @@ mod scancodes {
             0x1C => KeyCode::ENTER,
             0x1D => KeyCode::LEFT_CTRL,
             0x2A => KeyCode::LEFT_SHIFT,
+            0x36 => KeyCode::RIGHT_SHIFT,
             0x38 => KeyCode::LEFT_ALT,
             0x39 => KeyCode::from_ascii(' '),
-            0x3B => KeyCode::RIGHT_ALT,
-            0x3D => KeyCode::RIGHT_CTRL,
+            // The number row's last two keys, which the digit string above
+            // does not cover.
+            0x0C => KeyCode::from_ascii('-'),
+            0x0D => KeyCode::from_ascii('='),
+            // The punctuation keys, which sit between and beside the letter
+            // rows and which the rows above skip.
+            0x1A => KeyCode::from_ascii('['),
+            0x1B => KeyCode::from_ascii(']'),
+            0x27 => KeyCode::from_ascii(';'),
+            0x28 => KeyCode::from_ascii('\''),
+            0x29 => KeyCode::from_ascii('`'),
+            0x2B => KeyCode::from_ascii('\\'),
+            0x33 => KeyCode::from_ascii(','),
+            0x34 => KeyCode::from_ascii('.'),
+            0x35 => KeyCode::from_ascii('/'),
+            // The keypad's operators, which are independent of NumLock.
+            0x37 => KeyCode::from_ascii('*'),
+            0x4A => KeyCode::from_ascii('-'),
+            0x4E => KeyCode::from_ascii('+'),
+            // The navigation cluster and the keypad's home-row doubles. The
+            // extended (0xE0-prefixed) forms arrive as these same codes
+            // because the prefix byte is not a scancode the decoder reads.
+            0x47 => KeyCode::HOME,
             0x48 => KeyCode::UP,
+            0x49 => KeyCode::PAGE_UP,
             0x4B => KeyCode::LEFT,
             0x4D => KeyCode::RIGHT,
-            0x50 => KeyCode::DOWN,
-            0x47 => KeyCode::HOME,
             0x4F => KeyCode::END,
-            0x49 => KeyCode::PAGE_UP,
+            0x50 => KeyCode::DOWN,
             0x51 => KeyCode::PAGE_DOWN,
             0x53 => KeyCode::DELETE,
-            0x2B => KeyCode::UNKNOWN,
-            c if c >= 0x02 && c <= 0x0D => {
-                // The number row, unshifted.
-                KeyCode::from_ascii((b'1' + c - 0x02) as char)
-            }
-            c if c >= 0x10 && c <= 0x19 => {
-                // `QWERTY`, and the codes continue from `Q`.
-                KeyCode::from_ascii((b'Q' + c - 0x10) as char)
-            }
-            c if c >= 0x1E && c <= 0x26 => {
-                // `ASDF...`, from `A`.
-                KeyCode::from_ascii((b'A' + c - 0x1E) as char)
-            }
-            c if c >= 0x2C && c <= 0x32 => {
-                // `ZXCV...`, from `Z`.
-                KeyCode::from_ascii((b'Z' + c - 0x2C) as char)
-            }
+            c if c >= 0x02 && c <= 0x0B => ascii(NUMBERS[(c - 0x02) as usize]),
+            c if c >= 0x10 && c <= 0x19 => ascii(TOP_ROW[(c - 0x10) as usize]),
+            c if c >= 0x1E && c <= 0x26 => ascii(HOME_ROW[(c - 0x1E) as usize]),
+            c if c >= 0x2C && c <= 0x32 => ascii(BOTTOM_ROW[(c - 0x2C) as usize]),
             _ => return None,
         })
     }
 
-    /// The shifted mapping.
+    /// The shifted mapping: the character a key types with shift held.
+    ///
+    /// The letter rows give the uppercase letters, so a letter's case is a
+    /// table lookup rather than an arithmetic case-fold.
     pub const fn shifted(code: u8) -> Option<KeyCode> {
         Some(match code {
             0x0E => KeyCode::BACKSPACE,
             0x0F => KeyCode::TAB,
             0x1C => KeyCode::ENTER,
             0x39 => KeyCode::from_ascii(' '),
-            c if c >= 0x02 && c <= 0x0D => {
-                // The number row's shifted characters: `!@#$%^&*()_+`.
-                const SHIFTED: &[u8] = b"!@#$%^&*()_+";
-                KeyCode::from_ascii(SHIFTED[(c - 0x02) as usize] as char)
-            }
-            c if c >= 0x10 && c <= 0x19 => {
-                // The letter row's shifted characters.
-                const SHIFTED: &[u8] = b"QWERTYUIOP{}";
-                KeyCode::from_ascii(SHIFTED[(c - 0x10) as usize] as char)
-            }
-            c if c >= 0x1E && c <= 0x26 => {
-                const SHIFTED: &[u8] = b"ASDFGHJKL:\"";
-                KeyCode::from_ascii(SHIFTED[(c - 0x1E) as usize] as char)
-            }
-            c if c >= 0x2C && c <= 0x32 => {
-                const SHIFTED: &[u8] = b"ZXCVBNM<>?";
-                KeyCode::from_ascii(SHIFTED[(c - 0x2C) as usize] as char)
-            }
+            // The punctuation keys' shifted characters.
+            0x1A => KeyCode::from_ascii('{'),
+            0x1B => KeyCode::from_ascii('}'),
+            0x27 => KeyCode::from_ascii(':'),
+            0x28 => KeyCode::from_ascii('"'),
+            0x29 => KeyCode::from_ascii('~'),
+            0x2B => KeyCode::from_ascii('|'),
+            0x33 => KeyCode::from_ascii('<'),
+            0x34 => KeyCode::from_ascii('>'),
+            0x35 => KeyCode::from_ascii('?'),
+            c if c >= 0x02 && c <= 0x0D => ascii(SHIFTED_NUMBERS[(c - 0x02) as usize]),
+            c if c >= 0x10 && c <= 0x19 => ascii(SHIFTED_TOP_ROW[(c - 0x10) as usize]),
+            c if c >= 0x1E && c <= 0x26 => ascii(SHIFTED_HOME_ROW[(c - 0x1E) as usize]),
+            c if c >= 0x2C && c <= 0x32 => ascii(SHIFTED_BOTTOM_ROW[(c - 0x2C) as usize]),
             _ => return None,
         })
     }
@@ -318,18 +370,21 @@ impl Keyboard {
         // | `0x36` | right shift |
         // | `0x38` | left alt |
         // | `0x3A` | caps lock |
-        // | `0x3B` | right alt |
-        // | `0x3D` | right control |
+        //
+        // The right-hand control and alt keys are the extended `0xE0`
+        // prefixes' partners (`0xE0 0x1D`, `0xE0 0x38`); the prefix byte
+        // itself decodes to nothing, so their partner byte lands here and
+        // they work through the same arms.
         match code {
             0x2A | 0x36 => {
                 self.shift = !released;
                 return None;
             }
-            0x1D | 0x3D => {
+            0x1D => {
                 self.ctrl = !released;
                 return None;
             }
-            0x38 | 0x3B => {
+            0x38 => {
                 self.alt = !released;
                 return None;
             }
@@ -347,31 +402,28 @@ impl Keyboard {
 
         // The key's code, taking shift into account. Caps lock affects only
         // the letter keys — that is what a caps lock *is*.
-        let base = scancodes::unshifted(code);
-        let shifted = scancodes::shifted(code);
-        let Some(base) = base else {
+        let Some(base) = scancodes::unshifted(code) else {
             // A key with no mapping in either table produces no event: an
             // unknown key is not an error, it is simply not interesting.
             return None;
         };
+        // The unshifted table hands out lowercase letters, so a letter is
+        // recognisable by its base being one. A letter's case is decided by
+        // shift *or* caps lock, but not by both at once — which is the
+        // behaviour every keyboard has — and the case itself comes from the
+        // shifted table, so the tables stay the only source of the mapping.
         let is_letter = base
             .to_ascii()
-            .map(|c| c.is_ascii_alphabetic())
+            .map(|c| c.is_ascii_lowercase())
             .unwrap_or(false);
         let final_code = if is_letter {
-            // A letter's case is decided by shift *or* caps lock, but not by
-            // both at once — which is the behaviour every keyboard has.
-            let upper = self.shift ^ self.caps;
-            if upper {
-                match base.to_ascii() {
-                    Some(c) => KeyCode::from_ascii(c.to_ascii_uppercase()),
-                    None => base,
-                }
+            if self.shift ^ self.caps {
+                scancodes::shifted(code).unwrap_or(base)
             } else {
                 base
             }
         } else if self.shift {
-            shifted.unwrap_or(base)
+            scancodes::shifted(code).unwrap_or(base)
         } else {
             base
         };
@@ -656,9 +708,10 @@ mod tests {
     #[test]
     fn a_printable_key_produces_its_ascii_code() {
         let mut kb = Keyboard::new();
-        // Scancode 0x1E is `A` in set 1.
+        // Scancode 0x1E is `A` in set 1, and an unshifted `A` types a
+        // lowercase `a`.
         let event = kb.feed(0x1E).unwrap();
-        assert_eq!(event.code, KeyCode::from_ascii('A'));
+        assert_eq!(event.code, KeyCode::from_ascii('a'));
         assert!(!event.released);
     }
 
@@ -667,7 +720,100 @@ mod tests {
         let mut kb = Keyboard::new();
         let event = kb.feed(0x9E).unwrap();
         assert!(event.released);
-        assert_eq!(event.code, KeyCode::from_ascii('A'));
+        assert_eq!(event.code, KeyCode::from_ascii('a'));
+    }
+
+    #[test]
+    fn the_letter_rows_spell_qwerty_not_the_alphabet() {
+        let mut kb = Keyboard::new();
+        // The rows are the trap this table was rebuilt to avoid: the
+        // scancodes are consecutive but the letters are not, and an
+        // arithmetic row types `RST` for `qwe`.
+        for (offset, expected) in b"qwertyuiop".iter().enumerate() {
+            let event = kb.feed(0x10 + offset as u8).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(*expected as char),
+                "top row, offset {offset}"
+            );
+        }
+        for (offset, expected) in b"asdfghjkl".iter().enumerate() {
+            let event = kb.feed(0x1E + offset as u8).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(*expected as char),
+                "home row, offset {offset}"
+            );
+        }
+        for (offset, expected) in b"zxcvbnm".iter().enumerate() {
+            let event = kb.feed(0x2C + offset as u8).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(*expected as char),
+                "bottom row, offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_number_row_ends_with_zero_dash_and_equals() {
+        let mut kb = Keyboard::new();
+        // `0` sits after `9`, not after the character `9`'s arithmetic
+        // successor would suggest, and the row's last two keys are the
+        // punctuation `-` and `=`.
+        let expected = b"1234567890-=";
+        for (offset, expected) in expected.iter().enumerate() {
+            let event = kb.feed(0x02 + offset as u8).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(*expected as char),
+                "number row, offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_punctuation_keys_type_their_characters() {
+        let mut kb = Keyboard::new();
+        // The unshifted character, then the shifted one.
+        let pairs: &[(u8, char, char)] = &[
+            (0x1A, '[', '{'),
+            (0x1B, ']', '}'),
+            (0x27, ';', ':'),
+            (0x28, '\'', '"'),
+            (0x29, '`', '~'),
+            (0x2B, '\\', '|'),
+            (0x33, ',', '<'),
+            (0x34, '.', '>'),
+            (0x35, '/', '?'),
+        ];
+        for &(code, unshifted, shifted) in pairs {
+            let event = kb.feed(code).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(unshifted),
+                "scancode {code:#04x} unshifted"
+            );
+            assert!(kb.feed(0x2A).is_none(), "shift down for {code:#04x}");
+            let event = kb.feed(code).unwrap();
+            assert_eq!(
+                event.code,
+                KeyCode::from_ascii(shifted),
+                "scancode {code:#04x} shifted"
+            );
+            assert!(kb.feed(0xAA).is_none(), "shift up after {code:#04x}");
+        }
+    }
+
+    #[test]
+    fn shift_and_caps_together_type_lowercase() {
+        let mut kb = Keyboard::new();
+        // Shift *or* caps decides the case, not both: holding shift under a
+        // lit caps lock is how a keyboard types the lowercase letter back.
+        assert!(kb.feed(0x3A).is_none()); // caps lock on.
+        assert!(kb.feed(0x2A).is_none()); // shift down.
+        let event = kb.feed(0x1E).unwrap();
+        assert_eq!(event.code, KeyCode::from_ascii('a'));
     }
 
     #[test]
@@ -705,8 +851,8 @@ mod tests {
         // Caps lock toggles on press.
         kb.feed(0x3A);
         assert!(kb.caps_lock());
-        // `a` is scancode 0x1E shifted to lowercase; the set 1 table only
-        // carries the unshifted letter, so caps lock is what uppercases it.
+        // The unshifted table carries the lowercase letter, so caps lock is
+        // what uppercases it — and a digit stays a digit.
         let event = kb.feed(0x1E).unwrap();
         assert_eq!(event.code, KeyCode::from_ascii('A'));
     }

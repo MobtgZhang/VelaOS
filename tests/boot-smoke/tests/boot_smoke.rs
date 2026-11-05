@@ -73,10 +73,20 @@ fn the_kernel_boots_and_reports_its_banner() {
 
 /// The keystrokes the round-trip test types, as QEMU `sendkey` names them.
 ///
-/// `ver` — the shortest command whose response is unambiguous: the shell's
-/// version line appears nowhere else in the log, so its presence proves the
-/// machine answered *this* input rather than echoing something earlier.
+/// `ver` — the shortest command whose response is unambiguous *in form*:
+/// the shell's version line ends in a newline right after the version, so
+/// the marker is the response with its newline, which the boot banner
+/// (`VELA-KERNEL: VelaOS 0.1.0 ready`) does not contain. A bare marker
+/// would be answered by the banner before a single key was typed, and the
+/// round trip would pass with the keyboard typing gibberish.
 const ROUNDTRIP_KEYS: &[&str] = &["v", "e", "r", "ret"];
+
+/// The response the round-trip test waits for.
+///
+/// The newline matters: the kernel's banner names the same version, so the
+/// marker must be the *response's* shape — the version and its line end —
+/// rather than any mention of the version.
+const ROUNDTRIP_RESPONSE: &str = "VelaOS 0.1.0\n";
 
 /// The tag this test namespaces its image and sockets under.
 ///
@@ -106,7 +116,7 @@ fn the_shell_responds_to_keys_typed_into_the_machine() {
         &image,
         KEYS_TAG,
         ROUNDTRIP_KEYS,
-        "VelaOS 0.1.0",
+        ROUNDTRIP_RESPONSE,
         BOOT_TIMEOUT,
     ) {
         Ok(s) => s,
@@ -114,8 +124,15 @@ fn the_shell_responds_to_keys_typed_into_the_machine() {
     };
 
     // The echo of the typed keys must be there too: the response without the
-    // echo would mean the shell printed its version for some other reason.
+    // echo would mean the shell printed its version for some other reason,
+    // and an echo that does not read `ver` means the keyboard's scancode
+    // table is wrong — the echo is what `GetChar` returned, byte for byte.
     let clean = xtask::qemu::strip_ansi(&serial);
+    assert!(
+        clean.contains("vela> ver"),
+        "the typed keys never echoed back as `ver`\n{}",
+        clean
+    );
     assert!(
         clean.contains("vela>"),
         "the shell's prompt never appeared on the console\n{}",
