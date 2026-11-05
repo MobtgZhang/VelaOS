@@ -143,23 +143,20 @@ unsafe extern "C" fn syscall_dispatch() {
     let a4: u64;
     let a5: u64;
     // SAFETY: the `syscall` instruction leaves these registers as the ABI
-    // specifies, and reading them is free of side effects.
+    // specifies, and reading them is free of side effects. Each output is
+    // bound to the exact register it reads, and the `nop` writes nothing: a
+    // free `out(reg)` could be allocated *to a not-yet-read source register*,
+    // and the move into it would destroy an argument before it is read.
     unsafe {
         asm!(
-            "mov {number}, rax",
-            "mov {a0}, rdi",
-            "mov {a1}, rsi",
-            "mov {a2}, rdx",
-            "mov {a3}, r10",
-            "mov {a4}, r8",
-            "mov {a5}, r9",
-            number = out(reg) number,
-            a0 = out(reg) a0,
-            a1 = out(reg) a1,
-            a2 = out(reg) a2,
-            a3 = out(reg) a3,
-            a4 = out(reg) a4,
-            a5 = out(reg) a5,
+            "nop",
+            out("rax") number,
+            out("rdi") a0,
+            out("rsi") a1,
+            out("rdx") a2,
+            out("r10") a3,
+            out("r8") a4,
+            out("r9") a5,
             options(nostack, preserves_flags),
         );
     }
@@ -167,15 +164,22 @@ unsafe extern "C" fn syscall_dispatch() {
     let args = crate::numbers::SyscallArgs::new(a0, a1, a2, a3, a4, a5);
     let result = crate::dispatch::handle_syscall(number, args);
 
-    // The result goes back in `rax` and `rdx`.
+    // The result goes back in `rax` and `rdx`, which the stub's `sysretq`
+    // delivers to the caller.
     //
-    // SAFETY: as above.
+    // The registers are named, not left to the allocator: a free `in(reg)`
+    // input could be placed in `rax` or `rdx` itself, and the hardcoded move
+    // into the *other* register would then overwrite it — a release-only
+    // corruption that read back as `error == low 32 bits of value`. The `nop`
+    // writes nothing, so the bound values survive to the `ret` the stub reads
+    // from.
+    //
+    // SAFETY: the registers are bound explicitly and the `nop` has no effects.
     unsafe {
         asm!(
-            "mov rax, {value}",
-            "mov rdx, {error}",
-            value = in(reg) result.value,
-            error = in(reg) result.error as u64,
+            "nop",
+            in("rax") result.value,
+            in("rdx") result.error as u64,
             options(nostack, preserves_flags),
         );
     }

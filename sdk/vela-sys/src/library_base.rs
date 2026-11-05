@@ -777,10 +777,10 @@ mod tests {
             let table = base.table().expect("exec has a table");
             *table.get_unchecked(unused)
         };
-        assert_eq!(
-            filler as usize, filler_stub as *const () as usize,
-            "the slot past the function list must still be the filler",
-        );
+        // The slot is not compared against `filler_stub` by address: with
+        // optimisation the codegen may duplicate the stub, so two addresses
+        // exist where the source names one function. What the report requires
+        // is the *behaviour*, asserted through the call below.
         // SAFETY: `filler` is the SDK's own filler stub, which validates
         // nothing and returns a constant.
         let (value, error) = unsafe { unpack(filler(0, 0, 0, 0, 0, 0)) };

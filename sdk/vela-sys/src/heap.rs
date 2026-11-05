@@ -201,7 +201,6 @@ impl GuestHeap {
         }
         Some(current)
     }
-
     /// Round `addr` up to a multiple of `align`, which must be a power of two.
     ///
     /// Returns `None` on overflow, which a caller must treat as an allocation
