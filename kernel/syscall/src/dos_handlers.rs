@@ -459,7 +459,19 @@ pub const DIR_ENTRY_NAME_LEN: usize = 107;
 
 impl DirEntryRecord {
     /// The size of one record, in bytes.
-    pub const SIZE: usize = 16 + DIR_ENTRY_NAME_LEN;
+    ///
+    /// This is `size_of` of the struct, not an arithmetic summary of its
+    /// fields: the natural `repr(C)` layout ends the name at offset
+    /// `13 + DIR_ENTRY_NAME_LEN = 120`, which is already a multiple of the
+    /// struct's 8-byte alignment, so the struct is 120 bytes. The arithmetic
+    /// `16 + DIR_ENTRY_NAME_LEN = 123` that the layout comment suggests would
+    /// have described a record nobody builds — and, worse, a *stride* the
+    /// caller does not use: when these disagree, the first entry of a reply
+    /// reads correctly and every entry after the first is garbage, because
+    /// the array's step is `size_of` while the kernel's step was the
+    /// arithmetic total. Pinning the two to the same expression is what keeps
+    /// them able to disagree.
+    pub const SIZE: usize = core::mem::size_of::<DirEntryRecord>();
 
     /// Build a record from a directory entry.
     pub fn from_entry(entry: &vela_kernel_vfs::DirEntry) -> Self {
@@ -749,12 +761,48 @@ mod tests {
         };
         let bytes = record.to_bytes();
         assert_eq!(bytes.len(), DirEntryRecord::SIZE);
+        // The offset comment and the real `repr(C)` layout must agree: the
+        // resolver of the reply is the user's array, whose stride is
+        // `size_of`, so a wire layout with the fields at different offsets
+        // than the struct's would corrupt every entry after the first. Write
+        // the two sides of a claim only `core::mem::offset_of!` settles, and
+        // this test is what settles it.
+        assert_eq!(
+            core::mem::offset_of!(DirEntryRecord, de_Size),
+            0,
+            "de_Size must have the offset to_bytes writes it at"
+        );
+        assert_eq!(
+            core::mem::offset_of!(DirEntryRecord, de_Type),
+            8,
+            "de_Type must have the offset to_bytes writes it at"
+        );
+        assert_eq!(
+            core::mem::offset_of!(DirEntryRecord, de_NameLen),
+            12,
+            "de_NameLen must have the offset to_bytes writes it at"
+        );
+        assert_eq!(
+            core::mem::offset_of!(DirEntryRecord, de_Name),
+            13,
+            "de_Name must have the offset to_bytes writes it at"
+        );
         // The bytes really are the struct's bytes, so a user program can
         // read the reply as a `DirEntryRecord` and get the same values.
         // SAFETY: the two are the same type at the same address; this test is
         // what checks that.
         let view = unsafe { core::ptr::read(bytes.as_ptr() as *const DirEntryRecord) };
         assert_eq!(view, record);
+    }
+
+    #[test]
+    fn two_records_are_the_user_arrays_stride() {
+        // The reply is an *array* of records, so its step is `size_of`. The
+        // byte count the reply builder writes is `SIZE`, and these two are
+        // only the same while `SIZE` is pinned to `size_of` — which the
+        // layout test above keeps honest for one record.
+        let stride = core::mem::size_of::<DirEntryRecord>();
+        assert_eq!(stride, DirEntryRecord::SIZE);
     }
 
     #[test]

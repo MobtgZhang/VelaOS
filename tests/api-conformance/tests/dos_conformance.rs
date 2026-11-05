@@ -354,3 +354,64 @@ fn dos_set_current_dir_resolves_relative_paths() {
         "a refused change must leave the current directory alone"
     );
 }
+
+/// `ReadDir` lands every entry of a *multi-entry* directory where its array
+/// slot expects it.
+///
+/// The reply arrives as an array of fixed-size records. Recording three files
+/// and naming them in order is what catches a stride disagreement: a reply
+/// whose kernel-side step is not the array's `size_of` leaves the *first*
+/// entry correct and every entry after it reading the wrong bytes, which a
+/// one-entry directory — what nearly every earlier test used — cannot
+/// notice.
+#[test]
+fn dos_read_dir_lists_every_entry_of_a_multi_entry_directory() {
+    let _guard = ready();
+
+    api::create_dir("RAM:many").expect("CreateDir");
+    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        let file =
+            api::open(&format!("RAM:many/{name}"), api::mode::WRITE).expect("Open for writing");
+        api::close(file).expect("Close");
+    }
+
+    let mut entries = [
+        api::DirEntry {
+            de_size: 0,
+            de_type: 0,
+            de_name_len: 0,
+            de_name: [0; api::DIR_NAME_LEN],
+        },
+        api::DirEntry {
+            de_size: 0,
+            de_type: 0,
+            de_name_len: 0,
+            de_name: [0; api::DIR_NAME_LEN],
+        },
+        api::DirEntry {
+            de_size: 0,
+            de_type: 0,
+            de_name_len: 0,
+            de_name: [0; api::DIR_NAME_LEN],
+        },
+        api::DirEntry {
+            de_size: 0,
+            de_type: 0,
+            de_name_len: 0,
+            de_name: [0; api::DIR_NAME_LEN],
+        },
+    ];
+    let count = api::read_dir("RAM:many", &mut entries).expect("ReadDir");
+    assert_eq!(count, 3, "the directory holds exactly its three files");
+    // Ordered, named, and *in their own slots*: entry zero of the array is
+    // where entry zero of the reply lands, and so on down.
+    let names: Vec<&str> = entries[..3].iter().map(|e| e.name()).collect();
+    assert!(
+        names.contains(&"alpha.txt") && names.contains(&"beta.txt") && names.contains(&"gamma.txt"),
+        "every entry must name its own file; got {names:?}"
+    );
+    assert!(
+        entries[3].name().is_empty(),
+        "the slot beyond the reply's count must stay untouched"
+    );
+}

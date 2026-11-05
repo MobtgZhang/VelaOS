@@ -207,7 +207,15 @@ pub struct DirEntry {
 pub const DIR_NAME_LEN: usize = 107;
 
 /// The size of one [`DirEntry`], in bytes.
-pub const DIR_ENTRY_SIZE: usize = 16 + DIR_NAME_LEN;
+///
+/// Pinned to `size_of` rather than an arithmetic summary, because the reply
+/// is an *array* of these: the array's stride is `size_of`, and only while
+/// the kernel's per-entry step equals `size_of` does every entry of a
+/// multi-entry reply land where the caller reads it. (The arithmetic
+/// `16 + DIR_NAME_LEN` describes a record nobody builds.) The kernel's own
+/// record size is pinned the same way; that pinning is what keeps the two
+/// compilation units able to agree by construction.
+pub const DIR_ENTRY_SIZE: usize = core::mem::size_of::<DirEntry>();
 
 impl DirEntry {
     /// The entry's name, or `""` when it is not valid UTF-8.
