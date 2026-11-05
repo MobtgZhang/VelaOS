@@ -159,7 +159,8 @@ pub fn rect(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
 /// `Text` — draw a string in the calling task's window.
 ///
 /// Arguments: `window`, `pen`, `x`, `y`, `text` (a user NUL-terminated
-/// string). Returns the advance width in pixels.
+/// string). `y` is the string's baseline, matching every other text
+/// renderer. Returns the advance width in pixels.
 pub fn text(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
     let window = crate::ids::WindowId(args.get(0) as u32);
     let pen = PenId(args.get(1) as u16);
@@ -172,7 +173,11 @@ pub fn text(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
         Ok(s) => s,
         Err(e) => return SyscallResult::err(e),
     };
-    let width = (string.chars().count() * vela_text::GLYPH_WIDTH as usize) as u64;
+    // The advance the drawing will report per glyph — the sum of the UI
+    // font's advances at the 16-pixel size the layer drawing uses.
+    let width = vela_font::source_sans()
+        .map(|font| font.text_width(&string, 16) as u64)
+        .unwrap_or(0);
     match paint_window(ctx, window, Color::from(color), |l| {
         ctx.intuition
             .draw_string_in_layer(l, &string, x as i32, y as i32, pack(color));

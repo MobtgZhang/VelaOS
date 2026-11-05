@@ -30,6 +30,6 @@ vela-boot-protocol.workspace = true
 vela-elf-loader.workspace = true
 vela-theme-classic.workspace = true
 vela-renderer2d.workspace = true
-vela-text.workspace = true
+vela-font.workspace = true
 uefi = { workspace = true, features = ["alloc", "global_allocator", "logger", "log-debugcon"] }
 log.workspace = true

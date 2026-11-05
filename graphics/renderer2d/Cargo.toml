@@ -8,7 +8,7 @@ description = "Software 2D framebuffer renderer for VelaOS"
 
 [dependencies]
 vela-boot-protocol.workspace = true
-vela-text.workspace = true
+vela-font.workspace = true
 
 [lints.rust]
 unsafe_code = "warn"

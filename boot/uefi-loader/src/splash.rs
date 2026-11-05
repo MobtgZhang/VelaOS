@@ -42,12 +42,14 @@ pub fn draw(surface: &mut Surface<'_>) {
         surface.fill_rect(theme::ACCENT, bar_x, by_i, bw, bar_h);
     }
 
-    // Title under the mark, using the loader's embedded font.
+    // Title under the mark, using the loader's embedded vector font. The
+    // baseline sits where the old bitmap glyph's baseline was — 13 of the
+    // 16 cell rows down — so the composition keeps its old proportions.
     let scale = 2u32;
-    let tw = vela_text::text_width("VelaOS", scale);
+    let tw = surface.text_width("VelaOS", scale);
     let tx = ((w - tw) / 2) as i32;
     let ty = by + box_h as i32 + (h / 16) as i32;
-    surface.draw_text(theme::TEXT_FG, "VelaOS", tx, ty, scale);
+    surface.draw_text(theme::TEXT_FG, "VelaOS", tx, ty + 13 * scale as i32, scale);
 
     // Progress rule: a filled and an empty track.
     let track_w = (w / 3).clamp(120, 420);
@@ -57,18 +59,24 @@ pub fn draw(surface: &mut Surface<'_>) {
     surface.fill_rect(theme::ACCENT, track_x, track_y, track_w / 4, 6);
 
     let status = "Loading kernel";
-    let sw = vela_text::text_width(status, 1);
+    let sw = surface.text_width(status, 1);
     surface.draw_text(
         theme::TEXT_DIM,
         status,
         ((w - sw) / 2) as i32,
-        track_y + 20,
+        track_y + 20 + 13,
         1,
     );
 
     // A version stamp in the corner: useful when comparing screenshots, and
     // it proves the embedded font is rendering in the loader, not the kernel.
     let ver = vela_boot_protocol::KERNEL_VERSION;
-    let vw = vela_text::text_width(ver, 1);
-    surface.draw_text(Color::rgb(0xE0, 0xE6, 0xF0), ver, (w - vw - 8) as i32, 8, 1);
+    let vw = surface.text_width(ver, 1);
+    surface.draw_text(
+        Color::rgb(0xE0, 0xE6, 0xF0),
+        ver,
+        (w - vw - 8) as i32,
+        8 + 13,
+        1,
+    );
 }

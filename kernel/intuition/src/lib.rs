@@ -79,6 +79,22 @@ use vela_kernel_layers::{LayerId, LayerKind, LayerStack};
 use vela_renderer2d::{Color, Rect};
 use vela_theme_classic as theme;
 
+/// The pixel size text renders at — the 16-pixel line the title bar and the
+/// `Text` syscall were laid out around.
+const FONT_SIZE: u32 = 16;
+
+/// Blend `fg` over `bg` by an antialiased coverage byte. Both colours are
+/// packed `0x00RRGGBB`, the layer buffer's layout.
+fn blend(bg: u32, fg: u32, coverage: u8) -> u32 {
+    let a = coverage as u32;
+    let mix = |shift: u32| -> u32 {
+        let b = (bg >> shift) & 0xFF;
+        let f = (fg >> shift) & 0xFF;
+        ((b * (255 - a) + f * a) + 127) / 255
+    };
+    (mix(16) << 16) | (mix(8) << 8) | mix(0)
+}
+
 /// A handle to a screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScreenId(pub u32);
@@ -1008,8 +1024,10 @@ impl Intuition {
                     l.put(bar.x + x as i32, bar.y + y as i32, pack(bar_color));
                 }
             }
-            // The title, centred.
-            let text_y = bar.y + ((bar.height as i32) - 16) / 2;
+            // The title, centred. The text baseline sits 13 pixels below
+            // the string's `y`, the same place the old 8x16 cell's baseline
+            // was, so the title stays vertically centred in the bar.
+            let text_y = bar.y + ((bar.height as i32) - 16) / 2 + 13;
             self.draw_string_in_layer(l, &w.title, bar.x + 8, text_y, pack(theme::TEXT_FG));
             // The close gadget.
             if let Some(close) = w.close_gadget_rect() {
@@ -1028,10 +1046,15 @@ impl Intuition {
 
     /// Draw a string into a layer's buffer at layer-local coordinates.
     ///
-    /// The font is the original 8x16 bitmap in `vela-text`; this walks its
-    /// rows directly into the layer's `u32` buffer rather than going through
-    /// the framebuffer renderer, because a layer is not a framebuffer — it has
-    /// no stride padding and no pixel-format byte order.
+    /// The font is the embedded vector UI font (Source Sans 3) at 16 pixels,
+    /// antialiased: each glyph's coverage is blended over whatever the layer
+    /// already shows, so text over a painted background stays readable.
+    /// `y` is the string's **baseline** — the same convention the console
+    /// and the framebuffer renderer use — and the pen advances by each
+    /// glyph's own advance, so the string is proportionally spaced. This
+    /// writes the layer's `u32` buffer directly rather than going through
+    /// the framebuffer renderer, because a layer is not a framebuffer — it
+    /// has no stride padding and no pixel-format byte order.
     pub fn draw_string_in_layer(
         &self,
         layer: &mut vela_kernel_layers::Layer,
@@ -1040,17 +1063,29 @@ impl Intuition {
         y: i32,
         color: u32,
     ) {
+        let Some(font) = vela_font::source_sans() else {
+            return; // A broken asset leaves the layer untouched, not broken.
+        };
         let mut cx = x;
         for ch in text.chars() {
-            let glyph = vela_text::glyph(ch);
-            for (row, bits) in glyph.iter().enumerate() {
-                for col in 0..vela_text::GLYPH_WIDTH as u8 {
-                    if bits & (1 << (vela_text::GLYPH_WIDTH as u8 - 1 - col)) != 0 {
-                        layer.put(cx + col as i32, y + row as i32, color);
+            let glyph = font.glyph_or_default(ch);
+            if let Some(raster) = glyph.render(FONT_SIZE) {
+                let top = y - raster.top;
+                for gy in 0..raster.height {
+                    let sy = top + gy as i32;
+                    for gx in 0..raster.width {
+                        let coverage = raster.coverage[(gy * raster.width + gx) as usize];
+                        if coverage == 0 {
+                            continue;
+                        }
+                        let sx = cx + raster.left + gx as i32;
+                        if let Some(bg) = layer.get(sx, sy) {
+                            layer.put(sx, sy, blend(bg, color, coverage));
+                        }
                     }
                 }
             }
-            cx += vela_text::GLYPH_WIDTH as i32;
+            cx += glyph.advance(FONT_SIZE) as i32;
         }
     }
 

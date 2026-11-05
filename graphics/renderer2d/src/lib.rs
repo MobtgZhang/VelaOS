@@ -41,6 +41,17 @@ impl Color {
     pub const WHITE: Color = Color::rgb(0xFF, 0xFF, 0xFF);
 }
 
+/// The pixel size `draw_text` uses for `scale = 1`, chosen to match the
+/// 16-pixel line height the console and the window layer were laid out for.
+const BASE_FONT_SIZE: u32 = 16;
+
+/// Blend `fg` over `bg` by an antialiased coverage byte (0 = bg, 255 = fg).
+fn blend(bg: Color, fg: Color, coverage: u8) -> Color {
+    let a = coverage as u32;
+    let mix = |b: u8, f: u8| -> u8 { (((b as u32 * (255 - a) + f as u32 * a) + 127) / 255) as u8 };
+    Color::rgb(mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b))
+}
+
 impl From<u32> for Color {
     /// Decode from a packed `0x00RRGGBB` value.
     fn from(v: u32) -> Self {
@@ -458,35 +469,55 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// Draw text with the embedded 8x16 font, scaled by an integer factor.
+    /// Draw `text` with the embedded vector UI font (Source Sans 3) at
+    /// `16 * scale` pixels, blending each glyph's antialiased coverage over
+    /// whatever the surface already shows.
     ///
-    /// Returns the advance width in pixels. Coordinates are `i32` to match the
-    /// other drawing entry points, so off-screen text is clipped rather than
-    /// wrapping around.
+    /// `y` is the text's **baseline**, the same convention the console and
+    /// the window layer use, so a string drawn by any renderer sits on the
+    /// same line. Returns the advance width in pixels — the sum of the
+    /// glyphs' advances, which is also what [`Surface::text_width`] reports.
+    /// Coordinates are `i32` to match the other drawing entry points, so
+    /// off-screen text is clipped rather than wrapping around.
     pub fn draw_text(&mut self, color: Color, text: &str, x: i32, y: i32, scale: u32) -> u32 {
-        let scale = scale.max(1);
+        let size = BASE_FONT_SIZE.saturating_mul(scale.max(1));
+        let Some(font) = vela_font::source_sans() else {
+            return 0;
+        };
         let mut cx = x;
         for ch in text.chars() {
-            let glyph = vela_text::glyph(ch);
-            let cw = vela_text::GLYPH_WIDTH;
-            let ch_h = vela_text::GLYPH_HEIGHT;
-            for gy in 0..ch_h {
-                let bits = glyph[gy as usize];
-                for gx in 0..cw {
-                    if bits & (1 << (cw - 1 - gx)) != 0 {
-                        self.fill_rect(
-                            color,
-                            cx + (gx * scale) as i32,
-                            y + (gy * scale) as i32,
-                            scale,
-                            scale,
-                        );
+            let glyph = font.glyph_or_default(ch);
+            if let Some(raster) = glyph.render(size) {
+                let top = y - raster.top;
+                for gy in 0..raster.height {
+                    for gx in 0..raster.width {
+                        let coverage = raster.coverage[(gy * raster.width + gx) as usize];
+                        if coverage == 0 {
+                            continue;
+                        }
+                        let sx = cx + raster.left + gx as i32;
+                        let sy = top + gy as i32;
+                        if !self.drawable(sx, sy) {
+                            continue;
+                        }
+                        let bg = self.get_pixel(sx as u32, sy as u32);
+                        let fg = blend(bg, color, coverage);
+                        self.put_pixel(sx as u32, sy as u32, fg);
                     }
                 }
             }
-            cx += (cw * scale) as i32;
+            cx += glyph.advance(size) as i32;
         }
         (cx - x) as u32
+    }
+
+    /// The pixel width `draw_text` would report for `text` at `scale`,
+    /// without drawing anything.
+    pub fn text_width(&self, text: &str, scale: u32) -> u32 {
+        let size = BASE_FONT_SIZE.saturating_mul(scale.max(1));
+        vela_font::source_sans()
+            .map(|font| font.text_width(text, size))
+            .unwrap_or(0)
     }
 }
 
@@ -669,14 +700,22 @@ mod tests {
     fn text_advances_the_cursor() {
         let mut fb = FakeFb::new(200, 40, 200);
         let mut s = fb.surface(200, 40, 200, PixelFormat::Bgr);
+        let font = vela_font::source_sans().expect("the embedded font parses");
         let w = s.draw_text(Color::WHITE, "AB", 0, 0, 1);
-        assert_eq!(w, 16, "two 8px glyphs");
+        assert_eq!(
+            w,
+            font.text_width("AB", 16),
+            "the advance is the glyphs' sum"
+        );
         let w2 = s.draw_text(Color::WHITE, "AB", 0, 0, 2);
-        assert_eq!(w2, 32, "scaled by two");
+        assert_eq!(w2, font.text_width("AB", 32), "scaled by two");
+        // The UI font is proportional: a narrow letter advances less than a
+        // wide one, which a fixed-cell bitmap could never express.
+        assert!(s.text_width("I", 1) < s.text_width("W", 1));
     }
 
     #[test]
-    fn unknown_characters_render_as_a_box_not_a_panic() {
+    fn unknown_characters_render_as_the_default_not_a_panic() {
         let mut fb = FakeFb::new(64, 32, 64);
         let mut s = fb.surface(64, 32, 64, PixelFormat::Bgr);
         s.draw_text(Color::WHITE, "\u{1F600}\u{4E2D}", 0, 0, 1);

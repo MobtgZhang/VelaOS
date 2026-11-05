@@ -9,5 +9,4 @@ description = "Graphics services: RastPort, Bitmap, pens, text"
 [dependencies]
 vela-boot-protocol.workspace = true
 vela-renderer2d.workspace = true
-vela-text.workspace = true
 spin.workspace = true

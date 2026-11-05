@@ -12,6 +12,6 @@ vela-kernel-exec.workspace = true
 vela-kernel-input.workspace = true
 vela-kernel-layers.workspace = true
 vela-renderer2d.workspace = true
-vela-text.workspace = true
+vela-font.workspace = true
 vela-theme-classic.workspace = true
 spin.workspace = true

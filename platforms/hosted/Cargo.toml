@@ -19,7 +19,6 @@ vela-ramfs.workspace = true
 vela-kernel-scheduler.workspace = true
 vela-kernel-syscall.workspace = true
 vela-renderer2d.workspace = true
-vela-text.workspace = true
 spin.workspace = true
 
 [dev-dependencies]

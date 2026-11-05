@@ -946,7 +946,12 @@ mod tests {
             pen,
             Color::from(0x00FF_FFFF),
         );
-        assert_eq!(rp.text("AB", 0, 0), 16, "two 8px glyphs");
+        // The advance is the UI font's per-glyph sum, as `Surface::text_width`
+        // reports it — the same number a caller centring text would use.
+        let mut probe_fb = FakeFb::new(1, 1, 1);
+        let expected = probe_fb.surface(1, 1, 1).text_width("AB", 1);
+        assert_eq!(rp.text("AB", 0, 0), expected, "the UI font's advance sum");
+        assert_ne!(expected, 0, "the vector font drew something");
     }
 
     #[test]

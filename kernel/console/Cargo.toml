@@ -7,7 +7,7 @@ publish.workspace = true
 description = "Framebuffer text console and PS/2 keyboard polling"
 
 [dependencies]
-vela-text.workspace = true
+vela-font.workspace = true
 vela-kernel-input.workspace = true
 vela-hal-x86_64.workspace = true
 spin.workspace = true
