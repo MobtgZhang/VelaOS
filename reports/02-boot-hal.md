@@ -81,3 +81,44 @@ typedef struct {
 - [AROS Ports](https://www.aros.org/introduction/ports.html)
 - [AROS Compiling](https://developers.aros.org/documentation/compiling.html)
 - [AROS System Porting（历史文档，旧命令勿直接照抄）](https://developers.aros.org/documentation/sys-dev/system-development.html)
+
+## UEFI 引导菜单（Boot Menu）
+
+首版 UEFI loader 应在启动内核前显示一个可选择的引导菜单，让用户从多个操作系统或内核配置中选择。菜单通过 `\Vela\boot\vela.toml` 配置，格式如下：
+
+```toml
+[boot]
+default = "vela"
+timeout_seconds = 10
+arch = "x86_64"
+
+[entry.vela]
+kernel = '\Vela\kernel\vela-kernel.elf'
+initrd = '\Vela\bin\vela-init'
+
+[entry.vela-safe]
+kernel = '\Vela\kernel\vela-kernel-safe.elf'
+initrd = '\Vela\bin\vela-init'
+
+[entry.memtest]
+kernel = '\Vela\bin\memtest.elf'
+```
+
+菜单行为：
+
+| 交互 | 行为 |
+| --- | --- |
+| 数字键 `1`–`9` | 直接选择对应序号的 entry |
+| 回车键 | 启动 `default` entry |
+| 超时（`timeout_seconds`） | 自动启动 `default` entry |
+| 无 GOP/无键盘 | 直接启动 `default` entry，不显示菜单 |
+
+菜单在 GOP 帧缓冲上绘制：半透明背景框、标题“VelaOS Boot Menu”、每个 entry 一行（高亮 default），底部显示提示信息。超时倒计时可在屏幕上显示剩余秒数。
+
+**实现要点**：
+
+- 引导菜单在 `ExitBootServices` 之前绘制和交互，使用 UEFI 的 `Simple Text Input Ex` 协议读取按键。
+- 超时通过 `uefi::boot::stall()` 轮询实现，或使用定时器事件与 `wait_for_event` 配合。
+- 只有一个 entry 时可跳过菜单，直接启动该 entry。
+- 菜单绘制后释放 GOP，帧缓冲物理地址通过 `BootInfo` 传递给内核。
+

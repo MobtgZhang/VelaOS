@@ -34,13 +34,15 @@ mod pool;
 mod splash;
 
 use core::mem;
+use core::time::Duration;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, format, vec::Vec};
 use pool::Pool;
 
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
+use uefi::proto::console::text::{InputEx, Key};
 use uefi::runtime::ResetType;
 use uefi::{entry, prelude::*};
 
@@ -435,12 +437,18 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
         cfg.entries.len()
     );
 
-    let entry_cfg = match cfg.entries.iter().find(|e| e.name == cfg.default) {
-        Some(e) => e,
-        None => return Err(Status::NOT_FOUND),
-    };
+    // The entry chosen by the boot menu overrides `cfg.default`. If the menu
+    // is skipped (single entry, no GOP, etc.), `cfg.default` is used.
+    let mut selected_entry: Option<usize> = None;
 
     // --- B-02: kernel image -------------------------------------------------
+    let entry_idx = selected_entry.unwrap_or_else(|| {
+        cfg.entries
+            .iter()
+            .position(|e| e.name == cfg.default)
+            .unwrap_or(0)
+    });
+    let entry_cfg = &cfg.entries[entry_idx];
     let kernel_path = OwnedPath::new(&entry_cfg.kernel_full_path());
     let kernel_bytes = match fs.read(kernel_path.as_cstr()) {
         Ok(b) => b,
@@ -515,7 +523,16 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
                 stride_px,
                 pixel_format,
             ) {
-                Some(mut surface) => splash::draw(&mut surface),
+                Some(mut surface) => {
+                    splash::draw(&mut surface);
+                    // --- B-03b: boot menu -------------------------------------
+                    // Draw the menu on top of the splash and wait for the user
+                    // to pick an entry (or for the timeout to elapse).
+                    if let Some(selected) = boot_menu(&mut surface, &cfg) {
+                        // Selected entry overrides the config default.
+                        selected_entry = Some(selected);
+                    }
+                }
                 None => {
                     log::error!("framebuffer geometry rejected");
                     return Err(Status::BAD_BUFFER_SIZE);
@@ -1069,4 +1086,136 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
     }
 
     1
+}
+
+/// Draw the boot menu on the splash and wait for the user to pick an entry.
+///
+/// Returns `Some(index)` when the user picks an entry, or `None` when the
+/// timeout elapses (the caller should then use `cfg.default`).
+///
+/// The menu lists every `[entry.*]` from `vela.toml`. The default entry is
+/// highlighted and selected automatically after `timeout_seconds`.
+fn boot_menu(surface: &mut Surface<'_>, cfg: &config::Config) -> Option<usize> {
+    let w = surface.width() as i32;
+    let h = surface.height() as i32;
+
+    // Menu geometry: a centred box with one line per entry.
+    let entry_h = 24i32;
+    let pad = 40i32;
+    let box_w = (w / 2).clamp(400, 900);
+    let box_h = (cfg.entries.len() as i32 * entry_h + 2 * pad).clamp(200, h - 100);
+    let bx = (w - box_w) / 2;
+    let by = (h - box_h) / 2;
+
+    // Semi-transparent backdrop.
+    surface.fill_rect(
+        vela_renderer2d::Color::rgb(0x10, 0x10, 0x18),
+        bx,
+        by,
+        box_w as u32,
+        box_h as u32,
+    );
+    surface.stroke_rect(
+        vela_renderer2d::Color::rgb(0xC0, 0xC0, 0xC0),
+        bx,
+        by,
+        box_w as u32,
+        box_h as u32,
+    );
+
+    // Title.
+    let title = "VelaOS Boot Menu";
+    let tw = surface.text_width(title, 2);
+    surface.draw_text(
+        vela_renderer2d::Color::rgb(0xFF, 0xFF, 0xFF),
+        title,
+        bx + (box_w - tw as i32) / 2,
+        by + 30,
+        2,
+    );
+
+    // Hint line.
+    let hint = "Use ↑/↓ to select, Enter to boot, or wait for timeout";
+    let hw = surface.text_width(hint, 1);
+    surface.draw_text(
+        vela_renderer2d::Color::rgb(0xA0, 0xA0, 0xA0),
+        hint,
+        bx + (box_w - hw as i32) / 2,
+        by + 60,
+        1,
+    );
+
+    // Default entry index.
+    let default_idx = cfg
+        .entries
+        .iter()
+        .position(|e| e.name == cfg.default)
+        .unwrap_or(0);
+
+    // Draw all entries.
+    let start_y = by + 100;
+    for (i, entry) in cfg.entries.iter().enumerate() {
+        let y = (start_y as i32) + (i as i32) * entry_h;
+        let is_default = i == default_idx;
+        let color = if is_default {
+            vela_renderer2d::Color::rgb(0xFF, 0xD0, 0x00)
+        } else {
+            vela_renderer2d::Color::rgb(0xE0, 0xE0, 0xE0)
+        };
+        let label = format!("{}. {}", i + 1, entry.name);
+        surface.draw_text(color, &label, bx + 60, y, 1);
+    }
+
+    // --- Wait for a key or timeout ------------------------------------------
+    //
+    // Open the Simple Text Input Ex protocol and poll for a key. If the
+    // timeout elapses without a key, fall back to the default entry.
+    let timeout_ticks = cfg.timeout_seconds * 100; // 10 ms per tick
+    let mut ticks = 0u32;
+    let mut selected: Option<usize> = None;
+
+    // Open TextInputEx.
+    let ti_handle = match uefi::boot::get_handle_for_protocol::<InputEx>() {
+        Ok(h) => h,
+        Err(_) => return Some(default_idx),
+    };
+    let mut ti = match uefi::boot::open_protocol_exclusive::<InputEx>(ti_handle) {
+        Ok(t) => t,
+        Err(_) => return Some(default_idx),
+    };
+
+    while ticks < timeout_ticks {
+        match ti.read_key() {
+            Ok(Some(key_data)) => {
+                match key_data.key {
+                    // Number keys 1..=entries.len().
+                    Key::Printable(ch) => {
+                        let code = u16::from(ch) as u32;
+                        if code >= b'1' as u32 && code <= b'9' as u32 {
+                            let digit = code - b'0' as u32;
+                            if digit >= 1 && digit <= 9 {
+                                let idx = (digit - 1) as usize;
+                                if idx < cfg.entries.len() {
+                                    selected = Some(idx);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Enter or any special key -> default entry.
+                    Key::Special(_) => {
+                        selected = Some(default_idx);
+                        break;
+                    }
+                }
+            }
+            Ok(None) | Err(_) => {
+                // No key ready yet; wait a bit and try again.
+                uefi::boot::stall(Duration::from_millis(10));
+                ticks += 1;
+            }
+        }
+    }
+
+    selected.or(Some(default_idx))
 }
