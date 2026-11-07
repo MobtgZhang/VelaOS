@@ -290,6 +290,8 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // SAFETY: the loader has exited boot services, so the firmware no longer
     // owns COM1.
     unsafe { serial::init() };
+    // SAFETY: set exactly once during boot, before any task runs.
+    unsafe { vela_kernel_syscall::set_console_write(serial::puts) };
     serial::puts("\n");
     serial::puts("VELA-KERNEL: entering\n");
 
@@ -928,9 +930,10 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     }
 
     // --- 10. Banner ---------------------------------------------------------
+    // SAFETY: set exactly once during boot, before any task runs.
+    unsafe { vela_kernel_syscall::set_hostname("vela") };
     serial::puts("VELA-KERNEL: VelaOS 0.1.0 ready\n");
     BOOTED.store(true, Ordering::Release);
-
     // --- 11. Ring 3 ---------------------------------------------------------
     //
     // The banner is printed *before* the first user instruction so that a

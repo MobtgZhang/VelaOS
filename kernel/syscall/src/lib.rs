@@ -131,6 +131,63 @@ pub use numbers::SyscallResult;
 /// The arguments of a syscall, re-exported for convenience.
 pub use numbers::SyscallArgs;
 
+/// The machine's hostname string, leaked for the kernel's lifetime.
+///
+/// Set once during boot alongside [`hostname`].
+static HOSTNAME_STR: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// The console write function, set once during boot.
+///
+/// Points at `serial::puts` on bare metal, or a test sink on the host.
+static CONSOLE_WRITE: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// The machine's hostname.
+pub fn hostname() -> &'static str {
+    let ptr = HOSTNAME_STR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr == 0 {
+        return "vela";
+    }
+    // SAFETY: the pointer was stored by `set_hostname` during boot and
+    // names a `&'static str` that lives for the kernel's lifetime.
+    unsafe { *(ptr as *const &'static str) }
+}
+
+/// Set the machine's hostname.
+///
+/// # Safety
+///
+/// Must be called exactly once, during boot, before any task runs.
+pub unsafe fn set_hostname(name: &'static str) {
+    // SAFETY: written once during boot, before any task runs.
+    let leaked: &'static &'static str = Box::leak(Box::new(name));
+    HOSTNAME_STR.store(leaked as *const &'static str as u64, core::sync::atomic::Ordering::Release);
+}
+
+/// Set the console write function.
+///
+/// # Safety
+///
+/// Must be called exactly once, during boot, before any task runs.
+pub unsafe fn set_console_write(f: fn(&str)) {
+    // SAFETY: written once during boot, before any task runs.
+    CONSOLE_WRITE.store(f as *const () as usize as u64, core::sync::atomic::Ordering::Release);
+}
+
+/// Print a string to the console.
+///
+/// No-op if no console write function has been installed yet.
+pub fn print_console(s: &str) {
+    let f = CONSOLE_WRITE.load(core::sync::atomic::Ordering::Acquire);
+    if f != 0 {
+        // SAFETY: the only value ever stored is a `fn(&str)` address,
+        // installed during boot before interrupts are enabled.
+        let f: fn(&str) = unsafe { core::mem::transmute(f) };
+        f(s);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -767,6 +767,39 @@ pub mod exec_handlers {
             Err(_) => SyscallResult::err(errors::BAD_POINTER),
         }
     }
+
+    /// `ClearScreen` — clear the console screen.
+    ///
+    /// No arguments. Returns zero on success. Sends the ANSI clear-screen
+    /// sequence to the console, which a terminal emulator honours; on a
+    /// serial-only console it is harmless noise.
+    pub fn clear_screen(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+        // ESC [ 2 J  ESC [ H — erase display and move cursor to home.
+        crate::print_console("\x1b[2J\x1b[H");
+        SyscallResult::ok(0)
+    }
+
+    /// `GetHostname` — read the machine's hostname into a user buffer.
+    ///
+    /// Arguments: `buf` (a user pointer), `len` (the buffer size). Returns
+    /// the number of bytes written, excluding the NUL terminator, or `RANGE`
+    /// when the buffer is empty.
+    pub fn get_hostname(args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+        let buf = args.get(0);
+        let len = args.get(1) as usize;
+        if len == 0 {
+            return SyscallResult::err(errors::RANGE);
+        }
+        let name = crate::hostname();
+        let bytes = name.as_bytes();
+        let count = bytes.len().min(len - 1);
+        // SAFETY: the kernel validates user pointers before writing; the
+        // copy helper checks the range and rejects bad pointers.
+        match unsafe { crate::copy::copy_to_user(buf, bytes.as_ptr(), count) } {
+            Ok(_) => SyscallResult::ok(count as u64),
+            Err(_) => SyscallResult::err(errors::BAD_POINTER),
+        }
+    }
 }
 
 /// The built-in dispatch table, with every Exec syscall installed.
@@ -805,6 +838,8 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::ALLOC_POOLED, exec_handlers::alloc_pooled);
     table.install(numbers::FREE_POOLED, exec_handlers::free_pooled);
     table.install(numbers::DELETE_POOL, exec_handlers::delete_pool);
+    table.install(numbers::CLEAR_SCREEN, exec_handlers::clear_screen);
+    table.install(numbers::GET_HOSTNAME, exec_handlers::get_hostname);
 
     // The `utility.library` group:
 

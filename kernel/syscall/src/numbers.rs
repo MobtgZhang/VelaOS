@@ -171,6 +171,14 @@ pub const ALLOC_POOLED: u64 = 28;
 pub const FREE_POOLED: u64 = 29;
 /// `exec.library`: delete a pool.
 pub const DELETE_POOL: u64 = 30;
+/// `exec.library`: clear the screen.
+pub const CLEAR_SCREEN: u64 = 31;
+/// `exec.library`: read the machine's hostname into a buffer.
+///
+/// `buf` is a caller buffer; `len` is its size. Returns the number of bytes
+/// written (excluding the NUL terminator), or `RANGE` when `buf` is empty or
+/// too small.
+pub const GET_HOSTNAME: u64 = 32;
 
 /// `graphics.library`: reserve a pen in a palette.
 pub const GRAPHICS_ALLOC_PEN: u64 = 64;
@@ -374,7 +382,7 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 31;
+pub const EXEC_COUNT: u64 = 33;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.
@@ -612,7 +620,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 116] = [
+    const ALL: [(u64, SyscallGroup); 118] = [
         (CREATE_MSG_PORT, SyscallGroup::Exec),
         (DELETE_MSG_PORT, SyscallGroup::Exec),
         (PUT_MSG, SyscallGroup::Exec),
@@ -635,6 +643,8 @@ mod tests {
         (BRK, SyscallGroup::Exec),
         (ADD_PORT, SyscallGroup::Exec),
         (GETCHAR, SyscallGroup::Exec),
+        (CLEAR_SCREEN, SyscallGroup::Exec),
+        (GET_HOSTNAME, SyscallGroup::Exec),
         (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
         (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
         (GRAPHICS_SET_PEN, SyscallGroup::Graphics),

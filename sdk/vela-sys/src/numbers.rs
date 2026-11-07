@@ -83,6 +83,10 @@ pub const ALLOC_POOLED: u64 = 28;
 pub const FREE_POOLED: u64 = 29;
 /// `exec.library`: delete a pool.
 pub const DELETE_POOL: u64 = 30;
+/// `exec.library`: clear the screen.
+pub const CLEAR_SCREEN: u64 = 31;
+/// `exec.library`: read the machine's hostname into a buffer.
+pub const GET_HOSTNAME: u64 = 32;
 
 /// The size of a program page, in bytes.
 ///

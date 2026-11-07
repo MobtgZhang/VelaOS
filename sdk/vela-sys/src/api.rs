@@ -625,6 +625,40 @@ pub fn power_off_with(status: u32) -> ! {
     }
 }
 
+/// `ClearScreen` — clear the console screen.
+///
+/// Sends the ANSI clear-screen sequence to the console. A terminal emulator
+/// honours it; a serial-only console treats it as harmless noise.
+///
+/// Returns zero on success.
+pub fn clear_screen() -> Result<()> {
+    // SAFETY: no pointers among the arguments. `CLEAR_SCREEN` is syscall 31.
+    let packed = unsafe { library_base::exec::base().call(31, [0, 0, 0, 0, 0, 0]) };
+    check(packed).map(|_| ())
+}
+
+/// `GetHostname` — read the machine's hostname into `buf`.
+///
+/// Returns the number of bytes written, excluding the NUL terminator.
+///
+/// # Errors
+///
+/// [`errors::RANGE`] when `buf` is empty, or [`errors::BAD_POINTER`] when
+/// `buf` is not a valid user pointer.
+pub fn hostname(buf: &mut [u8]) -> Result<usize> {
+    if buf.is_empty() {
+        return Err(Error { code: errors::RANGE });
+    }
+    let ptr = buf.as_mut_ptr() as u64;
+    let len = buf.len() as u64;
+    // SAFETY: `buf` is a live, writable slice of exactly `len` bytes and the
+    // kernel validates the range before writing. `GET_HOSTNAME` is syscall 32.
+    let packed = unsafe {
+        library_base::exec::base().call(32, [ptr, len, 0, 0, 0, 0])
+    };
+    check(packed).map(|v| v as usize)
+}
+
 // ---------------------------------------------------------------------------
 // Program memory
 // ---------------------------------------------------------------------------
