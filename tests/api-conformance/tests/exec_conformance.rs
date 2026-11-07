@@ -593,6 +593,185 @@ fn exec_brk_grows_and_shrinks_the_break() {
     assert_eq!(frames.remaining(), 16);
 }
 
+/// `AllocMem` and `FreeMem` hand out and return memory in the task's arena.
+#[test]
+fn exec_alloc_mem_and_free_mem_round_trip() {
+    let _guard = memory_serial();
+    let k = harness::kernel();
+    let t = harness::task(&k);
+    task_space::spaces().create(t);
+    let frames = install_fake_frames(16);
+
+    let alloc = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::ALLOC_MEM,
+            SyscallArgs::new(2 * PAGE_SIZE, 0, 0, 0, 0, 0),
+        ),
+        "AllocMem",
+    );
+    assert!(
+        alloc.value >= task_space::BREAK_LIMIT,
+        "the allocation must come from the arena above the break ceiling"
+    );
+    assert_eq!(frames.remaining(), 14, "two pages were committed");
+
+    let freed = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::FREE_MEM,
+            SyscallArgs::new(alloc.value, 0, 0, 0, 0, 0),
+        ),
+        "FreeMem",
+    );
+    assert_eq!(freed.value, 0);
+    assert_eq!(frames.remaining(), 16, "both pages were returned");
+
+    // Freeing the same pointer again is refused rather than double-freed.
+    let again = harness::call(
+        &k,
+        t,
+        numbers::FREE_MEM,
+        SyscallArgs::new(alloc.value, 0, 0, 0, 0, 0),
+    );
+    assert!(again.is_err(), "a second FreeMem must be refused");
+}
+
+/// `AvailMem` reports the arena's uncommitted bytes.
+#[test]
+fn exec_avail_mem_reports_the_arena() {
+    let _guard = memory_serial();
+    let k = harness::kernel();
+    let t = harness::task(&k);
+    task_space::spaces().create(t);
+    let frames = install_fake_frames(8);
+
+    let before = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::AVAIL_MEM,
+            SyscallArgs::new(0, 0, 0, 0, 0, 0),
+        ),
+        "AvailMem (before)",
+    );
+    assert_eq!(
+        before.value,
+        task_space::USER_SPACE_END - task_space::BREAK_LIMIT
+    );
+
+    let alloc = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::ALLOC_MEM,
+            SyscallArgs::new(PAGE_SIZE, 0, 0, 0, 0, 0),
+        ),
+        "AllocMem",
+    );
+    assert!(alloc.value.is_multiple_of(PAGE_SIZE));
+    assert_eq!(frames.remaining(), 7, "one page was committed");
+
+    let after = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::AVAIL_MEM,
+            SyscallArgs::new(0, 0, 0, 0, 0, 0),
+        ),
+        "AvailMem (after)",
+    );
+    assert_eq!(after.value, before.value - PAGE_SIZE);
+}
+
+/// `CreatePool`, `AllocPooled`, `FreePooled` and `DeletePool` are one
+/// lifecycle: a pool's allocations cannot be freed through another pool.
+#[test]
+fn exec_pool_lifecycle_is_verified() {
+    let _guard = memory_serial();
+    let k = harness::kernel();
+    let t = harness::task(&k);
+    task_space::spaces().create(t);
+    let frames = install_fake_frames(16);
+
+    let pool = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::CREATE_POOL,
+            SyscallArgs::new(0, 0, 0, 0, 0, 0),
+        ),
+        "CreatePool",
+    );
+    assert!(pool.value != 0, "a pool handle must be non-zero");
+
+    let alloc = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::ALLOC_POOLED,
+            SyscallArgs::new(pool.value, PAGE_SIZE, 0, 0, 0, 0),
+        ),
+        "AllocPooled",
+    );
+    assert_eq!(frames.remaining(), 15);
+
+    // The allocation belongs to this pool; another pool cannot free it.
+    let other = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::CREATE_POOL,
+            SyscallArgs::new(0, 0, 0, 0, 0, 0),
+        ),
+        "CreatePool (second)",
+    );
+    let wrong = harness::call(
+        &k,
+        t,
+        numbers::FREE_POOLED,
+        SyscallArgs::new(other.value, alloc.value, 0, 0, 0, 0),
+    );
+    assert!(
+        wrong.is_err(),
+        "FreePooled from another pool must be refused"
+    );
+
+    let freed = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::FREE_POOLED,
+            SyscallArgs::new(pool.value, alloc.value, 0, 0, 0, 0),
+        ),
+        "FreePooled",
+    );
+    assert_eq!(freed.value, 0);
+    assert_eq!(frames.remaining(), 16);
+
+    // A pool with no outstanding allocations deletes cleanly.
+    ok(
+        harness::call(
+            &k,
+            t,
+            numbers::DELETE_POOL,
+            SyscallArgs::new(pool.value, 0, 0, 0, 0, 0),
+        ),
+        "DeletePool",
+    );
+
+    // Deleting the same pool again is refused.
+    let again = harness::call(
+        &k,
+        t,
+        numbers::DELETE_POOL,
+        SyscallArgs::new(pool.value, 0, 0, 0, 0, 0),
+    );
+    assert!(again.is_err(), "a second DeletePool must be refused");
+}
+
 /// A frame source that hands out page-aligned, zeroed host allocations.
 ///
 /// The mapped page is zeroed through its *physical* address, so a fake frame

@@ -637,6 +637,136 @@ pub mod exec_handlers {
             Err(_) => SyscallResult::err(errors::NO_MEMORY),
         }
     }
+
+    /// `AllocMem` — allocate memory in the calling task's space.
+    ///
+    /// Arguments: `size`, `flags`. Returns the allocation's address.
+    ///
+    /// The allocation is mapped into the task's arena and zeroed. `flags`
+    /// selects the `MEMF_*` policy; this kernel has one arena, so the flags do
+    /// not change where the allocation lands.
+    pub fn alloc_mem(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let size = args.get(0);
+        let flags = args.get(1) as u32;
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        let Some(frames) = crate::task_space::frames() else {
+            return SyscallResult::err(errors::NO_MEMORY);
+        };
+        match space.alloc_mem(size, flags, frames) {
+            Ok(va) => SyscallResult::ok(va),
+            Err(MapError::MisalignedVirtual) => SyscallResult::err(errors::RANGE),
+            Err(_) => SyscallResult::err(errors::NO_MEMORY),
+        }
+    }
+
+    /// `FreeMem` — free an allocation made by `AllocMem`.
+    ///
+    /// Arguments: `address`, `size`. Returns zero.
+    pub fn free_mem(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let va = args.get(0);
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        let Some(frames) = crate::task_space::frames() else {
+            return SyscallResult::err(errors::NO_MEMORY);
+        };
+        match space.free_mem(va, frames) {
+            Ok(_) => SyscallResult::ok(0),
+            Err(_) => SyscallResult::err(errors::BAD_POINTER),
+        }
+    }
+
+    /// `AllocVec` — allocate a vector, with the same semantics as `AllocMem`.
+    ///
+    /// Arguments: `size`, `flags`. Returns the allocation's address.
+    pub fn alloc_vec(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        alloc_mem(args, ctx)
+    }
+
+    /// `FreeVec` — free a vector made by `AllocVec`.
+    ///
+    /// Arguments: `address`. Returns zero.
+    pub fn free_vec(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        free_mem(args, ctx)
+    }
+
+    /// `AvailMem` — report the uncommitted bytes in the task's arena.
+    ///
+    /// Arguments: `flags`. Returns the number of bytes the arena can still
+    /// hand out.
+    pub fn avail_mem(_args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        SyscallResult::ok(space.avail_mem())
+    }
+
+    /// `CreatePool` — create a memory pool for the calling task.
+    ///
+    /// Arguments: `flags`. Returns the pool's opaque handle.
+    pub fn create_pool(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let flags = args.get(0) as u32;
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        SyscallResult::ok(space.create_pool(flags))
+    }
+
+    /// `AllocPooled` — allocate from a pool.
+    ///
+    /// Arguments: `pool`, `size`. Returns the allocation's address.
+    pub fn alloc_pooled(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let pool = args.get(0);
+        let size = args.get(1);
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        let Some(frames) = crate::task_space::frames() else {
+            return SyscallResult::err(errors::NO_MEMORY);
+        };
+        match space.alloc_pooled(pool, size, frames) {
+            Ok(va) => SyscallResult::ok(va),
+            Err(MapError::MisalignedVirtual) => SyscallResult::err(errors::RANGE),
+            Err(_) => SyscallResult::err(errors::NO_MEMORY),
+        }
+    }
+
+    /// `FreePooled` — free an allocation from a pool.
+    ///
+    /// Arguments: `pool`, `address`. Returns zero.
+    pub fn free_pooled(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let pool = args.get(0);
+        let va = args.get(1);
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        let Some(frames) = crate::task_space::frames() else {
+            return SyscallResult::err(errors::NO_MEMORY);
+        };
+        match space.free_pooled(pool, va, frames) {
+            Ok(_) => SyscallResult::ok(0),
+            Err(_) => SyscallResult::err(errors::BAD_POINTER),
+        }
+    }
+
+    /// `DeletePool` — delete a pool and free everything allocated from it.
+    ///
+    /// Arguments: `pool`. Returns zero.
+    pub fn delete_pool(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let pool = args.get(0);
+        let Some(space) = crate::task_space::spaces().get(ctx.task) else {
+            return SyscallResult::err(errors::NO_OBJECT);
+        };
+        let Some(frames) = crate::task_space::frames() else {
+            return SyscallResult::err(errors::NO_MEMORY);
+        };
+        match space.delete_pool(pool, frames) {
+            Ok(_) => SyscallResult::ok(0),
+            Err(_) => SyscallResult::err(errors::BAD_POINTER),
+        }
+    }
 }
 
 /// The built-in dispatch table, with every Exec syscall installed.
@@ -664,6 +794,19 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::MAP_PAGE, exec_handlers::map_page);
     table.install(numbers::BRK, exec_handlers::brk);
     table.install(numbers::ADD_PORT, exec_handlers::add_port);
+    // Exec memory management syscalls (numbers 22-30). `AllocMem` and
+    // `AllocVec` share one implementation; `FreeVec` and `FreeMem` likewise.
+    table.install(numbers::ALLOC_MEM, exec_handlers::alloc_mem);
+    table.install(numbers::FREE_MEM, exec_handlers::free_mem);
+    table.install(numbers::ALLOC_VEC, exec_handlers::alloc_vec);
+    table.install(numbers::FREE_VEC, exec_handlers::free_vec);
+    table.install(numbers::AVAIL_MEM, exec_handlers::avail_mem);
+    table.install(numbers::CREATE_POOL, exec_handlers::create_pool);
+    table.install(numbers::ALLOC_POOLED, exec_handlers::alloc_pooled);
+    table.install(numbers::FREE_POOLED, exec_handlers::free_pooled);
+    table.install(numbers::DELETE_POOL, exec_handlers::delete_pool);
+
+    // The `utility.library` group:
 
     // The `utility.library` group: tag lists and string helpers. They take
     // user pointers rather than handles, so they live in their own module —

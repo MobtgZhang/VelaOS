@@ -106,6 +106,22 @@ pub const USER_STACK_TOP: u64 = USER_SPACE_END - PAGE_SIZE;
 /// diagnostics.
 static NEXT_SPACE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// One allocation made by `AllocMem`/`AllocVec`/`AllocPooled`.
+struct Allocation {
+    /// The allocation's first virtual address.
+    va: u64,
+    /// The number of pages the allocation occupies.
+    pages: u64,
+    /// The pool it came from, or `None` for a direct allocation.
+    pool: Option<u64>,
+}
+
+/// A memory pool created by `CreatePool`.
+struct PoolRecord {
+    /// The opaque pool handle.
+    id: u64,
+}
+
 /// One task's user address space and its program break.
 pub struct TaskSpace {
     /// The page tables.
@@ -125,6 +141,18 @@ pub struct TaskSpace {
     brk: AtomicUsize,
     /// The base of the break region, so a `brk` can tell growth from shrink.
     brk_base: u64,
+    /// The next virtual address handed out by `AllocMem`.
+    ///
+    /// This arena starts above the break ceiling and below the stack, so
+    /// allocations cannot collide with the program image, the break region or
+    /// the stack.
+    alloc_next: AtomicU64,
+    /// Allocations made through the Exec memory syscalls.
+    allocations: Mutex<Vec<Allocation>>,
+    /// Memory pools created through `CreatePool`.
+    pools: Mutex<Vec<PoolRecord>>,
+    /// The next pool handle.
+    next_pool: AtomicU64,
 }
 
 impl core::fmt::Debug for TaskSpace {
@@ -176,6 +204,10 @@ impl TaskSpace {
             space,
             brk: AtomicUsize::new(base as usize),
             brk_base: base,
+            alloc_next: AtomicU64::new(BREAK_LIMIT),
+            allocations: Mutex::new(Vec::new()),
+            pools: Mutex::new(Vec::new()),
+            next_pool: AtomicU64::new(1),
         }
     }
 
@@ -321,6 +353,192 @@ impl TaskSpace {
             }
         }
         Ok(self.brk())
+    }
+
+    /// Create a memory pool for this task.
+    ///
+    /// A pool is a bookkeeping handle, not a separate address range: every
+    /// allocation is still mapped into the task's own space. `DeletePool`
+    /// frees every allocation that came from the pool.
+    pub fn create_pool(&self, _flags: u32) -> u64 {
+        let id = self.next_pool.fetch_add(1, Ordering::AcqRel);
+        self.pools.lock().push(PoolRecord { id });
+        id
+    }
+
+    /// Allocate `size` bytes for this task.
+    ///
+    /// Pages are mapped into the task's space and zeroed. The returned pointer
+    /// is a user-space address; `FreeMem` with that pointer unmaps the pages.
+    pub fn alloc_mem(
+        &self,
+        size: u64,
+        flags: u32,
+        frames: &dyn FrameSource,
+    ) -> Result<u64, MapError> {
+        // `MEMF_CLEAR` is satisfied because every mapped page is zeroed. Other
+        // flags select pools or search policy; this kernel has one arena, so
+        // they do not change where the allocation lands.
+        let _ = flags;
+        self.alloc_pages(size, None, frames)
+    }
+
+    /// Allocate `size` bytes from `pool`.
+    pub fn alloc_pooled(
+        &self,
+        pool: u64,
+        size: u64,
+        frames: &dyn FrameSource,
+    ) -> Result<u64, MapError> {
+        if !self.pools.lock().iter().any(|p| p.id == pool) {
+            return Err(MapError::NotMapped);
+        }
+        self.alloc_pages(size, Some(pool), frames)
+    }
+
+    /// Free the allocation starting at `va`.
+    ///
+    /// The pages are unmapped and their frames returned. A pointer that was
+    /// never allocated is refused rather than being silently treated as free
+    /// memory.
+    pub fn free_mem(&self, va: u64, frames: &dyn FrameSource) -> Result<(), MapError> {
+        let record = {
+            let mut allocations = self.allocations.lock();
+            let idx = allocations.iter().position(|a| a.va == va);
+            let Some(idx) = idx else {
+                return Err(MapError::NotMapped);
+            };
+            allocations.remove(idx)
+        };
+
+        for page in 0..record.pages {
+            let va = record.va + page * PAGE_SIZE;
+            // A failure here means the page was already unmapped; the record
+            // is still removed, so the caller cannot free it twice.
+            let _ = self.unmap_user_page(va, frames);
+        }
+        Ok(())
+    }
+
+    /// Delete `pool` and free every allocation that came from it.
+    ///
+    /// An unknown pool is refused. The record is removed before the pages are
+    /// unmapped, so a concurrent `FreeMem` cannot free them twice.
+    pub fn delete_pool(&self, pool: u64, frames: &dyn FrameSource) -> Result<(), MapError> {
+        {
+            let mut pools = self.pools.lock();
+            let idx = pools.iter().position(|p| p.id == pool);
+            let Some(idx) = idx else {
+                return Err(MapError::NotMapped);
+            };
+            pools.remove(idx);
+        }
+
+        let freed = {
+            let mut allocations = self.allocations.lock();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < allocations.len() {
+                if allocations[i].pool == Some(pool) {
+                    out.push(allocations.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            out
+        };
+
+        for record in freed {
+            for page in 0..record.pages {
+                let va = record.va + page * PAGE_SIZE;
+                let _ = self.unmap_user_page(va, frames);
+            }
+        }
+        Ok(())
+    }
+
+    /// Free the allocation starting at `va` if it came from `pool`.
+    ///
+    /// A pointer from a different pool, or an unknown pool, is refused. The
+    /// record is removed before the pages are unmapped, so the caller cannot
+    /// free it twice.
+    pub fn free_pooled(
+        &self,
+        pool: u64,
+        va: u64,
+        frames: &dyn FrameSource,
+    ) -> Result<(), MapError> {
+        if !self.pools.lock().iter().any(|p| p.id == pool) {
+            return Err(MapError::NotMapped);
+        }
+
+        let record = {
+            let mut allocations = self.allocations.lock();
+            let idx = allocations
+                .iter()
+                .position(|a| a.va == va && a.pool == Some(pool));
+            let Some(idx) = idx else {
+                return Err(MapError::NotMapped);
+            };
+            allocations.remove(idx)
+        };
+
+        for page in 0..record.pages {
+            let va = record.va + page * PAGE_SIZE;
+            let _ = self.unmap_user_page(va, frames);
+        }
+        Ok(())
+    }
+
+    /// Bytes still available in this task's allocation arena.
+    ///
+    /// This is the uncommitted part of the arena, not the machine's free
+    /// frames: an allocation reserves the range but only consumes frames when
+    /// its pages are mapped.
+    pub fn avail_mem(&self) -> u64 {
+        let next = self.alloc_next.load(Ordering::Acquire);
+        USER_SPACE_END.saturating_sub(next)
+    }
+
+    /// Map `size` bytes into the task's allocation arena.
+    fn alloc_pages(
+        &self,
+        size: u64,
+        pool: Option<u64>,
+        frames: &dyn FrameSource,
+    ) -> Result<u64, MapError> {
+        if size == 0 {
+            return Ok(0);
+        }
+        let pages = size.div_ceil(PAGE_SIZE);
+        let total = pages * PAGE_SIZE;
+
+        let mut allocations = self.allocations.lock();
+        let va = self.alloc_next.fetch_add(total, Ordering::AcqRel);
+        if !Self::is_user_range(va, total) {
+            // Roll the arena pointer back; the lock makes this atomic with
+            // respect to other allocations from this task.
+            self.alloc_next.store(va, Ordering::Release);
+            return Err(MapError::MisalignedVirtual);
+        }
+
+        for (mapped, page) in (0..pages).enumerate() {
+            let va_page = va + page * PAGE_SIZE;
+            // SAFETY: the installed frame source is the kernel's own allocator.
+            if unsafe { self.map_user_page(va_page, frames) }.is_err() {
+                // Return the pages already mapped; a partial allocation must
+                // not leave the arena with hidden frames.
+                for i in 0..mapped {
+                    let undo = va + i as u64 * PAGE_SIZE;
+                    let _ = self.unmap_user_page(undo, frames);
+                }
+                self.alloc_next.store(va, Ordering::Release);
+                return Err(MapError::OutOfMemory);
+            }
+        }
+
+        allocations.push(Allocation { va, pages, pool });
+        Ok(va)
     }
 
     /// Move this CPU into this space.
