@@ -73,10 +73,11 @@ std::thread_local! {
 }
 
 pub mod library;
+pub mod memory;
 pub mod port;
 pub mod task;
 
-use crate::library::LibraryRegistry;
+use crate::library::{ModuleKind, ModuleRegistry};
 use crate::port::{errors, MessageStore, PortId};
 use crate::task::{BlockedOn, TaskId, TaskSignals, SIGB_MESSAGE};
 
@@ -169,8 +170,8 @@ impl ClassicLock {
 pub struct Exec {
     /// The message ports.
     pub ports: MessageStore,
-    /// The library registry.
-    pub libraries: LibraryRegistry,
+    /// The module registry: libraries, devices and resources.
+    pub modules: ModuleRegistry,
     /// The classic-domain scheduler lock.
     pub classic: ClassicLock,
     /// The signal sets of every live task.
@@ -206,7 +207,7 @@ impl core::fmt::Debug for Exec {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Exec")
             .field("ports", &self.ports.port_count())
-            .field("libraries", &self.libraries.len())
+            .field("modules", &self.modules.len())
             .field("forbidden", &self.classic.is_forbidden())
             .finish()
     }
@@ -229,7 +230,7 @@ impl Exec {
     pub const fn new() -> Self {
         Self {
             ports: MessageStore::new(),
-            libraries: LibraryRegistry::new(),
+            modules: ModuleRegistry::new(),
             classic: ClassicLock::new(),
             tasks: Mutex::new(Vec::new()),
             #[cfg(target_os = "none")]
@@ -245,7 +246,8 @@ impl Exec {
     pub fn with_builtins() -> Self {
         let exec = Self::new();
         for library in vela_abi_native64::LibraryId::ALL {
-            exec.libraries.register_builtin(library);
+            exec.modules
+                .register(library.name(), library.version(), ModuleKind::Library);
         }
         exec
     }
@@ -567,12 +569,27 @@ impl Exec {
 
     /// `OpenLibrary` — open a library and return its handle.
     pub fn open_library(&self, name: &str, min_version: u32) -> LibraryHandle {
-        self.libraries.open(name, min_version)
+        self.modules.open(name, min_version)
     }
 
     /// `CloseLibrary` — release a library.
     pub fn close_library(&self, handle: LibraryHandle) -> bool {
-        self.libraries.close(handle)
+        self.modules.close(handle)
+    }
+
+    /// `OpenDevice` — open a device and return its handle.
+    pub fn open_device(&self, name: &str, min_version: u32) -> LibraryHandle {
+        self.modules.open(name, min_version)
+    }
+
+    /// `CloseDevice` — release a device.
+    pub fn close_device(&self, handle: LibraryHandle) -> bool {
+        self.modules.close(handle)
+    }
+
+    /// `OpenResource` — open a resource and return its handle.
+    pub fn open_resource(&self, name: &str, min_version: u32) -> LibraryHandle {
+        self.modules.open(name, min_version)
     }
 
     /// `Forbid` — enter the classic critical section.
@@ -928,12 +945,12 @@ mod tests {
     #[test]
     fn libraries_open_and_close_through_exec() {
         let e = Exec::new();
-        e.libraries.register("exec", 40);
+        e.modules.register("exec", 40, ModuleKind::Library);
         let h = e.open_library("exec.library", 40);
         assert!(!h.is_null());
-        assert_eq!(e.libraries.open_count(h), 1);
+        assert_eq!(e.modules.open_count(h), 1);
         assert!(e.close_library(h));
-        assert_eq!(e.libraries.open_count(h), 0);
+        assert_eq!(e.modules.open_count(h), 0);
     }
 
     #[test]

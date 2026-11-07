@@ -74,6 +74,13 @@ vela-kernel-input = { path = "kernel/input" }
 vela-kernel-console = { path = "kernel/console" }
 vela-kernel-icon = { path = "kernel/icon" }
 vela-kernel-workbench = { path = "kernel/workbench" }
+vela-kernel-smp = { path = "kernel/smp" }
+vela-kernel-timer = { path = "kernel/timer" }
+vela-kernel-device = { path = "kernel/device" }
+vela-driver-nvme = { path = "drivers/nvme" }
+vela-driver-ata = { path = "drivers/ata" }
+vela-driver-sata = { path = "drivers/sata" }
+vela-driver-vga = { path = "drivers/vga" }
 vela-abi-native64 = { path = "amiga/abi-native64" }
 vela-abi-guest32 = { path = "amiga/abi-guest32" }
 vela-renderer2d = { path = "graphics/renderer2d" }

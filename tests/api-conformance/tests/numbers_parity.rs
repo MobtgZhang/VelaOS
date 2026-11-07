@@ -89,7 +89,16 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
     }
 
     // The remaining Intuition, DOS and utility numbers.
-    let tail: [(u64, u64); 21] = [
+    let tail: [(u64, u64); 30] = [
+        (sdk::ALLOC_MEM, kernel::ALLOC_MEM),
+        (sdk::FREE_MEM, kernel::FREE_MEM),
+        (sdk::ALLOC_VEC, kernel::ALLOC_VEC),
+        (sdk::FREE_VEC, kernel::FREE_VEC),
+        (sdk::AVAIL_MEM, kernel::AVAIL_MEM),
+        (sdk::CREATE_POOL, kernel::CREATE_POOL),
+        (sdk::ALLOC_POOLED, kernel::ALLOC_POOLED),
+        (sdk::FREE_POOLED, kernel::FREE_POOLED),
+        (sdk::DELETE_POOL, kernel::DELETE_POOL),
         (sdk::I_SET_ATTRS, kernel::INTUITION_SET_ATTRS),
         (sdk::I_ADD_GADGET, kernel::INTUITION_ADD_GADGET),
         (sdk::I_REMOVE_GADGET, kernel::INTUITION_REMOVE_GADGET),

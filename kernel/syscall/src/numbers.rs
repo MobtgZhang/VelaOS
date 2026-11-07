@@ -153,6 +153,24 @@ pub const ADD_PORT: u64 = 20;
 /// call does not block — a shell that wants to wait for input spins on this
 /// call between redraws.
 pub const GETCHAR: u64 = 21;
+/// `exec.library`: allocate memory.
+pub const ALLOC_MEM: u64 = 22;
+/// `exec.library`: free memory.
+pub const FREE_MEM: u64 = 23;
+/// `exec.library`: allocate a vector.
+pub const ALLOC_VEC: u64 = 24;
+/// `exec.library`: free a vector.
+pub const FREE_VEC: u64 = 25;
+/// `exec.library`: report available memory.
+pub const AVAIL_MEM: u64 = 26;
+/// `exec.library`: create a memory pool.
+pub const CREATE_POOL: u64 = 27;
+/// `exec.library`: allocate from a pool.
+pub const ALLOC_POOLED: u64 = 28;
+/// `exec.library`: free pooled memory.
+pub const FREE_POOLED: u64 = 29;
+/// `exec.library`: delete a pool.
+pub const DELETE_POOL: u64 = 30;
 
 /// `graphics.library`: reserve a pen in a palette.
 pub const GRAPHICS_ALLOC_PEN: u64 = 64;
@@ -356,7 +374,7 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 22;
+pub const EXEC_COUNT: u64 = 31;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.

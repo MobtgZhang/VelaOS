@@ -35,8 +35,11 @@ mod splash;
 
 use core::mem;
 
+use alloc::{boxed::Box, vec::Vec};
+use pool::Pool;
+
 use uefi::fs::FileSystem;
-use uefi::mem::memory_map::{MemoryMap, MemoryType};
+use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::runtime::ResetType;
 use uefi::{entry, prelude::*};
@@ -139,6 +142,273 @@ fn efi_main() -> Status {
             status
         }
     }
+}
+
+/// The context pointer handed across the one-way stack switch.
+///
+/// Stored in a static (rather than a register) because inline-asm register
+/// allocation proved unreliable for the `mov rsp; call` sequence: the
+/// compiler kept clobbering the register carrying the context pointer with
+/// the register carrying the new stack pointer.
+static mut CTX_PTR: *const Context = core::ptr::null();
+
+/// All of the state the rest of the boot sequence needs after the loader has
+/// switched to its own stack.
+///
+/// It is heap-allocated (`Box`) so that its address is stable across the
+/// `mov rsp` stack switch: the UEFI-provided stack is abandoned and every
+/// local living on it becomes invalid, so nothing the remainder touches may
+/// live there. The heap buffer outlives the switch and is handed to
+/// [`run_rest`] as a raw pointer.
+struct Context {
+    /// The firmware memory map, needed by the bootstrap page-table builder.
+    memory_map: MemoryMapOwned,
+    /// The parsed kernel image (its buffers live on the UEFI heap).
+    image: Elf64Image,
+    /// The kernel's entry point (linked higher-half address).
+    entry_addr: u64,
+    /// The initrd image, if any (its bytes live on the UEFI heap).
+    initrd: Option<Vec<u8>>,
+    /// Initrd size in pages (used to size the pool before the switch).
+    initrd_pages: u64,
+    /// Framebuffer physical address.
+    fb_paddr: u64,
+    /// Framebuffer size in bytes.
+    fb_bytes: u64,
+    /// Framebuffer width in pixels.
+    fb_width: u32,
+    /// Framebuffer height in pixels.
+    fb_height: u32,
+    /// Framebuffer stride in bytes.
+    fb_stride: u64,
+    /// Framebuffer pixel format.
+    fb_pixel_format: VelaPixelFormat,
+    /// Total span of the kernel image.
+    span: u64,
+    /// Physical address of the loader's own stack (handed to `handoff`).
+    loader_stack_paddr: u64,
+    /// Raw pointer to the boot pool (transferred across the stack switch).
+    pool_ptr: *mut Pool,
+}
+
+/// Log a fatal loader error and stop the machine. Never returns.
+#[cold]
+fn loader_fatal<E: core::fmt::Debug>(e: E) -> ! {
+    log::error!("VELA-BOOT fatal: {e:?}");
+    if logging::boot_services_exited() {
+        loop {
+            // SAFETY: `hlt` halts until the next interrupt and needs no stack.
+            unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)) };
+        }
+    }
+    // Still under Boot Services: ask the firmware to reset.
+    uefi::runtime::reset(ResetType::SHUTDOWN, Status::ABORTED, None);
+    loop {
+        // SAFETY: `hlt` halts until the next interrupt and needs no stack.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)) };
+    }
+}
+
+/// The remainder of the boot sequence, run on the loader's own stack.
+///
+/// This function is entered after a one-way `mov rsp` to the loader stack,
+/// so it must not return to `run`'s frame (that frame no longer exists). It
+/// either hands off to the kernel (`handoff`, which is `!`) or, on a fatal
+/// error, halts/resets via [`loader_fatal`].
+fn run_rest() -> ! {
+    // SAFETY: `CTX_PTR` was stored by `run` before the stack switch and
+    // points to a heap-allocated `Context` that outlives this call.
+    let ctx = unsafe { &*CTX_PTR };
+
+    // Reconstruct ownership of the boot pool from the raw pointer stored in
+    // the context.
+    let mut pool = unsafe { Box::from_raw(ctx.pool_ptr) };
+
+    // --- B-05: place and copy the kernel image ----------------------------
+    //
+    // The kernel is *linked* in the higher half and the loader places the
+    // image at a low *physical* address; the kernel maps the physical range
+    // at the linked virtual range itself.
+    let image_vaddr = match ctx.image.lowest_vaddr() {
+        Some(v) => v,
+        None => loader_fatal(Status::BAD_BUFFER_SIZE),
+    };
+    if ctx.image.place_higher_half(0, ctx.span).is_err() {
+        loader_fatal(Status::BAD_BUFFER_SIZE);
+    }
+    let kernel_paddr = match pool.alloc_pages(ctx.span, 0x1000) {
+        Ok(p) => p,
+        Err(e) => loader_fatal(e),
+    };
+    let entry_addr = ctx.entry_addr;
+    for seg in &ctx.image.load_segments {
+        let src = ctx.image.segment_bytes(seg);
+        let dst_paddr = kernel_paddr + (seg.vaddr - image_vaddr);
+        // SAFETY: `place_higher_half` proved `dst_paddr` lies inside the pool
+        // reservation this module sized, and `Elf64Image::parse_owned` proved
+        // `src` is a slice of the owned buffer.
+        unsafe {
+            let dst = dst_paddr as *mut u8;
+            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+            let zf = seg.zero_fill_len() as usize;
+            if zf > 0 {
+                core::ptr::write_bytes(dst.add(src.len()), 0, zf);
+            }
+        }
+        log::info!(
+            "  seg {:#x}+{:#x} (file {:#x}) flags {:#x}",
+            seg.vaddr,
+            seg.mem_size,
+            seg.file_size,
+            seg.flags
+        );
+    }
+    log::info!("kernel at {kernel_paddr:#x}, entry {entry_addr:#x}");
+
+    // The size of the image's *executable* prefix, rounded up to a page.
+    let text_bytes = executable_prefix_bytes(&ctx.image, image_vaddr);
+    log::info!("kernel text prefix {text_bytes:#x} bytes");
+
+    let kernel_stack_paddr = match pool.alloc_pages(KERNEL_STACK_PAGES * 4096, 16) {
+        Ok(p) => p,
+        Err(e) => loader_fatal(e),
+    };
+    let stack_top = kernel_stack_paddr + KERNEL_STACK_PAGES * 4096;
+
+    // --- The kernel's heap ------------------------------------------------
+    let heap_paddr = match pool.alloc_pages(KERNEL_HEAP_PAGES * 4096, 4096) {
+        Ok(p) => p,
+        Err(e) => loader_fatal(e),
+    };
+    let heap_bytes = KERNEL_HEAP_PAGES * 4096;
+    log::info!("kernel heap {heap_bytes} bytes at {heap_paddr:#x}");
+
+    // --- initrd -----------------------------------------------------------
+    let (initrd_paddr, initrd_len) = match &ctx.initrd {
+        None => (0u64, 0u64),
+        Some(bytes) => {
+            let len = bytes.len() as u64;
+            let p = match pool.alloc_pages(len, 8) {
+                Ok(p) => p,
+                Err(e) => loader_fatal(e),
+            };
+            // SAFETY: the pool was sized to include `initrd_pages`, and
+            // `bytes` is a live allocation of exactly `len` bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, len as usize);
+            }
+            log::info!("initrd {len} bytes at {p:#x}");
+            (p, len)
+        }
+    };
+
+    // --- B-06: BootInfo ---------------------------------------------------
+    let mut bi = VelaBootInfo::zeroed();
+    bi.framebuffer_paddr = ctx.fb_paddr;
+    bi.framebuffer_bytes = ctx.fb_bytes;
+    bi.framebuffer_width = ctx.fb_width;
+    bi.framebuffer_height = ctx.fb_height;
+    bi.framebuffer_stride_bytes = ctx.fb_stride as u32;
+    bi.framebuffer_pixel_format = ctx.fb_pixel_format as u32;
+    bi.kernel_paddr = kernel_paddr;
+    bi.kernel_bytes = ctx.span;
+    bi.initrd_paddr = initrd_paddr;
+    bi.initrd_bytes = initrd_len;
+    bi.stack_top = stack_top;
+    bi.arch_flags = arch_flags::PROTECTED_MODE;
+    bi.kernel_vaddr_base = image_vaddr;
+    bi.kernel_text_bytes = text_bytes;
+    bi.heap_paddr = heap_paddr;
+    bi.heap_bytes = heap_bytes;
+    bi.pool_paddr = pool.base();
+    bi.pool_bytes = pool.len();
+    log::info!("bootinfo staged");
+
+    // Persist the memory map while Boot Services still exist.
+    let (map_paddr, map_len, desc_size, desc_version) = match persist_memory_map(&mut pool) {
+        Ok(m) => m,
+        Err(e) => loader_fatal(e),
+    };
+
+    // --- B-06b: the bootstrap page tables ---------------------------------
+    //
+    // These are built *before* `ExitBootServices`, because they are what make
+    // the kernel's higher half reachable at all. The firmware's tables map
+    // low RAM only, and the kernel is linked at `0xFFFF800000001000`.
+    //
+    // They live in the pool, which the firmware identity-maps, so their
+    // addresses are their physical addresses and the PML4's address can go
+    // straight into `CR3` after the exit.
+    let image_region = pagetables::ImageRegion {
+        vaddr: image_vaddr,
+        paddr: kernel_paddr,
+        len: ctx.span,
+        text_bytes,
+    };
+    let tables = pagetables::build(
+        &mut pool,
+        &ctx.memory_map,
+        &image_region,
+        ctx.fb_paddr,
+        ctx.fb_bytes,
+    );
+    bi.page_table_paddr = tables.pml4_paddr();
+    log::info!(
+        "bootstrap pml4 at {:#x} ({} pages)",
+        tables.pml4_paddr(),
+        tables.pages()
+    );
+
+    // --- B-07: ExitBootServices -------------------------------------------
+    // From here on, Boot Services are gone. Nothing may allocate.
+    log::info!("exiting boot services");
+
+    // Fill the ACPI RSDP physical address from the UEFI config table while
+    // Boot Services are still alive.
+    let acpi_rsdp = fill_acpi_rsdp_from_config_table();
+    bi.acpi_rsdp_paddr = acpi_rsdp;
+    log::info!("ACPI RSDP physical address: {:#x}", acpi_rsdp);
+
+    // Parse the MADT from the ACPI tables to count processors.
+    let cpu_count = parse_madt_cpu_count(acpi_rsdp);
+    bi.cpu_count = cpu_count;
+    log::info!("Processor count from MADT: {}", cpu_count);
+    log::info!(
+        "entering kernel at {entry_addr:#x} with cr3 {:#x}",
+        tables.pml4_paddr()
+    );
+
+    let _m = unsafe { uefi::boot::exit_boot_services(None) };
+
+    // Now that we own the pool outright, write BootInfo into it. This is the
+    // only moment this is legal, because `bi` itself lives in firmware memory
+    // that may already be reclaimed.
+    let bi_paddr = match pool.alloc_pages(mem::size_of::<VelaBootInfo>() as u64, 8) {
+        Ok(p) => p,
+        Err(e) => loader_fatal(e),
+    };
+    // SAFETY: `bi_paddr` is inside the pool reservation, which is page aligned
+    // and large enough for the struct. The copy is of a plain-old-data type.
+    unsafe {
+        let dst = &mut *(bi_paddr as *mut VelaBootInfo);
+        *dst = bi;
+        dst.memory_map_paddr = map_paddr;
+        dst.memory_map_bytes = map_len;
+        dst.memory_desc_size = desc_size;
+        dst.memory_desc_version = desc_version;
+    }
+
+    // --- B-08: hand off ---------------------------------------------------
+    //
+    // The new PML4 is loaded into CR3 *before* the jump. The CR3 write is
+    // followed by a serialising fence, so the stores that filled the page
+    // tables cannot be reordered past it.
+    handoff(
+        entry_addr,
+        bi_paddr,
+        ctx.loader_stack_paddr,
+        tables.pml4_paddr(),
+    )
 }
 
 /// Reads the config, loads the kernel, draws the splash, exits Boot Services and
@@ -311,8 +581,8 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
         + initrd_pages
         + table_pages
         + mem::size_of::<VelaBootInfo>() as u64;
-    let mut pool = match pool::Pool::new(need_pages) {
-        Ok(p) => p,
+    let mut pool: Box<Pool> = match pool::Pool::new(need_pages) {
+        Ok(p) => Box::new(p),
         Err(_) => return Err(Status::OUT_OF_RESOURCES),
     };
     log::info!(
@@ -321,205 +591,63 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
         table_pages
     );
 
-    // Place and copy the kernel image.
-    //
-    // The kernel is *linked* in the higher half and the loader places the image
-    // at a low *physical* address; the kernel maps the physical range at the
-    // linked virtual range itself. So the virtual addresses are used exactly as
-    // the linker produced them and only the physical placement is chosen here.
-    //
-    // Each segment's physical address is `phys_base + (vaddr - image_vaddr)`,
-    // which preserves every byte's offset from the start of the image — the
-    // same invariant `place` maintains, expressed for the case where the
-    // virtual base is fixed at link time rather than chosen at load time.
-    let image_vaddr = match image.lowest_vaddr() {
-        Some(v) => v,
-        None => return Err(Status::BAD_BUFFER_SIZE),
-    };
-    // Validate the image before committing any memory to it. `phys_base` is 0
-    // here because the validation does not depend on where the image lands —
-    // only the alignment and the span are checked — and the real allocation
-    // comes from the pool a moment later.
-    if image.place_higher_half(0, span).is_err() {
-        log::error!("kernel image rejected: overlap or span {span:#x}");
-        return Err(Status::BAD_BUFFER_SIZE);
-    }
-    let kernel_paddr = match pool.alloc_pages(span, 0x1000) {
+    // Switch to the loader's own stack *before* the heavy lifting (page-table
+    // construction, memory-map copying, etc.). The UEFI-provided stack is too
+    // small for that work, and running out of it produces a silent page fault.
+    // The loader stack lives in the boot pool, which is identity-mapped, so it
+    // stays valid across the CR3 switch at handoff.
+    let loader_stack_paddr = match pool.alloc_pages(LOADER_STACK_PAGES * 4096, 16) {
         Ok(p) => p,
         Err(_) => return Err(Status::OUT_OF_RESOURCES),
     };
+    let loader_stack_top = loader_stack_paddr + LOADER_STACK_PAGES * 4096;
+
     let entry_addr = image.entry();
-    for seg in &image.load_segments {
-        let src = image.segment_bytes(seg);
-        let dst_paddr = kernel_paddr + (seg.vaddr - image_vaddr);
-        // SAFETY: `place` proved `dst_paddr` lies inside the pool reservation
-        // this module sized, and `Elf64Image::parse_owned` proved `src` is a
-        // slice of the owned buffer. Both bounds are machine-checked above.
-        unsafe {
-            let dst = dst_paddr as *mut u8;
-            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
-            let zf = seg.zero_fill_len() as usize;
-            if zf > 0 {
-                core::ptr::write_bytes(dst.add(src.len()), 0, zf);
-            }
-        }
-        log::info!(
-            "  seg {:#x}+{:#x} (file {:#x}) flags {:#x}",
-            seg.vaddr,
-            seg.mem_size,
-            seg.file_size,
-            seg.flags
-        );
-    }
-    log::info!("kernel at {kernel_paddr:#x}, entry {entry_addr:#x}");
 
-    // The size of the image's *executable* prefix, rounded up to a page.
-    //
-    // The kernel maps the image read-execute up to this point and
-    // read-write after it, which is what gives the kernel's own image W^X.
-    // The boundary is the end of the last executable segment: everything the
-    // linker placed after it is data or `.bss`.
-    let text_bytes = executable_prefix_bytes(&image, image_vaddr);
-    log::info!("kernel text prefix {text_bytes:#x} bytes");
+    let pool_ptr = Box::into_raw(pool) as *mut Pool;
 
-    let kernel_stack_paddr = pool.alloc_pages(KERNEL_STACK_PAGES * 4096, 16)?;
-    let stack_top = kernel_stack_paddr + KERNEL_STACK_PAGES * 4096;
-    let loader_stack_paddr = pool.alloc_pages(LOADER_STACK_PAGES * 4096, 16)?;
-
-    // The kernel's heap.
-    //
-    // The loader reserves it rather than letting the kernel carve one out of
-    // the memory map, because of one specific requirement: the heap must be
-    // mapped at the *same* virtual and physical address in the kernel's own
-    // page tables. That is what makes it sound for the kernel to compute a
-    // page table's physical address from the heap pointer that holds it — the
-    // translation is the identity, and no lookup is involved.
-    //
-    // The heap is page-aligned and physically contiguous, which the bump
-    // allocator requires.
-    let heap_paddr = pool.alloc_pages(KERNEL_HEAP_PAGES * 4096, 4096)?;
-    let heap_bytes = KERNEL_HEAP_PAGES * 4096;
-    log::info!("kernel heap {heap_bytes} bytes at {heap_paddr:#x}");
-
-    // --- initrd --------------------------------------------------------------
-    // `initrd` was read before the pool was sized; placing it is now only a
-    // copy into pages the reservation already contains.
-    let (initrd_paddr, initrd_len) = match initrd {
-        None => (0u64, 0u64),
-        Some(bytes) => {
-            let len = bytes.len() as u64;
-            let p = pool.alloc_pages(len, 8)?;
-            // SAFETY: the pool was sized to include `initrd_pages`, and
-            // `bytes` is a live allocation of exactly `len` bytes.
-            unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, len as usize);
-            }
-            log::info!("initrd {len} bytes at {p:#x}");
-            (p, len)
-        }
-    };
-
-    // --- B-06: BootInfo ------------------------------------------------------
-    let mut bi = VelaBootInfo::zeroed();
-    bi.framebuffer_paddr = fb_paddr;
-    bi.framebuffer_bytes = fb_bytes;
-    bi.framebuffer_width = w;
-    bi.framebuffer_height = h;
-    bi.framebuffer_stride_bytes = stride_bytes as u32;
-    bi.framebuffer_pixel_format = vela_fmt as u32;
-    bi.kernel_paddr = kernel_paddr;
-    bi.kernel_bytes = span;
-    bi.initrd_paddr = initrd_paddr;
-    bi.initrd_bytes = initrd_len;
-    bi.stack_top = stack_top;
-    bi.arch_flags = arch_flags::PROTECTED_MODE;
-    bi.kernel_vaddr_base = image_vaddr;
-    bi.kernel_text_bytes = text_bytes;
-    bi.heap_paddr = heap_paddr;
-    bi.heap_bytes = heap_bytes;
-    bi.pool_paddr = pool.base();
-    bi.pool_bytes = pool.len();
-    log::info!("bootinfo staged");
-
-    // Persist the memory map while Boot Services still exist.
-    let (map_paddr, map_len, desc_size, desc_version) = persist_memory_map(&mut pool)?;
-
-    // --- B-06b: the bootstrap page tables ----------------------------------
-    //
-    // These are built *before* `ExitBootServices`, because they are what make
-    // the kernel's higher half reachable at all. The firmware's tables map
-    // low RAM only, and the kernel is linked at `0xFFFF800000001000`.
-    //
-    // They live in the pool, which the firmware identity-maps, so their
-    // addresses are their physical addresses and the PML4's address can go
-    // straight into `CR3` after the exit.
-    let image_region = pagetables::ImageRegion {
-        vaddr: image_vaddr,
-        paddr: kernel_paddr,
-        len: span,
-        text_bytes,
-    };
-    let tables = pagetables::build(&mut pool, &memory_map, &image_region, fb_paddr, fb_bytes);
-    bi.page_table_paddr = tables.pml4_paddr();
-    log::info!(
-        "bootstrap pml4 at {:#x} ({} pages)",
-        tables.pml4_paddr(),
-        tables.pages()
-    );
-
-    // --- B-07: ExitBootServices ---------------------------------------------
-    // From here on, Boot Services are gone. Nothing may allocate.
-    log::info!("exiting boot services");
-    let _m = unsafe { uefi::boot::exit_boot_services(None) };
-    // Boot Services are gone: the firmware console handle and the `uefi`
-    // global allocator both live in memory the firmware may now reclaim, so
-    // the logger must stop using them. The debug console is unaffected.
-    logging::boot_services_gone();
-    log::info!("boot services exited");
-
-    // Now that we own the pool outright, write BootInfo into it. This is the
-    // only moment this is legal, because `bi` itself lives in firmware memory
-    // that may already be reclaimed.
-    let bi_paddr = pool
-        .alloc_pages(mem::size_of::<VelaBootInfo>() as u64, 8)
-        .unwrap_or(0);
-    // SAFETY: `bi_paddr` is inside the pool reservation, which is page aligned
-    // and large enough for the struct. The copy is of a plain-old-data type.
-    unsafe {
-        let dst = &mut *(bi_paddr as *mut VelaBootInfo);
-        *dst = bi;
-        dst.memory_map_paddr = map_paddr;
-        dst.memory_map_bytes = map_len;
-        dst.memory_desc_size = desc_size;
-        dst.memory_desc_version = desc_version;
-    }
-
-    // --- B-08: hand off ------------------------------------------------------
-    //
-    // The new PML4 is loaded into CR3 *before* the jump. Two things depend on
-    // the order:
-    //
-    // 1. The kernel's entry point is at `0xFFFF800000001920`, which the
-    //    firmware's tables do not map. Without this the very first
-    //    instruction fetch page-faults, which is the failure this whole
-    //    design exists to fix.
-    // 2. The pool — which holds the loader's own stack, the boot info and
-    //    the page tables themselves — is identity-mapped by the new tables
-    //    and by the firmware's, so the loader keeps running either way.
-    //
-    // The CR3 write is followed by a serialising fence, so the stores that
-    // filled the page tables cannot be reordered past it and the CPU cannot
-    // walk a table that is not yet written.
-    log::info!(
-        "entering kernel at {entry_addr:#x} with cr3 {:#x}",
-        tables.pml4_paddr()
-    );
-    handoff(
+    // Heap-allocate the context the rest of the sequence needs. A `Box` keeps
+    // its payload at a stable address, so the `mov rsp` stack switch below
+    // does not invalidate it. The pool pointer travels inside the context.
+    let ctx_box = Box::new(Context {
+        memory_map,
+        image,
         entry_addr,
-        bi_paddr,
+        initrd,
+        initrd_pages,
+        fb_paddr,
+        fb_bytes,
+        fb_width: w,
+        fb_height: h,
+        fb_stride: stride_bytes,
+        fb_pixel_format: vela_fmt,
+        span,
         loader_stack_paddr,
-        tables.pml4_paddr(),
-    )
+        pool_ptr,
+    });
+    let ctx_ptr = Box::into_raw(ctx_box) as *const Context;
+
+    // Hand the context pointer across via a static: inline-asm register
+    // allocation proved unreliable for the `mov rsp; call` sequence, so avoid
+    // registers entirely for the context pointer.
+    unsafe {
+        CTX_PTR = ctx_ptr;
+    }
+
+    // SAFETY: one-way stack switch to the loader stack. `run_rest` runs on
+    // the loader stack and either hands off to the kernel (`handoff`, which is
+    // `!`) or halts/resets via `loader_fatal`; it never returns to this frame,
+    // so the UEFI-provided stack is abandoned on purpose.
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {top}",
+            "call {f}",
+            top = in(reg) loader_stack_top,
+            f = sym run_rest,
+            options(nostack)
+        );
+        core::hint::unreachable_unchecked();
+    }
 }
 
 /// Transfer control to the kernel. Never returns.
@@ -839,4 +967,106 @@ impl OwnedPath {
         uefi::CStr16::from_char16_with_nul(&self.buf[..self.len])
             .expect("OwnedPath::new records a terminator at the end of its length")
     }
+}
+
+/// Fill the ACPI RSDP physical address from the UEFI config table.
+/// Uses `uefi::system::with_config_table` to locate the ACPI 2.0 GUID entry,
+/// then extracts the RSDP physical address from the vendor_table field.
+/// Returns 0 if no ACPI table is found.
+pub fn fill_acpi_rsdp_from_config_table() -> u64 {
+    uefi::system::with_config_table(|table| {
+        let mut rsdp: u64 = 0;
+        for entry in table {
+            if entry.guid == uefi::guid!("8868e871-e4f1-11d3-bc22-0080c73c8881") {
+                // ACPI 2.0 GUID: vendor_table points to the RSDP.
+                rsdp = entry.address as u64;
+            }
+        }
+        rsdp
+    })
+}
+
+/// Parse the ACPI MADT to count the number of processors.
+///
+/// Reads the RSDP at `rsdp_paddr`, follows it to the XSDT, finds the MADT,
+/// and counts type-0 (Local APIC) entries. Returns 1 if any step fails —
+/// single-core is the safe fallback.
+fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
+    if rsdp_paddr == 0 {
+        return 1;
+    }
+
+    // Read the RSDP signature (8 bytes at offset 0).
+    let signature = unsafe { core::slice::from_raw_parts(rsdp_paddr as *const u8, 8) };
+    if &signature[0..4] != b"RSD " {
+        return 1;
+    }
+
+    // ACPI 2.0+ RSDP has the XSDT physical address at offset 36.
+    // ACPI 1.0 has the RSDT at offset 16. Prefer XSDT when present.
+    let xsdt_paddr = if signature == b"RSD PTR " {
+        // ACPI 1.0: RSDT at offset 16.
+        unsafe { (rsdp_paddr + 16) as *const u32 as u32 as u64 }
+    } else {
+        // ACPI 2.0+: XSDT at offset 36.
+        unsafe { (rsdp_paddr + 36) as *const u64 as u64 }
+    };
+
+    if xsdt_paddr == 0 {
+        return 1;
+    }
+
+    // Read the XSDT/RSDT header: signature (4 bytes), length (4 bytes).
+    let xsdt_sig = unsafe { core::slice::from_raw_parts(xsdt_paddr as *const u8, 4) };
+    let xsdt_len = unsafe { *(xsdt_paddr as *const u32).add(1) } as usize;
+    if xsdt_sig != b"XSDT" && xsdt_sig != b"RSDT" {
+        return 1;
+    }
+
+    // The table contains an array of 64-bit physical addresses (XSDT) or
+    // 32-bit (RSDT). Walk each entry looking for the MADT (signature "APIC").
+    let entry_count = (xsdt_len - 36) / if xsdt_sig == b"XSDT" { 8 } else { 4 };
+    for i in 0..entry_count {
+        let entry_paddr = if xsdt_sig == b"XSDT" {
+            (unsafe { *(xsdt_paddr as *const u64).add(4 + i) }) as u64
+        } else {
+            (unsafe { *(xsdt_paddr as *const u32).add(4 + i) }) as u64
+        };
+
+        if entry_paddr == 0 {
+            continue;
+        }
+
+        // Check if this entry is the MADT.
+        let madt_sig = unsafe { core::slice::from_raw_parts(entry_paddr as *const u8, 4) };
+        if madt_sig != b"APIC" {
+            continue;
+        }
+
+        // Found the MADT. Count type-0 (Local APIC) entries.
+        let madt_len = unsafe { *(entry_paddr as *const u32).add(1) } as usize;
+        let mut offset = 36; // Standard ACPI table header size
+        let mut cpu_count = 0u32;
+
+        while offset + 8 <= madt_len {
+            let entry_type = unsafe { *(entry_paddr as *const u8).add(offset) };
+            let entry_len = unsafe { *(entry_paddr as *const u8).add(offset + 1) } as usize;
+
+            if entry_type == 0 {
+                // Type 0: Local APIC entry — a processor.
+                cpu_count += 1;
+            }
+
+            if entry_len == 0 {
+                break; // Avoid infinite loop on malformed table.
+            }
+            offset += entry_len;
+        }
+
+        if cpu_count > 0 {
+            return cpu_count;
+        }
+    }
+
+    1
 }

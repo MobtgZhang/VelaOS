@@ -398,6 +398,38 @@ name = "vela-boot-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "vela-driver-ata"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
+name = "vela-driver-nvme"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
+name = "vela-driver-sata"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
+name = "vela-driver-vga"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
 name = "vela-elf-loader"
 version = "0.1.0"
 
@@ -432,7 +464,6 @@ name = "vela-hal-x86_64"
 version = "0.1.0"
 dependencies = [
  "spin",
- "vela-boot-protocol",
  "vela-hal-common",
 ]
 
@@ -484,6 +515,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-kernel-device"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-abi-native64",
+]
+
+[[package]]
 name = "vela-kernel-dos"
 version = "0.1.0"
 dependencies = [
@@ -499,10 +538,15 @@ version = "0.1.0"
 dependencies = [
  "spin",
  "vela-boot-protocol",
+ "vela-driver-ata",
+ "vela-driver-nvme",
+ "vela-driver-sata",
+ "vela-driver-vga",
  "vela-hal-common",
  "vela-hal-x86_64",
  "vela-kernel-console",
  "vela-kernel-core",
+ "vela-kernel-device",
  "vela-kernel-dos",
  "vela-kernel-exec",
  "vela-kernel-graphics",
@@ -511,7 +555,9 @@ dependencies = [
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-memory",
+ "vela-kernel-smp",
  "vela-kernel-syscall",
+ "vela-kernel-timer",
  "vela-kernel-workbench",
  "vela-ramfs",
 ]
@@ -591,6 +637,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-kernel-smp"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-hal-x86_64",
+]
+
+[[package]]
 name = "vela-kernel-syscall"
 version = "0.1.0"
 dependencies = [
@@ -610,6 +664,13 @@ dependencies = [
  "vela-kernel-vfs",
  "vela-kernel-workbench",
  "vela-renderer2d",
+]
+
+[[package]]
+name = "vela-kernel-timer"
+version = "0.1.0"
+dependencies = [
+ "spin",
 ]
 
 [[package]]

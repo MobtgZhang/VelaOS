@@ -252,6 +252,8 @@ pub mod node_type {
     pub const WINDOW: u8 = 6;
     /// A screen.
     pub const SCREEN: u8 = 7;
+    /// An I/O request.
+    pub const IOREQUEST: u8 = 8;
 }
 
 /// The `Node` structure: the head of every AmigaOS-style list.

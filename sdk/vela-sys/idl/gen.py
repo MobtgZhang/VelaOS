@@ -15,6 +15,15 @@ SDK's own `numbers.rs`.
 # (module, library, prefix, [(function, lvo, suffix, stub, syscall, number)])
 LIBRARIES = [
     ("exec", "exec.library", "EXEC", [
+        ("AllocMem", -240, "ALLOCMEM", "alloc_mem", "ALLOC_MEM", 22),
+        ("AllocVec", -232, "ALLOVEC", "alloc_vec", "ALLOC_VEC", 24),
+        ("FreeMem", -224, "FREEMEM", "free_mem", "FREE_MEM", 23),
+        ("FreeVec", -216, "FREEVEC", "free_vec", "FREE_VEC", 25),
+        ("AvailMem", -208, "AVAILMEM", "avail_mem", "AVAIL_MEM", 26),
+        ("CreatePool", -200, "CREATEPOOL", "create_pool", "CREATE_POOL", 27),
+        ("AllocPooled", -192, "ALLOCPOOLED", "alloc_pooled", "ALLOC_POOLED", 28),
+        ("FreePooled", -184, "FREEPOOLED", "free_pooled", "FREE_POOLED", 29),
+        ("DeletePool", -176, "DELETEPOOL", "delete_pool", "DELETE_POOL", 30),
         ("MapPage", -168, "MAPPAGE", "map_page", "MAP_PAGE", 18),
         ("Brk", -160, "BRK", "brk", "BRK", 19),
         ("PutChar", -152, "PUTCHAR", "put_char", "PUTCHAR", 16),

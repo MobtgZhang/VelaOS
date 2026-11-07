@@ -65,6 +65,24 @@ pub const ADD_PORT: u64 = 20;
 /// Returns the byte as the value, or `RANGE` when nothing has arrived yet.
 /// Polled, not blocking — a shell spins on it between redraws.
 pub const GETCHAR: u64 = 21;
+/// `exec.library`: allocate memory.
+pub const ALLOC_MEM: u64 = 22;
+/// `exec.library`: free memory.
+pub const FREE_MEM: u64 = 23;
+/// `exec.library`: allocate a vector.
+pub const ALLOC_VEC: u64 = 24;
+/// `exec.library`: free a vector.
+pub const FREE_VEC: u64 = 25;
+/// `exec.library`: report available memory.
+pub const AVAIL_MEM: u64 = 26;
+/// `exec.library`: create a memory pool.
+pub const CREATE_POOL: u64 = 27;
+/// `exec.library`: allocate from a pool.
+pub const ALLOC_POOLED: u64 = 28;
+/// `exec.library`: free pooled memory.
+pub const FREE_POOLED: u64 = 29;
+/// `exec.library`: delete a pool.
+pub const DELETE_POOL: u64 = 30;
 
 /// The size of a program page, in bytes.
 ///

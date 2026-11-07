@@ -208,7 +208,7 @@ pub fn capture(
     mouse_moves: &[(i32, i32)],
 ) -> Result<Capture> {
     let paths = Paths::tagged(root, tag);
-    let vm = Vm::start(image, paths, false).context("starting QEMU")?;
+    let vm = Vm::start(image, paths, false, 1).context("starting QEMU")?;
 
     // Wait for the kernel to reach its ready banner before capturing anything.
     // Without this the capture is a picture of the boot splash.

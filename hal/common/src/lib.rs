@@ -186,6 +186,38 @@ pub trait CpuArch {
     /// Spin until the previous `busy_wait_cycles` call returns, as a spinlock
     /// fallback on single-core configurations.
     fn busy_wait_cycles() -> u64;
+
+    /// Tell the HAL which CPU index this CPU is. Called once during early boot
+    /// on every CPU before the scheduler considers it runnable.
+    ///
+    /// # Safety
+    ///
+    /// Must be called exactly once per CPU, before any code on that CPU reads
+    /// `current_cpu_id()`.
+    unsafe fn set_this_cpu(index: usize);
+
+    /// Register this CPU's per-CPU state, including its APIC ID.
+    ///
+    /// Called by the BSP for itself and by each AP's SIPI entry point.
+    ///
+    /// # Safety
+    ///
+    /// Must be called exactly once per CPU before `current_cpu_id()` is used.
+    unsafe fn register_cpu(apic_id: u32, index: usize);
+
+    /// Mark this CPU as ready to run tasks.
+    ///
+    /// Called by each CPU after its full early boot sequence completes.
+    fn mark_cpu_ready();
+
+    /// True when this CPU has finished early boot and can run tasks.
+    fn is_cpu_ready() -> bool;
+
+    /// Set the current task on this CPU.
+    fn set_current_task(task_id: u32);
+
+    /// Get the current task on this CPU.
+    fn current_task_id() -> u32;
 }
 
 /// Page-table management.

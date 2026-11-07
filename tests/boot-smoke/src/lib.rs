@@ -193,7 +193,7 @@ impl BootOutcome {
 /// regardless.
 pub fn run_boot(root: &Path, image: &Path, tag: &str, timeout: Duration) -> Result<BootOutcome> {
     let paths = Paths::tagged(root, tag);
-    let mut vm = Vm::start(image, paths, false).context("starting QEMU")?;
+    let mut vm = Vm::start(image, paths, false, 1).context("starting QEMU")?;
 
     // A successful boot is signalled by the kernel's markers, not by process
     // exit: the desktop is designed to stay up. Once the markers are present
@@ -252,7 +252,7 @@ pub fn run_shell_roundtrip(
     timeout: Duration,
 ) -> Result<String> {
     let paths = Paths::tagged(root, tag);
-    let vm = Vm::start(image, paths, false).context("starting QEMU")?;
+    let vm = Vm::start(image, paths, false, 1).context("starting QEMU")?;
 
     // The shell must be at its prompt before the first key lands, or the
     // bytes are read as noise by whatever is running instead.

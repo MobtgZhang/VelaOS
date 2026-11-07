@@ -36,6 +36,78 @@
 library: exec.library
 prefix: EXEC
 functions:
+  - name: AllocMem
+    lvo: -240
+    offset: ALLOCMEM
+    stub: alloc_mem
+    syscall: ALLOC_MEM
+    number: 22
+    kernel: ALLOC_MEM
+    status: implemented
+  - name: AllocVec
+    lvo: -232
+    offset: ALLOVEC
+    stub: alloc_vec
+    syscall: ALLOC_VEC
+    number: 24
+    kernel: ALLOC_VEC
+    status: implemented
+  - name: FreeMem
+    lvo: -224
+    offset: FREEMEM
+    stub: free_mem
+    syscall: FREE_MEM
+    number: 23
+    kernel: FREE_MEM
+    status: implemented
+  - name: FreeVec
+    lvo: -216
+    offset: FREEVEC
+    stub: free_vec
+    syscall: FREE_VEC
+    number: 25
+    kernel: FREE_VEC
+    status: implemented
+  - name: AvailMem
+    lvo: -208
+    offset: AVAILMEM
+    stub: avail_mem
+    syscall: AVAIL_MEM
+    number: 26
+    kernel: AVAIL_MEM
+    status: implemented
+  - name: CreatePool
+    lvo: -200
+    offset: CREATEPOOL
+    stub: create_pool
+    syscall: CREATE_POOL
+    number: 27
+    kernel: CREATE_POOL
+    status: implemented
+  - name: AllocPooled
+    lvo: -192
+    offset: ALLOCPOOLED
+    stub: alloc_pooled
+    syscall: ALLOC_POOLED
+    number: 28
+    kernel: ALLOC_POOLED
+    status: implemented
+  - name: FreePooled
+    lvo: -184
+    offset: FREEPOOLED
+    stub: free_pooled
+    syscall: FREE_POOLED
+    number: 29
+    kernel: FREE_POOLED
+    status: implemented
+  - name: DeletePool
+    lvo: -176
+    offset: DELETEPOOL
+    stub: delete_pool
+    syscall: DELETE_POOL
+    number: 30
+    kernel: DELETE_POOL
+    status: implemented
   - name: MapPage
     lvo: -168
     offset: MAPPAGE

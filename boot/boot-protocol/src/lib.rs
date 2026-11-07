@@ -257,6 +257,8 @@ pub struct VelaBootInfo {
     pub acpi_rsdp_paddr: u64,
     /// Physical address of a flattened device tree, or 0 if unavailable.
     pub dtb_paddr: u64,
+    /// Number of processors found in the MADT, or 1 if unknown.
+    pub cpu_count: u32,
 
     // --- bundled payloads ---
     /// Physical address of the loaded kernel image.
@@ -345,6 +347,7 @@ impl VelaBootInfo {
             framebuffer_pixel_mask: 0,
             acpi_rsdp_paddr: 0,
             dtb_paddr: 0,
+            cpu_count: 0,
             kernel_paddr: 0,
             kernel_bytes: 0,
             initrd_paddr: 0,
@@ -459,7 +462,7 @@ mod tests {
     fn layout_is_stable() {
         // Guard the ABI: these offsets are baked into the loader and the
         // kernel. A change here requires a BOOT_ABI_VERSION bump.
-        assert_eq!(size_of::<VelaBootInfo>(), 216);
+        assert_eq!(size_of::<VelaBootInfo>(), 224);
         assert_eq!(align_of::<VelaBootInfo>(), 8);
 
         assert_eq!(offset_of!(VelaBootInfo, magic), 0);
@@ -478,20 +481,21 @@ mod tests {
         assert_eq!(offset_of!(VelaBootInfo, framebuffer_pixel_mask), 72);
         assert_eq!(offset_of!(VelaBootInfo, acpi_rsdp_paddr), 80);
         assert_eq!(offset_of!(VelaBootInfo, dtb_paddr), 88);
-        assert_eq!(offset_of!(VelaBootInfo, kernel_paddr), 96);
-        assert_eq!(offset_of!(VelaBootInfo, kernel_bytes), 104);
-        assert_eq!(offset_of!(VelaBootInfo, initrd_paddr), 112);
-        assert_eq!(offset_of!(VelaBootInfo, initrd_bytes), 120);
-        assert_eq!(offset_of!(VelaBootInfo, arch_flags), 128);
-        assert_eq!(offset_of!(VelaBootInfo, stack_top), 136);
-        assert_eq!(offset_of!(VelaBootInfo, page_table_paddr), 144);
-        assert_eq!(offset_of!(VelaBootInfo, kernel_vaddr_base), 152);
-        assert_eq!(offset_of!(VelaBootInfo, kernel_text_bytes), 160);
-        assert_eq!(offset_of!(VelaBootInfo, heap_paddr), 168);
-        assert_eq!(offset_of!(VelaBootInfo, heap_bytes), 176);
-        assert_eq!(offset_of!(VelaBootInfo, pool_paddr), 184);
-        assert_eq!(offset_of!(VelaBootInfo, pool_bytes), 192);
-        assert_eq!(offset_of!(VelaBootInfo, reserved), 200);
+        assert_eq!(offset_of!(VelaBootInfo, cpu_count), 96);
+        assert_eq!(offset_of!(VelaBootInfo, kernel_paddr), 104);
+        assert_eq!(offset_of!(VelaBootInfo, kernel_bytes), 112);
+        assert_eq!(offset_of!(VelaBootInfo, initrd_paddr), 120);
+        assert_eq!(offset_of!(VelaBootInfo, initrd_bytes), 128);
+        assert_eq!(offset_of!(VelaBootInfo, arch_flags), 136);
+        assert_eq!(offset_of!(VelaBootInfo, stack_top), 144);
+        assert_eq!(offset_of!(VelaBootInfo, page_table_paddr), 152);
+        assert_eq!(offset_of!(VelaBootInfo, kernel_vaddr_base), 160);
+        assert_eq!(offset_of!(VelaBootInfo, kernel_text_bytes), 168);
+        assert_eq!(offset_of!(VelaBootInfo, heap_paddr), 176);
+        assert_eq!(offset_of!(VelaBootInfo, heap_bytes), 184);
+        assert_eq!(offset_of!(VelaBootInfo, pool_paddr), 192);
+        assert_eq!(offset_of!(VelaBootInfo, pool_bytes), 200);
+        assert_eq!(offset_of!(VelaBootInfo, reserved), 208);
     }
 
     #[test]
@@ -499,7 +503,7 @@ mod tests {
         // Every gap must be intentional. `struct_size` already covers the
         // struct, but a hole between a u32 pair and the next u64 would mean
         // silent padding that the ABI does not describe.
-        assert_eq!(size_of::<VelaBootInfo>(), 216);
+        assert_eq!(size_of::<VelaBootInfo>(), 224);
     }
 
     #[test]
@@ -535,7 +539,7 @@ mod tests {
         bi.struct_size = 8;
         assert_eq!(
             bi.check_identity(),
-            Err(BootInfoError::StructTooSmall { got: 8, need: 216 })
+            Err(BootInfoError::StructTooSmall { got: 8, need: 224 })
         );
     }
 

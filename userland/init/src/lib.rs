@@ -25,13 +25,51 @@ use vela_sys::api;
 /// configuration and the programs a user cannot delete. Created empty, but
 /// present, because a program that probes for a path's *existence* gets a
 /// meaningful answer rather than a failure it has to interpret.
-pub const SYS_TREE: [&str; 3] = ["SYS:", "SYS:System", "SYS:System/Prefs"];
-
-/// The directories created under `RAM:`.
+///
+/// The shape is the classic AmigaOS 3.x / AROS system volume (see
+/// `reports/system.md`): functional directories — `C` for shell commands,
+/// `Libs` for shared libraries, `Devs` for device drivers, `L` for
+/// filesystems and handlers, `S` for startup scripts — rather than Linux's
+/// `/bin`, `/etc`, `/usr` split. `Devs` carries the subdirectories the
+/// desktop expects (`DOSDrivers`, `DataTypes`, `Keymaps`, `Monitors`,
+/// `Printers`), and `Prefs/Env-Archive` is where `ENVARC:` points.
 ///
 /// Written out rather than generated so that a change to the tree is a diff a
 /// reviewer can read, and so the order is deliberate: parents before children,
 /// because `MakeDir` refuses a parent that is not there and this program would
+/// otherwise have to tolerate — and hide — a partial failure.
+pub const SYS_TREE: [&str; 21] = [
+    "SYS:",
+    "SYS:C",
+    "SYS:Classes",
+    "SYS:Devs",
+    "SYS:Devs/DOSDrivers",
+    "SYS:Devs/DataTypes",
+    "SYS:Devs/Keymaps",
+    "SYS:Devs/Monitors",
+    "SYS:Devs/Printers",
+    "SYS:Fonts",
+    "SYS:L",
+    "SYS:Libs",
+    "SYS:Locale",
+    "SYS:Prefs",
+    "SYS:System",
+    "SYS:System/Prefs",
+    "SYS:Storage",
+    "SYS:S",
+    "SYS:Tools",
+    "SYS:Utilities",
+    "SYS:WBStartup",
+];
+
+/// The directories created under `RAM:`.
+///
+/// `RAM:` is the writable half of the namespace: the transient state a boot
+/// session wants — scratch space under `T:`, the live environment under
+/// `ENV:` — that a ramfs rebuilds empty on every boot. Written out rather
+/// than generated so that a change to the tree is a diff a reviewer can
+/// read, and so the order is deliberate: parents before children, because
+/// `MakeDir` refuses a parent that is not there and this program would
 /// otherwise have to tolerate — and hide — a partial failure.
 pub const RAM_TREE: [&str; 6] = [
     "RAM:",
@@ -99,18 +137,21 @@ pub fn run() -> Report {
     }
 
     seed_readme(&mut report);
+    seed_startup_scripts(&mut report);
 
     report
 }
 
-/// Create the one file `RAM:T` comes with, counting the outcome.
+/// Write one seeded text file, counting the outcome.
 ///
 /// A fresh AmigaOS boots into a filesystem with content — AmigaOS used to
 /// drop a `ReadMe` into `RAM:T` — and a VelaOS shell whose `catalog` has no
 /// files in it leaves its file commands (`cat`, redirection-adjacent paths)
-/// more hypothetical than demonstrable. One seeded text file is what a user
-/// can run `cat` against on the first boot, and its absence is no failure:
-/// `RAM:` is a ramfs, so every boot starts empty anyway.
+/// more hypothetical than demonstrable. Their absence is no failure:
+/// `SYS:` and `RAM:` are ramfs-backed, so every boot starts empty anyway
+/// and re-seeding is idempotent. Opening in write mode creates the file,
+/// so the parent directory only has to exist — which is what the trees
+/// above guarantee.
 fn seed_readme(report: &mut Report) {
     let Ok(file) = api::open("RAM:T/ReadMe", api::mode::WRITE) else {
         report.failures += 1;
@@ -127,9 +168,74 @@ fn seed_readme(report: &mut Report) {
     }
 }
 
-/// The text `seed_readme` writes.
+/// The text `run` drops into `RAM:T/ReadMe`.
 const READ_ME: &str = "This is the source for VelaOS's transient state.\n\
 Boot a fresh session and this file returns.\n";
+
+/// Seed the two startup scripts `S:` comes with.
+///
+/// AmigaOS boots by executing `S:Startup-Sequence`, which in turn runs
+/// `S:User-Startup` for the user's own additions; AROS keeps the same
+/// convention. VelaOS does not have a script interpreter yet — the shell
+/// reads one command at a time — so nothing executes these files. They are
+/// seeded as data because a boot script that does not exist cannot be
+/// *read* either, and the point of the tree is that a program probing for
+/// any of the report's paths gets a coherent answer. A later boot step that
+/// executes them is an independent change.
+fn seed_startup_scripts(report: &mut Report) {
+    seed_file("SYS:S/Startup-Sequence", STARTUP_SEQUENCE, report);
+    seed_file("SYS:S/User-Startup", USER_STARTUP, report);
+}
+
+/// Write one seeded text file, counting the outcome.
+///
+/// A fresh AmigaOS boots into a filesystem with content — AmigaOS used to
+/// drop a `ReadMe` into `RAM:T` — and a VelaOS shell whose `catalog` has no
+/// files in it leaves its file commands (`cat`, redirection-adjacent paths)
+/// more hypothetical than demonstrable. Their absence is no failure:
+/// `SYS:` and `RAM:` are ramfs-backed, so every boot starts empty anyway
+/// and re-seeding is idempotent. Opening in write mode creates the file,
+/// so the parent directory only has to exist — which is what the trees
+/// above guarantee.
+fn seed_file(path: &str, text: &str, report: &mut Report) {
+    let Ok(file) = api::open(path, api::mode::WRITE) else {
+        report.failures += 1;
+        return;
+    };
+    let written = api::write(file, text.as_bytes());
+    // The handle must be closed whether the write worked or not: a computer
+    // that reboots cannot leak handles, but the *code* should not depend on
+    // that.
+    let _ = api::close(file);
+    match written {
+        Ok(_) => {}
+        Err(_) => report.failures += 1,
+    }
+}
+
+/// The text `run` drops into `SYS:S/Startup-Sequence`.
+///
+/// AmigaOS's `Startup-Sequence` is one long script that brings up
+/// assignments, mounts, clocks and finally the desktop. VelaOS's kernel
+/// already did the equivalents — memory, drivers, DOS, the mounts — before
+/// this program ran, so the script records what order the work completed
+/// in and what comes next, in the form AmigaOS and AROS both use: one
+/// shell command per line, `;` for a comment.
+const STARTUP_SEQUENCE: &str = "; VelaOS Startup-Sequence\n\
+; Executed at boot, after the kernel has built the namespace.\n\
+;\n\
+; What the kernel did before this file was reachable:\n\
+;   exec.library, the windowing system and the mounts were made ready\n\
+;   in memory, and `init` created SYS: and RAM:.\n\
+;\n\
+; What runs here in later boots. One command per line:\n\
+;   SetEnv  boot  ; copy ENV: into ENVARC:\n\
+;   LoadWB      ; start the Workbench desktop\n";
+
+/// The text `run` drops into `SYS:S/User-Startup`.
+const USER_STARTUP: &str = "; VelaOS User-Startup\n\
+; Run from Startup-Sequence, for the user's own additions.\n\
+; Empty by default, as on AmigaOS.\n";
 
 /// Create one directory, counting the outcome.
 ///

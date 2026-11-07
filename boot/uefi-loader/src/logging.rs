@@ -229,7 +229,13 @@ fn write_console_char(ch: char) {
     // `uefi::console` writes through the active console handle. Going through
     // the crate rather than an `out dx, al` to the firmware's own serial port
     // is deliberate: that port is the one the firmware is holding.
-    uefi::print!("{unit}");
+    //
+    // The character is passed as a `char`, not as the raw `u16`: `print!`
+    // formats through `Display`, so a `u16` would print as its decimal value
+    // — the console filling up with digit pairs instead of text.
+    if let Some(ch) = char::from_u32(unit as u32) {
+        uefi::print!("{ch}");
+    }
 }
 
 /// Install the loader's logger.
