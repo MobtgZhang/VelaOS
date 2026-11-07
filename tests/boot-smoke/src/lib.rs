@@ -43,6 +43,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use xtask::qemu::{self, Paths, Vm};
+use xtask::qemu::strip_ansi;
 use xtask::Arch;
 
 /// The repository root.
@@ -274,13 +275,37 @@ pub fn run_shell_roundtrip(
         // packet the guest's poll reads out of order.
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Give the guest a moment to process the typed line and print its
+    // response before we start polling the serial log.
+    std::thread::sleep(Duration::from_secs(1));
 
-    let seen = vm.wait_for_markers(&[response], timeout);
-    let serial = vm.serial_log();
+    // Poll the serial log directly: QEMU's file backend may buffer, so we
+    // retry a few times before declaring failure.
+    let mut seen = false;
+    for _ in 0..50 {
+        let log = strip_ansi(&vm.serial_log());
+        if log.contains(response) {
+            seen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // `vm` is dropped here — on every path — and its `Drop` kills and reaps
     // the child, exactly as in `run_boot`.
+    let serial_path = vm.paths().serial.clone();
     drop(vm);
+
+    // QEMU's serial file backend only flushes when the process exits, so wait
+    // a moment after the VM is gone, then re-read the log directly.
+    std::thread::sleep(Duration::from_millis(500));
+    let serial = std::fs::read_to_string(&serial_path).unwrap_or_default();
+
+    // One final check after the VM is gone: QEMU may flush buffered output
+    // only when it exits.
+    if !seen {
+        seen = strip_ansi(&serial).contains(response);
+    }
 
     anyhow::ensure!(
         seen,
