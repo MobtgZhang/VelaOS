@@ -33,14 +33,14 @@ use alloc::vec::Vec;
 
 use vela_sys::api;
 
-/// The prompt printed before each line.
-const PROMPT: &str = "vela> ";
+/// How many directory entries `ls` reads at once.
+const DIR_BUFFER_ENTRIES: usize = 32;
 
 /// How many bytes of input a single line can hold.
 const LINE_CAPACITY: usize = 256;
 
-/// How many directory entries `ls` reads at once.
-const DIR_BUFFER_ENTRIES: usize = 32;
+/// The default user name shown in the prompt.
+const USER_NAME: &str = "vela";
 
 /// The result of running a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,19 +78,43 @@ impl CommandLine {
 pub struct Shell {
     /// The accumulated input line, not yet submitted.
     line: String,
+    /// The machine's hostname, read once at startup.
+    hostname: String,
 }
 
 impl Shell {
     /// A fresh shell with an empty input line.
     pub fn new() -> Self {
+        // Read the hostname from the kernel for the prompt.
+        let mut buf = [0u8; 64];
+        let hostname = match api::hostname(&mut buf) {
+            Ok(n) => core::str::from_utf8(&buf[..n])
+                .unwrap_or("vela")
+                .to_string(),
+            Err(_) => USER_NAME.to_string(),
+        };
         Self {
             line: String::new(),
+            hostname,
         }
     }
 
-    /// Print the prompt.
+    /// Print the prompt: `hostname@user> current_directory`.
     fn prompt(&self) {
-        api::print(PROMPT);
+        api::print(&self.hostname);
+        api::print("@");
+        api::print(USER_NAME);
+        api::print("> ");
+        // Show the current directory, if we can read it.
+        let mut buf = [0u8; 256];
+        if let Ok(len) = api::current_dir(&mut buf) {
+            let s = core::str::from_utf8(&buf[..len.min(buf.len() - 1)])
+                .unwrap_or("<invalid utf-8>");
+            if !s.is_empty() {
+                api::print(s);
+            }
+        }
+        api::print(" ");
     }
 
     /// Read one line from the console, echoing as we go.
@@ -179,7 +203,11 @@ impl Shell {
             "echo" => Self::cmd_echo(&cmd.args),
             "cat" => Self::cmd_cat(&cmd.args),
             "whoami" => Self::cmd_whoami(),
+            "hostname" => Self::cmd_hostname(&cmd.args),
             "ver" | "version" => Self::cmd_ver(),
+            "ping" => Self::cmd_ping(&cmd.args),
+            "ifconfig" | "ip" => Self::cmd_ifconfig(&cmd.args),
+            "netstat" => Self::cmd_netstat(&cmd.args),
             name => {
                 api::print("vela: unknown command: ");
                 api::print(name);
@@ -203,16 +231,18 @@ impl Shell {
         api::print("  echo <text>     - print text to the console\n");
         api::print("  cat <file>      - print a file's contents\n");
         api::print("  whoami          - print the current user\n");
+        api::print("  hostname        - print the machine's hostname\n");
         api::print("  ver             - print the system version\n");
+        api::print("  ping <host>     - test connectivity (network not in v0.1.0)\n");
+        api::print("  ifconfig        - show network config (network not in v0.1.0)\n");
+        api::print("  netstat         - show network stats (network not in v0.1.0)\n");
         CommandResult::Continue
     }
 
     fn cmd_clear() -> CommandResult {
-        // Print enough newlines to push the current content off the top of a
-        // typical 80x25 or 80x50 console. Not a real clear, but good enough.
-        for _ in 0..40 {
-            api::print("\n");
-        }
+        // A real clear: the ANSI escape sequence honours the terminal, and
+        // the kernel's `ClearScreen` syscall sends it to the console.
+        let _ = api::clear_screen();
         CommandResult::Continue
     }
 
@@ -353,6 +383,48 @@ impl Shell {
 
     fn cmd_ver() -> CommandResult {
         api::print("VelaOS 0.1.0\n");
+        CommandResult::Continue
+    }
+
+    /// `hostname` — print or set the machine's hostname.
+    ///
+    /// With no argument, prints the current hostname. With an argument,
+    /// attempts to set it (the kernel only allows setting during boot, so
+    /// this reports that it cannot be changed at runtime).
+    fn cmd_hostname(_args: &[String]) -> CommandResult {
+        let mut buf = [0u8; 64];
+        match api::hostname(&mut buf) {
+            Ok(n) => {
+                let s = core::str::from_utf8(&buf[..n]).unwrap_or("vela");
+                api::print(s);
+                api::print("\n");
+            }
+            Err(_) => {
+                api::print(USER_NAME);
+                api::print("\n");
+            }
+        }
+        CommandResult::Continue
+    }
+
+    /// `ping` — test network connectivity (stub).
+    ///
+    /// VelaOS v0.1.0 has no network stack, so this reports that the
+    /// facility is not yet available.
+    fn cmd_ping(_args: &[String]) -> CommandResult {
+        api::print("vela: ping: network stack not available in v0.1.0\n");
+        CommandResult::Continue
+    }
+
+    /// `ifconfig` / `ip` — show network interface configuration (stub).
+    fn cmd_ifconfig(_args: &[String]) -> CommandResult {
+        api::print("vela: ifconfig: network stack not available in v0.1.0\n");
+        CommandResult::Continue
+    }
+
+    /// `netstat` — show network statistics (stub).
+    fn cmd_netstat(_args: &[String]) -> CommandResult {
+        api::print("vela: netstat: network stack not available in v0.1.0\n");
         CommandResult::Continue
     }
 }
