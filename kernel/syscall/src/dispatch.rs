@@ -770,12 +770,17 @@ pub mod exec_handlers {
 
     /// `ClearScreen` — clear the console screen.
     ///
-    /// No arguments. Returns zero on success. Sends the ANSI clear-screen
-    /// sequence to the console, which a terminal emulator honours; on a
-    /// serial-only console it is harmless noise.
+    /// No arguments. Returns zero on success. On a serial console this scrolls
+    /// content off-screen with newlines; on a terminal emulator it also sends
+    /// the ANSI clear sequence.
     pub fn clear_screen(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
-        // ESC [ 2 J  ESC [ H — erase display and move cursor to home.
+        // ANSI ESC [ 2 J / ESC [ H for terminal emulators that support it.
         crate::print_console("\x1b[2J\x1b[H");
+        // Scroll off-screen on a serial console: form feed plus newlines.
+        crate::print_console("\x0c");
+        for _ in 0..40 {
+            crate::print_console("\n");
+        }
         SyscallResult::ok(0)
     }
 

@@ -240,9 +240,14 @@ impl Shell {
     }
 
     fn cmd_clear() -> CommandResult {
-        // A real clear: the ANSI escape sequence honours the terminal, and
-        // the kernel's `ClearScreen` syscall sends it to the console.
-        let _ = api::clear_screen();
+        // A real clear on a serial console: emit enough newlines plus a form
+        // feed to push current content off the visible area. ANSI escape
+        // sequences are harmless on a serial port but do not clear it, so
+        // scrolling is the portable approach.
+        api::print("\x0c");
+        for _ in 0..60 {
+            api::print("\n");
+        }
         CommandResult::Continue
     }
 
