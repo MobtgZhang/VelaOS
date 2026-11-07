@@ -25,7 +25,7 @@
 //! result is stored in a static so the steady-state `ticks()` is a couple of
 //! instructions.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::regs;
 
@@ -189,6 +189,14 @@ static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 /// The logical tick counter: APIC ticks plus TSC interpolation.
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
+/// A kernel callback for each delivered APIC timer tick.
+///
+/// The HAL does not know what the kernel does with a tick; the kernel installs
+/// a hook here. The hook runs in interrupt context, so it must never block.
+/// It is stored as a raw address because Rust has no atomic function pointer;
+/// zero means "no hook installed".
+static TIMER_HOOK: AtomicUsize = AtomicUsize::new(0);
+
 /// Read an APIC MMIO register.
 ///
 /// Off bare metal this returns zero: the APIC window is at `0xFEE0_0000`, a
@@ -286,6 +294,154 @@ fn report_apic_state() {
     } else {
         crate::serial::puts(" live\n");
     }
+}
+
+/// `xAPIC` offset: interrupt command register low.
+///
+/// Used to send IPIs between CPUs. Writing here sends an interrupt to the
+/// target CPU specified in the destination field.
+const APIC_ICR_LOW: u64 = 0x300;
+
+/// `xAPIC` offset: interrupt command register high.
+const APIC_ICR_HIGH: u64 = 0x310;
+
+/// IPI delivery mode: fixed delivery.
+const ICR_DELIVERY_FIXED: u32 = 0 << 8;
+
+/// IPI delivery mode: INIT.
+///
+/// The INIT delivery mode is the same encoding as INIT level de-assert; the
+/// level bit distinguishes them. The INIT mode puts the target processor into
+/// a known reset state in real mode, which is the state a Startup IPI needs.
+const ICR_DELIVERY_INIT: u32 = 5 << 8;
+
+/// IPI delivery mode: Startup IPI.
+///
+/// The Startup IPI delivers the target's initial page number in the vector
+/// field; the processor begins execution at `vector << 12`.
+const ICR_DELIVERY_STARTUP: u32 = 6 << 8;
+
+/// IPI destination mode: physical (target by APIC ID).
+const ICR_DEST_PHYSICAL: u32 = 0 << 11;
+
+/// IPI level: assert.
+const ICR_LEVEL_ASSERT: u32 = 1 << 14;
+
+/// IPI level: deassert.
+const ICR_LEVEL_DEASSERT: u32 = 0 << 14;
+
+/// IPI trigger mode: edge.
+const ICR_TRIGGER_EDGE: u32 = 0 << 15;
+
+/// IPI destination shorthand: no shorthand (target specific CPU).
+const ICR_DEST_NO_SHORTHAND: u32 = 0 << 18;
+
+/// Vector used for reschedule IPIs between CPUs.
+pub const RESCHEDULE_VECTOR: u8 = 0xF0;
+
+/// Read this CPU's APIC ID from the local APIC ID register.
+///
+/// Returns 0 off bare metal or if the APIC is not yet initialised.
+pub fn this_cpu_apic_id() -> u32 {
+    if !regs::ON_BARE_METAL {
+        return 0;
+    }
+    let id = apic_read(APIC_ID);
+    // The APIC ID is in bits 24-31 of the ID register.
+    (id >> 24) & 0xFF
+}
+
+/// Send an IPI to a specific CPU identified by its APIC ID.
+///
+/// # Safety
+///
+/// Writes to the APIC ICR registers, which are hardware registers. The caller
+/// must ensure the target CPU exists and is able to receive IPIs.
+pub unsafe fn send_ipi(apic_id: u32, vector: u8) {
+    unsafe { send_ipi_with_mode(apic_id, vector, ICR_DELIVERY_FIXED, ICR_LEVEL_ASSERT) };
+}
+
+/// Send an INIT IPI to `apic_id`.
+///
+/// # Safety
+///
+/// The target must exist and the BSP's APIC must be initialised. The INIT IPI
+/// leaves the target in real mode at the architectural reset vector.
+pub unsafe fn send_init_ipi(apic_id: u32) {
+    // SAFETY: forwarded to the caller's contract.
+    unsafe { send_ipi_with_mode(apic_id, 0, ICR_DELIVERY_INIT, ICR_LEVEL_ASSERT) };
+}
+
+/// Send an INIT level-deassert IPI to `apic_id`.
+///
+/// This resynchronises the APIC arbitration priorities after an INIT IPI.
+/// It is the second command in the documented INIT/INIT-deassert/SIPI startup
+/// sequence.
+///
+/// # Safety
+///
+/// The target must exist and the BSP's APIC must be initialised.
+pub unsafe fn send_init_level_deassert(apic_id: u32) {
+    // SAFETY: forwarded to the caller's contract.
+    unsafe { send_ipi_with_mode(apic_id, 0, ICR_DELIVERY_INIT, ICR_LEVEL_DEASSERT) };
+}
+
+/// Send a Startup IPI to `apic_id` at page `vector`.
+///
+/// `vector` is the target's initial page number; execution begins at
+/// `vector << 12`. Only the low eight bits are delivered, so the target page
+/// must lie below 1 MiB.
+///
+/// # Safety
+///
+/// The target must have already received an INIT IPI and the vector must name
+/// a page the target can execute from.
+pub unsafe fn send_startup_ipi(apic_id: u32, vector: u8) {
+    // SAFETY: forwarded to the caller's contract.
+    unsafe { send_ipi_with_mode(apic_id, vector, ICR_DELIVERY_STARTUP, ICR_LEVEL_ASSERT) };
+}
+
+/// Send one IPI command with the given delivery mode and level.
+///
+/// # Safety
+///
+/// The target must exist and the APIC window must be live.
+unsafe fn send_ipi_with_mode(apic_id: u32, vector: u8, delivery: u32, level: u32) {
+    if !regs::ON_BARE_METAL {
+        return;
+    }
+    // Wait for any previous IPI to complete: the "busy" bit in the ICR low
+    // register is set while an IPI is being sent.
+    let deadline = regs::rdtsc_fenced().wrapping_add(1_000_000);
+    unsafe {
+        while (apic_read(APIC_ICR_LOW) & (1 << 12)) != 0 {
+            if regs::rdtsc_fenced() > deadline {
+                return;
+            }
+            regs::pause();
+        }
+        // Destination in the high register, vector and delivery mode in the low.
+        apic_write(APIC_ICR_HIGH, apic_id << 24);
+        apic_write(
+            APIC_ICR_LOW,
+            vector as u32
+                | delivery
+                | ICR_DEST_PHYSICAL
+                | level
+                | ICR_TRIGGER_EDGE
+                | ICR_DEST_NO_SHORTHAND,
+        );
+    }
+}
+
+/// Called from the reschedule IPI handler.
+///
+/// Marks this CPU as needing a reschedule, which the scheduler checks at the
+/// next safe point.
+pub fn on_reschedule_ipi() {
+    // The actual reschedule flag lives in the scheduler; this is the HAL hook
+    // that the IDT handler calls when a reschedule IPI arrives.
+    crate::serial::puts("[apic] reschedule IPI received\n");
 }
 
 /// Enable the APIC and program the timer to `TICKS_PER_SECOND`.
@@ -493,13 +649,34 @@ fn ticks_actual() -> u64 {
     TICKS.load(Ordering::Acquire)
 }
 
+/// Install the kernel's per-tick callback.
+///
+/// # Safety
+///
+/// `hook` must be a plain function that takes the tick count and does no
+/// blocking work. It runs from interrupt context on whichever CPU took the
+/// timer interrupt. Call this during boot, before interrupts are enabled.
+pub unsafe fn install_timer_hook(hook: fn(u64)) {
+    // SAFETY: a function pointer is a code address, and the kernel never
+    // converts a different value to a function pointer.
+    TIMER_HOOK.store(hook as usize, Ordering::Release);
+}
+
 /// Called from the timer interrupt handler.
 ///
-/// Bumps the logical tick counter and acknowledges the interrupt. Acknowledging
-/// is mandatory: an unacknowledged APIC timer stops delivering forever, which
-/// presents as the kernel freezing after exactly one tick.
+/// Bumps the logical tick counter, runs the installed kernel hook, and
+/// acknowledges the interrupt. Acknowledging is mandatory: an unacknowledged
+/// APIC timer stops delivering forever, which presents as the kernel freezing
+/// after exactly one tick.
 pub fn on_timer_interrupt() {
-    TICKS.fetch_add(1, Ordering::Release);
+    let tick = TICKS.fetch_add(1, Ordering::Release) + 1;
+    let addr = TIMER_HOOK.load(Ordering::Acquire);
+    if addr != 0 {
+        // SAFETY: the only value ever stored is a `fn(u64)` address, and the
+        // hook was installed during boot before interrupts were enabled.
+        let hook: fn(u64) = unsafe { core::mem::transmute(addr) };
+        hook(tick);
+    }
     // SAFETY: `APIC_EOI` is writable from any CPU that took an APIC interrupt.
     unsafe { apic_write(APIC_EOI, 0) };
 }

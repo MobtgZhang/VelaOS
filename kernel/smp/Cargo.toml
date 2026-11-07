@@ -1,0 +1,11 @@
+[package]
+name = "vela-kernel-smp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS symmetric multiprocessing support"
+
+[dependencies]
+vela-hal-x86_64.workspace = true
+spin.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "vela-driver-ata"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS ATA (AT Attachment) driver"
+
+[dependencies]
+vela-kernel-device.workspace = true
+spin.workspace = true

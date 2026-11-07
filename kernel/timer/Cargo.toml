@@ -1,0 +1,10 @@
+[package]
+name = "vela-kernel-timer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VelaOS timer device: monotonic/realtime clocks, deadline heap, timer.device compat"
+
+[dependencies]
+spin.workspace = true

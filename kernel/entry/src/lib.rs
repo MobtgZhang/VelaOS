@@ -55,16 +55,20 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use vela_boot_protocol::VelaBootInfo;
 use vela_hal_x86_64::addrspace::{activate, AddressSpace, IdentityPhys};
 use vela_hal_x86_64::{apic, idt, paging, regs, serial};
 use vela_kernel_core::Level;
+use vela_kernel_device::{errors, DeviceInfo, DeviceManager, DriverOps, IORequest, IoState};
 use vela_kernel_memory::{
     init_heap, BootReservations, FrameAllocator, KernelHeap, MemoryMap, MemoryPlan, PAGE_SIZE,
 };
+use vela_kernel_smp::bring_up_aps;
 use vela_kernel_syscall::dispatch::{builtin_table, DispatchTable};
+use vela_kernel_timer::{advance_tick, timer_device};
 
 /// The virtual base of the higher-half kernel window.
 ///
@@ -182,6 +186,85 @@ impl vela_kernel_syscall::task_space::FrameSource for UserFrames {
         // SAFETY: forwarded from this function's own contract.
         unsafe { self.0.free_frame(pa) };
     }
+}
+
+/// The kernel's timer.device driver.
+///
+/// The timer device has no hardware of its own: its commands are served by
+/// the deadline heap and the monotonic clock in `vela-kernel-timer`. The
+/// driver exists so `OpenDevice("timer.device", unit)` and the Exec I/O
+/// state machine reach that service through the same path as every other
+/// device.
+struct TimerDriver;
+
+impl DriverOps for TimerDriver {
+    fn probe(&self, info: &DeviceInfo) -> bool {
+        info.bus == "timer"
+    }
+
+    fn open(&self, _device: u64, unit: u32) -> Result<u64, i32> {
+        if unit > vela_kernel_timer::unit::ECLOCK {
+            return Err(errors::BAD_UNIT);
+        }
+        Ok(unit as u64)
+    }
+
+    fn submit(&self, _cookie: u64, req: &mut IORequest) -> Result<(), i32> {
+        let rc = unsafe { timer_device::dispatch(req.io_command, req.io_data) };
+        req.io_error = rc;
+        req.io_state = IoState::Done;
+        if rc < 0 {
+            Err(errors::BAD_CMD)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn cancel(&self, _cookie: u64, req: &mut IORequest) -> bool {
+        if req.io_state == IoState::InFlight {
+            req.io_state = IoState::CancelRequested;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove(&self, _cookie: u64) {
+        // No hardware resources are owned by the timer device.
+    }
+}
+
+/// Register the timer device and its units.
+fn install_timer_device() {
+    let driver: Arc<dyn DriverOps> = Arc::new(TimerDriver);
+    DeviceManager::register_driver("timer.device", driver);
+    for unit in 0..=vela_kernel_timer::unit::ECLOCK {
+        DeviceManager::register_device("timer.device", unit, 0);
+    }
+}
+
+/// Register the built-in block and display drivers.
+///
+/// The controllers are discovered by bus enumeration; at boot the legacy
+/// ATA channels and one namespace/port per storage controller are registered
+/// directly so `OpenDevice` names a real unit. The display driver is
+/// registered under the VGA/HDMI/DVI aliases because those are the same
+/// hardware class.
+fn install_builtin_devices() {
+    // Legacy ATA primary and secondary channels, two drives each.
+    vela_driver_ata::register_controller(0x1F0, 0x3F6, 14, true, 2);
+    vela_driver_ata::register_controller(0x170, 0x376, 15, false, 2);
+    // NVMe controller with one namespace.
+    vela_driver_nvme::register_pci_device(0, 0, 1);
+    // AHCI controller with one implemented port.
+    vela_driver_sata::register_ahci_controller(0, 0, 1);
+    // VGA/HDMI/DVI display.
+    vela_driver_vga::register_pci_device(0, 0, 0);
+}
+
+/// Advance the timer clocks once per APIC tick.
+fn timer_tick_hook(_tick: u64) {
+    advance_tick();
 }
 
 /// True once the kernel has finished booting.
@@ -704,9 +787,28 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // --- 11. Interrupts ----------------------------------------------------
     idt::init();
     apic::init();
-    // SAFETY: the IDT is installed and the timer is programmed, so an
-    // interrupt taken from here on has a handler.
+    // SAFETY: the hook runs in interrupt context on any CPU and only touches
+    // the timer crate's atomics and deadline heap, neither of which block.
+    unsafe { apic::install_timer_hook(timer_tick_hook) };
+    // SAFETY: the IDT is installed, the timer is programmed and the hook is
+    // installed, so an interrupt taken from here on has a handler.
     unsafe { regs::sti() };
+
+    // --- Timer device --------------------------------------------------------
+    //
+    // The APIC timer fires periodically; its hook advances the monotonic and
+    // realtime clocks and dispatches due timers. The timer device exposes the
+    // same service through the Exec device interface.
+    install_timer_device();
+    serial::puts("VELA-KERNEL: timer device initialised\n");
+
+    // --- Device manager ------------------------------------------------------
+    //
+    // Drivers are registered here; the driver crates register their unit
+    // instances too, so `OpenDevice` names a real device rather than a name
+    // with no instance behind it.
+    install_builtin_devices();
+    serial::puts("VELA-KERNEL: device manager initialised\n");
 
     // --- 9. Services -------------------------------------------------------
     // The Exec service, the DOS service and the syscall dispatch table are
@@ -771,6 +873,59 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     serial::puts("x");
     serial::puts_dec(screen_height as u64);
     serial::puts("\n");
+
+    // --- SMP: bring up application processors -------------------------------
+    //
+    // The BSP is already running. If the firmware reported more than one
+    // processor, wake each Application Processor with a Startup IPI (SIPI).
+    // Each AP runs through its own early boot sequence (GDT, IDT, APIC) and
+    // then joins the scheduler.
+    //
+    // After all APs have signalled ready, the BSP continues with the banner
+    // and starts init. Each AP spins in its own idle loop.
+    let cpu_count = boot_info.cpu_count as usize;
+    if cpu_count > 1 {
+        serial::puts("VELA-KERNEL: SMP: ");
+        serial::puts_dec(cpu_count as u64);
+        serial::puts(" processors present\n");
+
+        // The trampoline executes from low memory after the AP loads the
+        // kernel's page tables, so those low pages must be mapped identity-wise
+        // in the kernel's address space. If a page is already mapped by the
+        // ordinary identity map, that mapping is sufficient.
+        for page in vela_kernel_smp::TRAMPOLINE_PAGES {
+            if space.is_mapped(page) {
+                continue;
+            }
+            if let Err(e) = space.map_page(page, page, vela_hal_common::PageFlags::kernel_rw()) {
+                serial::puts("VELA-KERNEL: cannot map the SMP trampoline page at ");
+                serial::puts_hex(page);
+                serial::puts(": ");
+                serial::puts(&e.to_string());
+                serial::puts("\n");
+                vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            }
+        }
+
+        // Each AP needs its own kernel stack. The stacks live in the kernel
+        // heap, which is identity-mapped, and each is passed to the AP through
+        // the low-memory configuration table.
+        let mut ap_stacks = Vec::with_capacity(cpu_count - 1);
+        for _ in 1..cpu_count {
+            let base = heap.alloc(KERNEL_STACK_BYTES as usize, 16).unwrap_or(0);
+            if base == 0 {
+                serial::puts("VELA-KERNEL: cannot allocate an AP stack\n");
+                vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            }
+            ap_stacks.push(base as u64 + KERNEL_STACK_BYTES);
+        }
+
+        // SAFETY: the BSP has installed the GDT, IDT and APIC, has mapped the
+        // trampoline pages, and supplied one stack per AP.
+        unsafe { bring_up_aps(cpu_count, space.pml4_pa(), &ap_stacks) };
+    } else {
+        serial::puts("VELA-KERNEL: SMP: 1 processor present\n");
+    }
 
     // --- 10. Banner ---------------------------------------------------------
     serial::puts("VELA-KERNEL: VelaOS 0.1.0 ready\n");

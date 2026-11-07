@@ -277,6 +277,21 @@ static mut GDT: [u64; GDT_ENTRIES] = [0; GDT_ENTRIES];
 /// silent one — the CPU would read a different value than the kernel wrote.
 static mut TSS: [u8; TSS_BYTES] = [0; TSS_BYTES];
 
+/// The raw bytes of the installed GDT, for code that must load the table from
+/// a 16-bit or 32-bit context.
+///
+/// # Safety of the read
+///
+/// The table is written once by [`install`] on the BSP before any AP runs. An
+/// AP copies these bytes into its trampoline before `ap_entry` installs its
+/// own table, so the read observes the completed boot-time table rather than a
+/// concurrent write. Later `install` calls rewrite the same fields with the
+/// same values.
+pub fn raw_bytes() -> &'static [u8] {
+    // SAFETY: as documented above, the table is complete before this is used.
+    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(GDT) as *const u8, GDT_BYTES) }
+}
+
 /// Write a little-endian `u64` into `buffer` at `offset`.
 ///
 /// # Safety

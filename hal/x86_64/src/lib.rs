@@ -54,7 +54,23 @@ pub const KERNEL_CODE_SELECTOR: u16 = gdt::KERNEL_CODE_SELECTOR;
 pub const KERNEL_DATA_SELECTOR: u16 = gdt::KERNEL_DATA_SELECTOR;
 pub use regs::{cpuid, hlt, read_cr0, read_cr2, read_cr3, write_cr3};
 
-use vela_hal_common::{CpuArch, PlatformTimer};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+pub use vela_hal_common::{CpuArch, PlatformTimer};
+
+/// Per-CPU state, stored as parallel arrays indexed by CPU index.
+///
+/// Each entry is only touched by its own CPU after boot, except during the
+/// boot sequence when the BSP writes each AP's entry before starting it.
+static CPU_APC_ID: [AtomicU32; 256] = [const { AtomicU32::new(0) }; 256];
+static CPU_READY: [AtomicU32; 256] = [const { AtomicU32::new(0) }; 256];
+static CPU_CURRENT_TASK: [AtomicU32; 256] = [const { AtomicU32::new(0) }; 256];
+
+/// This CPU's index into the per-CPU arrays, set during early boot.
+///
+/// The BSP sets its own index after installing its GDT/IDT/APIC; each AP sets
+/// its own index from its SIPI entry point. After that every CPU reads only
+/// its own index, so there is no cross-CPU contention.
+static THIS_CPU_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// The x86-64 implementation of [`CpuArch`].
 pub struct X86Cpu;
@@ -82,8 +98,71 @@ impl CpuArch for X86Cpu {
     }
 
     fn current_cpu_id() -> usize {
-        // Single-core for v0.1.0. Phase 4 replaces this with an APIC ID.
-        0
+        // Read this CPU's APIC ID from the local APIC register. The APIC ID is
+        // the architectural per-CPU identifier: the BSP's ID is read at boot,
+        // and each AP's ID is set by its SIPI entry point before the CPU runs
+        // any kernel code.
+        //
+        // Off bare metal (hosted tests) the APIC window reads zero, so fall
+        // back to the static set during early boot.
+        if regs::ON_BARE_METAL {
+            let id = crate::apic::this_cpu_apic_id();
+            if id != 0 {
+                return id as usize;
+            }
+        }
+        THIS_CPU_INDEX.load(Ordering::Acquire)
+    }
+
+    /// Tell the HAL which CPU index this CPU is. Called once during early boot
+    /// on every CPU before the scheduler considers it runnable.
+    ///
+    /// # Safety
+    ///
+    /// Must be called exactly once per CPU, before any code on that CPU reads
+    /// `current_cpu_id()`.
+    unsafe fn set_this_cpu(index: usize) {
+        THIS_CPU_INDEX.store(index, Ordering::Release);
+    }
+
+    /// Register this CPU's per-CPU state, including its APIC ID.
+    ///
+    /// Called by the BSP for itself and by each AP's SIPI entry point.
+    ///
+    /// # Safety
+    ///
+    /// Must be called exactly once per CPU before `current_cpu_id()` is used.
+    unsafe fn register_cpu(apic_id: u32, index: usize) {
+        CPU_APC_ID[index].store(apic_id, Ordering::Release);
+        THIS_CPU_INDEX.store(index, Ordering::Release);
+    }
+
+    fn mark_cpu_ready() {
+        let index = Self::current_cpu_id();
+        if index < CPU_READY.len() {
+            CPU_READY[index].store(1, Ordering::Release);
+        }
+    }
+
+    fn is_cpu_ready() -> bool {
+        let index = Self::current_cpu_id();
+        index < CPU_READY.len() && CPU_READY[index].load(Ordering::Acquire) != 0
+    }
+
+    fn set_current_task(task_id: u32) {
+        let index = Self::current_cpu_id();
+        if index < CPU_CURRENT_TASK.len() {
+            CPU_CURRENT_TASK[index].store(task_id, Ordering::Release);
+        }
+    }
+
+    fn current_task_id() -> u32 {
+        let index = Self::current_cpu_id();
+        if index < CPU_CURRENT_TASK.len() {
+            CPU_CURRENT_TASK[index].load(Ordering::Acquire)
+        } else {
+            0
+        }
     }
 
     fn busy_wait_cycles() -> u64 {
