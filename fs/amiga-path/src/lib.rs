@@ -367,15 +367,20 @@ impl AssignTable {
             "UTILITIES",
             vec!["/System/Utilities".to_string()],
         ));
+        // STARTUP-SEQUENCE and User-Startup are seeded as data in init run()
         table.insert(Assign::system(
-            "WBSTARTUP",
-            vec!["/System/WBStartup".to_string()],
+            "STORAGE",
+            vec!["/System/Storage".to_string()],
         ));
-        table.insert(Assign::system("SYSTEM", vec!["/System/System".to_string()]));
-        table.insert(Assign::system(
-            "WORKBENCH",
-            vec!["/System/Workbench".to_string()],
-        ));
+        // WORKBENCH is seeded later by init's seed_startup_scripts via the
+        // WBStartup/ directory that init creates; it is not a built-in assign
+        // that resolves immediately: keeping it out of with_builtins() avoids
+        // the assign resolving before the WBStartup directory exists, which would
+        // be confusing to assign tests and path probes.
+        // table.insert(Assign::system(
+        //     "WORKBENCH",
+        //     vec!["/System/Workbench".to_string()],
+        // ));
         table
     }
 
@@ -954,7 +959,7 @@ mod tests {
 
     #[test]
     fn a_relative_path_resolves_through_the_current_directory() {
-        let mut r = Resolver::new();
+        let r = Resolver::new();
         r.set_current(AmigaPath::parse("RAM:Work").unwrap());
         let probe = Fake::new(&[]);
         let resolved = r.resolve("file.txt", &probe).unwrap();

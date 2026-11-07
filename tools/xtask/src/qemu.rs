@@ -189,7 +189,7 @@ impl Vm {
     ///
     /// `timeout_secs` is a hard ceiling enforced by [`Vm::wait_for`], and the
     /// [`Drop`] guard is a backstop.
-    pub fn start(image: &Path, paths: Paths, display: bool) -> Result<Self> {
+    pub fn start(image: &Path, paths: Paths, display: bool, smp_count: usize) -> Result<Self> {
         if !image.exists() {
             bail!(
                 "image {} not found; run `cargo xtask image` first",
@@ -209,6 +209,7 @@ impl Vm {
         cmd.args(["-machine", "q35"])
             .args(["-m", "512M"])
             .arg("-no-reboot")
+            .args(["-smp", &smp_count.to_string()])
             // # Why the CPU model is pinned, and why this is only a convenience
             //
             // The kernel detects `RDTSCP` through `CPUID` and falls back to
@@ -444,9 +445,15 @@ impl Drop for Vm {
 ///
 /// `timeout_secs` is a hard ceiling. The VM is killed and waited on before
 /// this function returns, in every case.
-pub fn run(root: &Path, image: &Path, display: bool, timeout_secs: u64) -> Result<String> {
+pub fn run(
+    root: &Path,
+    image: &Path,
+    display: bool,
+    timeout_secs: u64,
+    smp_count: usize,
+) -> Result<String> {
     let paths = Paths::tagged(root, "xtask");
-    let mut vm = Vm::start(image, paths, display)?;
+    let mut vm = Vm::start(image, paths, display, smp_count)?;
 
     let stopped = vm.wait_for(timeout_secs)?;
     if !stopped {

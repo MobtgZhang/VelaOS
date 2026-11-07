@@ -110,7 +110,7 @@ fn main() -> Result<()> {
             timeout,
         } => {
             let img = image.unwrap_or_else(|| root.join("target/vela.img"));
-            qemu::run(&root, &img, display, timeout)?;
+            qemu::run(&root, &img, display, timeout, 1)?;
         }
         Command_::Run {
             arch,
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
             build_loader(&root, arch, &profile)?;
             build_kernel(&root, arch, &profile)?;
             image::build(&root, arch, &profile, &out)?;
-            qemu::run(&root, &out, display, timeout)?;
+            qemu::run(&root, &out, display, timeout, 1)?;
         }
         Command_::Test { suite } => run_test(&root, &suite)?,
     }

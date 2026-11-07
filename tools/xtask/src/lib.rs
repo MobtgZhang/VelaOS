@@ -24,12 +24,21 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum;
 
-/// Architectures VelaOS v0.1.0 can build.
+/// Architectures VelaOS can target.
+///
+/// x86-64 is the only architecture with a working UEFI target, kernel entry,
+/// and drivers in v0.1.0. The other three are compile-check targets: their
+/// `no_std` crates are verified portable, but they do not yet boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Arch {
-    /// x86-64 — the only architecture with a working UEFI target and drivers in
-    /// v0.1.0. All other architectures are compile-checked only.
+    /// x86-64 — boots under UEFI/EDK II with the unified Boot Protocol.
     X86_64,
+    /// aarch64 — compile-checked only (`vela-hal-common`).
+    Aarch64,
+    /// loongarch64 — compile-checked only (`vela-hal-common`).
+    Loongarch64,
+    /// riscv64 — compile-checked only (`vela-hal-common`).
+    Riscv64,
 }
 
 impl Arch {
@@ -37,26 +46,55 @@ impl Arch {
     pub fn bare_target(self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64-unknown-none",
+            Self::Aarch64 => "aarch64-unknown-none",
+            Self::Loongarch64 => "loongarch64-unknown-none",
+            Self::Riscv64 => "riscv64gc-unknown-none-elf",
         }
     }
 
     /// The UEFI target used for the loader.
+    ///
+    /// Only x86-64 has a UEFI target; the other architectures do not boot
+    /// under EDK II in v0.1.0, so this returns their bare-metal target as a
+    /// placeholder that callers must not pass to the UEFI loader build.
     pub fn uefi_target(self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64-unknown-uefi",
+            _ => self.bare_target(),
         }
     }
 
     /// Removable-media bootloader filename the firmware looks for.
-    pub fn bootloader_name(self) -> &'static str {
+    ///
+    /// Only defined for x86-64; the other architectures have no bootloader
+    /// yet, so this returns `BOOTX64.EFI` only for `X86_64` and `None`
+    /// otherwise.
+    pub fn bootloader_name(self) -> Option<&'static str> {
         match self {
-            Self::X86_64 => "BOOTX64.EFI",
+            Self::X86_64 => Some("BOOTX64.EFI"),
+            _ => None,
         }
+    }
+
+    /// True when this architecture has a working UEFI loader and kernel
+    /// entry, so `build`, `image` and `run` can produce a bootable disk.
+    pub fn boots(self) -> bool {
+        matches!(self, Self::X86_64)
     }
 
     /// The architectures that CI only needs to `cargo check`.
     pub const fn check_only_targets() -> &'static [&'static str] {
         &[
+            "aarch64-unknown-none",
+            "riscv64gc-unknown-none-elf",
+            "loongarch64-unknown-none",
+        ]
+    }
+
+    /// The bare-metal targets of every architecture, in CI check order.
+    pub const fn all_bare_targets() -> &'static [&'static str] {
+        &[
+            "x86_64-unknown-none",
             "aarch64-unknown-none",
             "riscv64gc-unknown-none-elf",
             "loongarch64-unknown-none",
@@ -82,7 +120,14 @@ pub fn cargo(root: &Path) -> Command {
 }
 
 /// Build the UEFI loader.
+///
+/// Only x86-64 has a UEFI loader; other architectures are compile-checked
+/// separately via [`check_other_arches`].
 pub fn build_loader(root: &Path, arch: Arch, profile: &str) -> Result<()> {
+    if !arch.boots() {
+        println!("==> skipping UEFI loader for {} (compile-check only)", arch.bare_target());
+        return Ok(());
+    }
     println!("==> building loader for {}", arch.uefi_target());
     let status = cargo(root)
         .args(["build", "-p", "vela-uefi-loader", "--features", "uefi"])
@@ -97,7 +142,14 @@ pub fn build_loader(root: &Path, arch: Arch, profile: &str) -> Result<()> {
 }
 
 /// Build the kernel and the userland binaries it loads.
+///
+/// Only x86-64 has a kernel entry and HAL; other architectures are
+/// compile-checked separately via [`check_other_arches`].
 pub fn build_kernel(root: &Path, arch: Arch, profile: &str) -> Result<()> {
+    if !arch.boots() {
+        println!("==> skipping kernel for {} (compile-check only)", arch.bare_target());
+        return Ok(());
+    }
     println!("==> building kernel for {}", arch.bare_target());
     let status = cargo(root)
         .args([

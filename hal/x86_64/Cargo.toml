@@ -8,5 +8,4 @@ description = "x86-64 HAL: paging, IDT, interrupts, port I/O, serial"
 
 [dependencies]
 vela-hal-common.workspace = true
-vela-boot-protocol.workspace = true
 spin.workspace = true
