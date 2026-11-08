@@ -1,0 +1,11 @@
+[package]
+name = "vela-driver-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Storage drivers: AHCI, NVMe, ATA + block device layer"
+
+[dependencies]
+vela-kernel-device.workspace = true
+spin.workspace = true

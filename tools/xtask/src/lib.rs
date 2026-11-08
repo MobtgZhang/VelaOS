@@ -125,7 +125,10 @@ pub fn cargo(root: &Path) -> Command {
 /// separately via [`check_other_arches`].
 pub fn build_loader(root: &Path, arch: Arch, profile: &str) -> Result<()> {
     if !arch.boots() {
-        println!("==> skipping UEFI loader for {} (compile-check only)", arch.bare_target());
+        println!(
+            "==> skipping UEFI loader for {} (compile-check only)",
+            arch.bare_target()
+        );
         return Ok(());
     }
     println!("==> building loader for {}", arch.uefi_target());
@@ -147,7 +150,10 @@ pub fn build_loader(root: &Path, arch: Arch, profile: &str) -> Result<()> {
 /// compile-checked separately via [`check_other_arches`].
 pub fn build_kernel(root: &Path, arch: Arch, profile: &str) -> Result<()> {
     if !arch.boots() {
-        println!("==> skipping kernel for {} (compile-check only)", arch.bare_target());
+        println!(
+            "==> skipping kernel for {} (compile-check only)",
+            arch.bare_target()
+        );
         return Ok(());
     }
     println!("==> building kernel for {}", arch.bare_target());

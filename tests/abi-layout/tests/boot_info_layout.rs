@@ -19,7 +19,7 @@ use vela_boot_protocol::{
 /// The structure's size and alignment.
 #[test]
 fn the_boot_info_size_and_alignment_are_stable() {
-    assert_eq!(size_of::<VelaBootInfo>(), 216);
+    assert_eq!(size_of::<VelaBootInfo>(), 224);
     assert_eq!(align_of::<VelaBootInfo>(), 8);
 }
 
@@ -42,39 +42,41 @@ fn the_boot_info_field_offsets_are_stable() {
     assert_eq!(offset_of!(VelaBootInfo, framebuffer_pixel_mask), 72);
     assert_eq!(offset_of!(VelaBootInfo, acpi_rsdp_paddr), 80);
     assert_eq!(offset_of!(VelaBootInfo, dtb_paddr), 88);
-    assert_eq!(offset_of!(VelaBootInfo, kernel_paddr), 96);
-    assert_eq!(offset_of!(VelaBootInfo, kernel_bytes), 104);
-    assert_eq!(offset_of!(VelaBootInfo, initrd_paddr), 112);
-    assert_eq!(offset_of!(VelaBootInfo, initrd_bytes), 120);
-    assert_eq!(offset_of!(VelaBootInfo, arch_flags), 128);
-    assert_eq!(offset_of!(VelaBootInfo, stack_top), 136);
-    assert_eq!(offset_of!(VelaBootInfo, page_table_paddr), 144);
-    assert_eq!(offset_of!(VelaBootInfo, kernel_vaddr_base), 152);
-    assert_eq!(offset_of!(VelaBootInfo, kernel_text_bytes), 160);
-    assert_eq!(offset_of!(VelaBootInfo, heap_paddr), 168);
-    assert_eq!(offset_of!(VelaBootInfo, heap_bytes), 176);
-    assert_eq!(offset_of!(VelaBootInfo, pool_paddr), 184);
-    assert_eq!(offset_of!(VelaBootInfo, pool_bytes), 192);
-    assert_eq!(offset_of!(VelaBootInfo, reserved), 200);
+    assert_eq!(offset_of!(VelaBootInfo, cpu_count), 96);
+    assert_eq!(offset_of!(VelaBootInfo, kernel_paddr), 104);
+    assert_eq!(offset_of!(VelaBootInfo, kernel_bytes), 112);
+    assert_eq!(offset_of!(VelaBootInfo, initrd_paddr), 120);
+    assert_eq!(offset_of!(VelaBootInfo, initrd_bytes), 128);
+    assert_eq!(offset_of!(VelaBootInfo, arch_flags), 136);
+    assert_eq!(offset_of!(VelaBootInfo, stack_top), 144);
+    assert_eq!(offset_of!(VelaBootInfo, page_table_paddr), 152);
+    assert_eq!(offset_of!(VelaBootInfo, kernel_vaddr_base), 160);
+    assert_eq!(offset_of!(VelaBootInfo, kernel_text_bytes), 168);
+    assert_eq!(offset_of!(VelaBootInfo, heap_paddr), 176);
+    assert_eq!(offset_of!(VelaBootInfo, heap_bytes), 184);
+    assert_eq!(offset_of!(VelaBootInfo, pool_paddr), 192);
+    assert_eq!(offset_of!(VelaBootInfo, pool_bytes), 200);
+    assert_eq!(offset_of!(VelaBootInfo, reserved), 208);
 }
 
-/// The layout has exactly one implicit hole, and it is in a known place.
+/// The layout has two implicit holes, and both are in known places.
 ///
 /// The `u32` pair `framebuffer_pixel_format`/`framebuffer_pixel_mask` ends
 /// at offset 76, and the next field is the 8-byte-aligned `acpi_rsdp_paddr`
 /// at 80 — so the compiler inserted four bytes of padding between them.
+/// `cpu_count` is a `u32` ending at 100, and the next 8-byte-aligned field
+/// `kernel_paddr` is at 104 — another four bytes of padding.
 ///
-/// This is worth pinning down precisely. The structure is otherwise
-/// gap-free, so an *unexpected* hole would mean a field had moved without
-/// anyone noticing; and this *expected* hole is at a fixed offset, so a
-/// loader and a kernel built from different revisions still agree on where
-/// every field lives.
+/// This is worth pinning down precisely. An *unexpected* hole would mean a
+/// field had moved without anyone noticing; the two *expected* holes are at
+/// fixed offsets, so a loader and a kernel built from different revisions
+/// still agree on where every field lives.
 ///
-/// The one hole is documented here rather than eliminated, because removing
-/// it would change the structure's size and therefore require a
+/// The holes are documented here rather than eliminated, because removing
+/// them would change the structure's size and therefore require a
 /// `BOOT_ABI_VERSION` bump.
 #[test]
-fn the_boot_info_layout_has_exactly_one_documented_hole() {
+fn the_boot_info_layout_has_exactly_two_documented_holes() {
     // Walk the fields in offset order and record every gap.
     let fields: &[(usize, usize)] = &[
         (offset_of!(VelaBootInfo, magic), 8),
@@ -93,6 +95,7 @@ fn the_boot_info_layout_has_exactly_one_documented_hole() {
         (offset_of!(VelaBootInfo, framebuffer_pixel_mask), 4),
         (offset_of!(VelaBootInfo, acpi_rsdp_paddr), 8),
         (offset_of!(VelaBootInfo, dtb_paddr), 8),
+        (offset_of!(VelaBootInfo, cpu_count), 4),
         (offset_of!(VelaBootInfo, kernel_paddr), 8),
         (offset_of!(VelaBootInfo, kernel_bytes), 8),
         (offset_of!(VelaBootInfo, initrd_paddr), 8),
@@ -119,8 +122,7 @@ fn the_boot_info_layout_has_exactly_one_documented_hole() {
         expected += size;
     }
     assert_eq!(expected, size_of::<VelaBootInfo>());
-    // The single expected hole: four bytes before `acpi_rsdp_paddr`.
-    assert_eq!(holes, vec![(76, 4)]);
+    assert_eq!(holes, vec![(76, 4), (100, 4)]);
 }
 
 /// The magic reads back as the ASCII bytes "VELABOOT" in memory order.
@@ -129,17 +131,15 @@ fn the_magic_is_the_ascii_bytes_velopoot() {
     assert_eq!(&BOOT_MAGIC.to_le_bytes(), b"VELABOOT");
 }
 
-/// The ABI version is 3, and the version is what the structure's layout
+/// The ABI version is 4, and the version is what the structure's layout
 /// implies.
 ///
-/// Version 3 changed no layout — version 2 was the last change — so the
-/// structure's size has been 216 bytes since version 2.
+/// Version 3 changed no layout; version 4 added `cpu_count`, growing the
+/// structure from 216 to 224 bytes.
 #[test]
 fn the_abi_version_matches_the_structure() {
-    assert_eq!(BOOT_ABI_VERSION, 3);
-    // Version 2 grew the structure to 216 bytes; version 3 only changed the
-    // meaning of the memory-map's type field.
-    assert_eq!(size_of::<VelaBootInfo>(), 216);
+    assert_eq!(BOOT_ABI_VERSION, 4);
+    assert_eq!(size_of::<VelaBootInfo>(), 224);
 }
 
 /// A zeroed structure passes the identity check.
@@ -193,7 +193,7 @@ fn a_truncated_structure_is_rejected() {
         bi.check_identity(),
         Err(BootInfoError::StructTooSmall {
             got: 200,
-            need: 216
+            need: 224
         })
     );
 }

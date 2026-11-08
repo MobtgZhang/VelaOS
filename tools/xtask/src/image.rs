@@ -88,7 +88,10 @@ pub fn build_tagged(root: &Path, arch: Arch, profile: &str, out: &Path, tag: &st
     // Only x86-64 has a UEFI loader and a bootable image format; the other
     // architectures are compile-check only, so there is nothing to image.
     if !arch.boots() {
-        println!("==> skipping image for {} (compile-check only)", arch.bare_target());
+        println!(
+            "==> skipping image for {} (compile-check only)",
+            arch.bare_target()
+        );
         return Ok(());
     }
     let staging = root.join(format!("target/esp-staging-{tag}"));
@@ -141,7 +144,10 @@ fn build_into(
 
     std::fs::copy(
         &loader,
-        staging.join("EFI/BOOT").join(arch.bootloader_name().expect("image only builds for x86-64")),
+        staging.join("EFI/BOOT").join(
+            arch.bootloader_name()
+                .expect("image only builds for x86-64"),
+        ),
     )?;
     std::fs::copy(&kernel, staging.join("Vela/kernel/vela-kernel.elf"))?;
 
@@ -327,7 +333,8 @@ fn verify_contents(img: &Path, arch: Arch) -> Result<()> {
         (
             format!(
                 "/EFI/BOOT/{}",
-                arch.bootloader_name().expect("image only builds for x86-64")
+                arch.bootloader_name()
+                    .expect("image only builds for x86-64")
             ),
             None,
         ),

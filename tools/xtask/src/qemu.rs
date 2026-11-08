@@ -64,6 +64,18 @@ pub const BOOT_MARKERS: &[&str] = &[
 pub const USERLAND_MARKERS: &[&str] = &[
     "VELA-KERNEL: entering user mode at",
     "init: starting",
+    "init: starting desktop",
+    "workbench: ready",
+];
+
+/// Serial log lines that prove the terminal shell started.
+///
+/// The default boot choice is the desktop, so a run that proves the desktop
+/// came up does not prove the shell did. The keyboard round trip explicitly
+/// selects the terminal entry before typing, and waits for these markers.
+pub const SHELL_MARKERS: &[&str] = &[
+    "VELA-KERNEL: entering user mode at",
+    "init: starting",
     "init: starting shell",
 ];
 

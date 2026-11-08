@@ -13,13 +13,12 @@ vela-kernel-exec.workspace = true
 vela-kernel-graphics.workspace = true
 vela-kernel-icon.workspace = true
 vela-kernel-intuition.workspace = true
-vela-kernel-layers.workspace = true
 vela-kernel-workbench.workspace = true
-vela-ramfs.workspace = true
 vela-kernel-scheduler.workspace = true
 vela-kernel-syscall.workspace = true
-vela-renderer2d.workspace = true
 spin.workspace = true
 
 [dev-dependencies]
 vela-kernel-input.workspace = true
+vela-kernel-layers.workspace = true
+vela-ramfs.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "vela-kernel-socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "BSD socket API: socket, bind, connect, sendto, recvfrom"
+
+[dependencies]
+vela-kernel-exec.workspace = true
+vela-kernel-net.workspace = true
+spin.workspace = true

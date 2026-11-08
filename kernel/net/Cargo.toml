@@ -1,0 +1,10 @@
+[package]
+name = "vela-kernel-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Network stack: Ethernet framing, IPv4, UDP, ARP"
+
+[dependencies]
+spin.workspace = true

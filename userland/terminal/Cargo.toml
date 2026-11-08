@@ -1,0 +1,10 @@
+[package]
+name = "vela-userland-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Terminal emulator userland application"
+
+[dependencies]
+vela-sys.workspace = true

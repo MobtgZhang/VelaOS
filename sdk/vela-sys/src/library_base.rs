@@ -144,7 +144,7 @@ pub type Slot = unsafe extern "sysv64" fn(u64, u64, u64, u64, u64, u64) -> Packe
 /// A fixed count rather than a variable one, because a program's generated
 /// stub indexes the table without knowing which library it is: a library
 /// added later cannot shift the slots of one already compiled in.
-pub const SLOTS: usize = 31;
+pub const SLOTS: usize = 32;
 
 /// A library's jump table.
 pub type JumpTable = [Slot; SLOTS];

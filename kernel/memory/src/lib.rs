@@ -43,9 +43,9 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use spin::Mutex;
 
-use vela_boot_protocol::VelaBootInfo;
-use vela_arch_common::{MapError, PageFlags};
 use vela_arch::AddressSpace;
+use vela_arch_common::{MapError, PageFlags};
+use vela_boot_protocol::VelaBootInfo;
 
 extern crate alloc;
 

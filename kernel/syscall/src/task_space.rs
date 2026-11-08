@@ -44,8 +44,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use vela_arch_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
 use vela_arch::addrspace::{AddressSpace, IdentityPhys};
+use vela_arch_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
 use vela_kernel_exec::task::TaskId;
 
 use spin::Mutex;

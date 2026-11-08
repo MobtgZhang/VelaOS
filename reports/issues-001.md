@@ -2,247 +2,443 @@
 
 ## Executive Summary
 
-VelaOS is a new Amiga-inspired OS written in pure Rust, targeting x86-64 with UEFI boot (with aarch64/riscv64/loongarch64 compile-checked only). Compared to AROS and AmigaOS 3.1, VelaOS has a minimal viable core with significant gaps in filesystems, networking, audio, and multi-core task scheduling. Where AROS provides a near-class Amiga API with POSIX-like porting layers, and AmigaOS provides the classic 68000-centric architecture, VelaOS deliberately forges its own path: pure Rust, UEFI 2.11, ELF loading, and a custom unified boot protocol — no Multiboot2, no CMake, no shared-core, no CMakeLists.
+VelaOS is an Amiga-inspired OS written in pure Rust. It targets x86-64 with a
+UEFI 2.11 boot path and a custom unified boot protocol; aarch64, riscv64 and
+loongarch64 are compile-checked only. It deliberately avoids copying AROS or
+AmigaOS source: the API surface is Amiga-shaped, but the implementation is new.
 
-This document analyzes the current state across seven subsystems and identifies what must be built to reach a functional v0.2.0.
+The subsystems now exist in a functional first-generation form. Memory and page
+tables, SMP AP bring-up, a RAM filesystem, a read-only FAT reader, Ethernet /
+IPv4 / UDP / ARP processing, BSD-style socket syscalls, DMA allocation, PCI
+enumeration, a graphics/layers/intuition/workbench stack, and an audio mixer are
+all present. What remains is mostly **runtime verification, real hardware
+backends, and missing protocol layers** (TCP, real virtqueues, reclaiming DMA,
+audio syscalls, real AMD/Intel/Nouveau and HDA/AC97 drivers).
 
-**Build status:** `cargo build`, `cargo test --lib`, and `cargo clippy --workspace --all-targets -- -D warnings` all pass. The only warnings are the accepted baseline `rust-version` field and unused workspace dependencies (the non-booting arch crates).
+**Validation status:** `cargo build`, `cargo test --lib`, `cargo test --workspace`
+(including the boot smoke suite), `cargo fmt --all -- --check`, and
+`cargo clippy --workspace --all-targets -- -D warnings` pass. The boot smoke test
+boots the UEFI loader, enters the kernel, selects the desktop by default, reaches
+user mode, starts `init`, and brings up the Workbench. The keyboard round trip
+explicitly selects the terminal entry and verifies `ver` through the shell.
+
+One important runtime limit remains: QEMU/OVMF reports only one Local APIC entry
+in its MADT even when `-smp 2` is requested, so AP bring-up and real multicore
+task dispatch are compile-verified and architecturally implemented but not
+runtime-verified on this host.
 
 ---
 
-## 1. Memory Management (4-level page table management)
+## 1. Memory Management and Page Tables
 
 ### Current Implementation
-- **Frame allocator**: `kernel/memory/src/lib.rs` — a static bitmap-based allocator with `alloc_frame/free_frame/reserve_range`, double-free tolerant, rotating hint for O(1) allocation. Supports reservation of non-allocatable regions.
-- **Kernel heap**: `KernelHeap` — a bump allocator over a pre-reserved region, with alignment honoring and exhaustion detection. Used as the global `#[global_allocator]`.
-- **MemoryPlan**: Builder that carves bitmap + heap regions out of the firmware memory map, reserves the null page, kernel image, initrd, framebuffer, and MMIO windows. Supports caller-specified reservations via `BootReservations`.
-- **Address space**: `kernel/entry/src/lib.rs` builds a **higher-half** kernel: the kernel image is mapped at `0xFFFF_8000_0000_0000`, user space occupies the low 128 TiB. Page tables are built from scratch after `ExitBootServices`.
-- **FrameSource bridge**: `kernel/entry/src/lib.rs` provides `UserFrames` wrapping `FrameAllocator` so the syscall layer (`kernel/syscall`) can allocate frames for `brk`/`mmap` without depending on the memory layer directly (avoiding a circular dependency).
-- **Architecture boundary**: page tables, `AddressSpace`, `FrameSource`, `MapError`, `PageFlags`, `PAGE_SIZE` live in `arch/common` (`vela-arch-common`) and `arch/x86_64` (`vela-arch-x86_64`); the kernel depends only on the `vela-arch` facade, not on a concrete arch crate.
+
+- **Frame allocator**: `kernel/memory/src/lib.rs` has a bitmap-based
+  `FrameAllocator` with `alloc_frame`, `free_frame`, `reserve_range`, a rotating
+  allocation hint, free-frame accounting, and double-free tolerance.
+- **Boot memory plan**: `MemoryPlan` carves the bitmap and kernel heap out of the
+  firmware memory map and reserves the null page, kernel image, initrd,
+  framebuffer and MMIO windows. `BootReservations` lets the loader/kernel reserve
+  specific regions.
+- **Kernel heap**: `KernelHeap` is a bump allocator over the loader-reserved heap
+  region, with alignment handling and exhaustion detection. It is the kernel's
+  global allocator.
+- **Page tables**: `arch/x86_64/src/addrspace.rs` implements the real x86-64
+  `AddressSpace` (PML4, page-directory and page-table mapping, unmapping,
+  translation, large-page support and teardown). `kernel/memory/src/lib.rs` adds
+  a `PageMapper` facade over it.
+- **Architecture-neutral contract**: `arch/common/src/lib.rs` defines
+  `PAGE_SIZE`, `PageFlags`, `AddressSpaceId`, `MapError`, the `CpuArch` trait and
+  the `VirtualMemory` trait. The kernel talks to the hardware through the
+  `vela-arch` facade, not a concrete architecture crate.
+- **Per-process address spaces**: `kernel/syscall/src/task_space.rs` implements
+  `TaskSpace` with an image base, program break, user stack, memory pools and a
+  `FrameSource`-backed `brk`/`alloc_mem`/`free_mem`/pool API. `SpaceRegistry`
+  stores address spaces by `TaskId`. `kernel/process/src/lib.rs` creates one
+  `TaskSpace` per `Process` and loads ELF images into it.
+- **Higher-half split**: the kernel image is mapped at
+  `0xFFFF_8000_0000_0000`; user space lives in the low address range. The boot
+  loader passes a populated PML4 to the kernel through `VelaBootInfo`.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: Has a full virtual memory system with pagelists, swap support, and memory protection via page tables. Supports `SA` (shared architecture) modules that can be loaded at different addresses.
-- **AmigaOS 3.x**: Uses a flat 24-bit physical address space with `MEMF_*` flags (CHIP, FAST, PUBLIC, PRIVATE). No virtual memory, no paging. Memory is allocated from `exec.library` using `CreateExecBase()` and the `memlist` linked list.
-- **VelaOS Gaps**:
-  - **No per-process page directory management**. The kernel uses a higher-half layout, but there is no per-process page table lifecycle beyond `TaskSpace`. User processes share the kernel's supervisor identity map plus their own user window.
-  - **No memory protection isolation**: All user processes share the same virtual address space; there is no per-process ASID or switched CR3 on context switch beyond what `TaskSpace` tracks.
-  - **No heap coalescing**: The kernel heap is a bump allocator that never reclaims.
-  - **No `mmap`/`munmap` beyond `map_page`/`unmap_page`**: The page mapper exists but is not hooked into a user-VM layer.
+
+- **AROS** has a full virtual-memory system with pagelists, memory protection,
+  swap support and per-address-space lifecycle.
+- **AmigaOS 3.x** uses a flat 24-bit physical address space with `MEMF_*` memory
+  classes and no paging.
+- **VelaOS gaps**:
+  - **CR3 switching is not wired into the scheduler's context switch**. Tasks
+    record a `cr3`, and `TaskSpace` owns a real address space, but the scheduler
+    path does not yet switch CR3 per task.
+  - **The frame allocator does not reclaim**. `dma_free` is a no-op and the
+    kernel heap is bump-only, so "free" means "not reused".
+  - **No swap or pagelist model**.
+  - **`mmap`/`munmap` are not first-class syscalls**; the page mapper and `brk`
+    infrastructure exist, but the full user-VM surface is not exposed.
+  - **No per-process quota or memory-pressure accounting**.
 
 ### What Must Be Built
-- Per-process `AddressSpace` with page directory/table lifecycle and CR3 switching on context switch.
-- `brk`/`mmap` syscall wiring to actually allocate/deallocate frames via the page mapper (exec memory syscalls 22–30 are wired to `TaskSpace`, but the frame-allocator backing is partial).
-- Memory protection (WP, US rings) if the MMU is to be used for isolation.
+
+- Wire CR3 switching into the scheduler and process switch path.
+- Add a reclaiming frame allocator or an explicit `dma_free` policy.
+- Expose `mmap`/`munmap` and a user-VM API over `TaskSpace`.
+- Add swap/pagelist support if VelaOS is to match AROS's VM model.
 
 ---
 
 ## 2. SMP (Multicore / Multithread Management)
 
 ### Current Implementation
-- **Architecture boundary**: the trampoline, AP bring-up, GDT/IDT, APIC, and context switch live in `arch/x86_64` (`vela-arch-x86_64`), exported through the `vela-arch` facade as `smp`, `context`, `gdt`, `idt`, `apic`. `kernel/smp` has been removed; its code moved to `arch/x86_64/src/smp.rs`.
-- **Real-mode trampoline**: `arch/x86_64/src/smp.rs` — hand-assembled bytes at `0x7000` that disable interrupts, set segments, load GDT, enter protected mode, read APIC ID, load CR3 (BSP PML4), enable PAE and long mode, far-jump to `ap_entry`.
-- **INIT/INIT-deassert/SIPI IPI sequence**: `bring_up_aps()` sends the documented 3-step startup: INIT (resets AP), INIT-deassert (resynchronizes), SIPI (first and second attempts, vector 7 = trampoline at `0x7000`).
-- **Per-AP configuration table**: Low memory at `0x8000`–`0x9FC0` holds PML4 base, AP entry point, stack top, and APIC ID per entry (`CONFIG_STRIDE = 32` bytes).
-- **AP entry point**: `ap_entry(apic_id)` registers the CPU, installs GDT/IDT (protected by `AP_INIT_LOCK`), initializes APIC, marks ready, and spins in the idle loop with `sti`/`hlt`.
-- **Ready-count synchronization**: `AP_READY_COUNT` (AtomicU32) with a timeout loop using APIC timer ticks.
-- **BSP detects AP count**: Reads MADT from RSDP, counts Local APIC type-0 entries.
-- **Scheduler SMP layer** (`kernel/scheduler/src/smp.rs`): per-CPU run queues (`RUN_QUEUES` indexed by CPU index), `init_this_cpu`, `enqueue_on`, `pick_next_on`, `peek_next_on`, `remove_from_queue`, `send_reschedule_ipi`, `needs_reschedule`, `acknowledge_reschedule`.
-- **Reschedule IPI wiring**: `arch/x86_64/src/apic.rs` exposes `RESCHEDULE_VECTOR (0xF0)`, `send_ipi`, and a per-CPU `RESCHEDULE_PENDING` flag set by `on_reschedule_ipi` (which also sends EOI). `arch/x86_64/src/idt.rs` installs a handler for the reschedule vector that calls `on_reschedule_ipi`.
-- **Syscall gate**: moved to `arch/x86_64/src/syscall/gate.rs`; the kernel registers its dispatch function via `gate::install(dispatch)`, so the arch owns the entry mechanism while the kernel owns dispatch policy.
 
-### Cause analysis: why QEMU/OVMF reports 1 CPU
-The loader's MADT parser (`boot/uefi-loader/src/main.rs::parse_madt_cpu_count`) had three defects:
-1. **Mis-detected ACPI revision**: it keyed off the RSDP signature (`"RSD PTR "`), which is identical in ACPI 1.0 and 2.0+, so it could not choose between the RSDT (offset 16) and XSDT (offset 24). It now reads the revision byte at RSDP offset 15.
-2. **Wrong table offsets**: it read XSDT at offset 36 and RSDT at offset 16; the architectural offsets are XSDT at 24 and RSDT at 16. It now uses offset 24 for XSDT.
-3. **Cast instead of dereference**: it cast `(rsdp_paddr + offset) as *const u32 as u32` (the address value) rather than dereferencing the stored table address. It now dereferences with `*(ptr).add(N)`.
-4. **MADT entry walk started at the wrong byte offset**: XSDT/RSDT entries begin at byte offset 36 (after the 36-byte ACPI table header), but the walk read from offset 32, producing garbage entry addresses and a `#GP`. It now reads entries at offset `36 + N * entry_size`.
-
-After the fix, the parser is spec-compliant and no longer crashes. In the current QEMU/OVMF environment the firmware's MADT describes a single Local APIC entry, so `cpu_count` is reported as 1 even with `-smp 2`; on real firmware the corrected parser will report the true count.
+- **Trampoline and AP bring-up**: `arch/x86_64/src/smp.rs` contains the real
+  x86-64 trampoline at `0x7000`, the per-AP configuration table at
+  `0x8000`–`0x9FC0`, the INIT / INIT-deassert / SIPI IPI sequence, and the
+  `ap_entry` long-mode entry point.
+- **Per-AP boot**: each AP installs the GDT and IDT under `AP_INIT_LOCK`,
+  initializes its APIC, registers its CPU index, marks itself ready, signals the
+  BSP with an atomic ready count, then idles with `sti` / `hlt`.
+- **APIC**: `arch/x86_64/src/apic.rs` implements IPI sending, LVT programming,
+  the periodic timer, tick counting and a reschedule IPI vector.
+- **Scheduler SMP layer**: `kernel/scheduler/src/smp.rs` has per-CPU run queues
+  (`RUN_QUEUES`), `init_this_cpu`, `enqueue_on`, `pick_next_on`,
+  `peek_next_on`, `remove_from_queue`, reschedule flags and
+  `with_preemption_disabled`.
+- **Task model**: `kernel/scheduler/src/task.rs` stores a per-task `cr3`, user
+  stack, kernel stack, priority and run/preemption counters.
+- **MADT parsing**: `boot/uefi-loader/src/main.rs` reads the RSDP, follows it to
+  the XSDT or RSDT, walks the ACPI table entries and counts type-0 Local APIC
+  entries. The loader now uses unaligned reads for the RSDP and table entries,
+  which fixes the previous `misaligned pointer dereference` panic.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: Multiprocessor support via `aros::smp` with per-CPU arrays, IPIs for inter-processor communication, and SMP-safe kernel locks. Designed for x86/ARM64.
-- **AmigaOS 4.x**: Uses PPC multiprocessing with the `mp` library, but classic AmigaOS is essentially single-tasking — SMP is not a native concept.
-- **VelaOS Gaps**:
-  - **AP bring-up is not runtime-verified**: the trampoline code compiles and boots, but QEMU/OVMF reports 1 CPU, so AP bring-up has not been verified on multi-core hardware.
-  - **No inter-processor task scheduling**: per-CPU run queues exist in `kernel/scheduler/src/smp.rs`, but the scheduler is not yet wired into the boot idle loop, so APs that boot land in an idle loop and no work is dispatched to them.
-  - **No per-CPU variable partitioning or cache-affine scheduling**.
-  - **Lock granularity**: `AP_INIT_LOCK` (`Mutex<()>`) serializes GDT/IDT installation during AP boot; there is no fine-grained locking for shared data structures across CPUs.
+
+- **AROS** has SMP-safe kernel locks, per-CPU arrays and inter-processor
+  scheduling. **AmigaOS 4.x** has PPC multiprocessing, but classic AmigaOS is
+  essentially single-core.
+- **VelaOS gaps**:
+  - **AP bring-up is not runtime-verified** in this QEMU/OVMF environment. The
+    firmware MADT reports one Local APIC entry even with `-smp 2`.
+  - **APs do not join the scheduler's run loop**. `ap_entry` spins in an idle
+    `hlt` loop; per-CPU queues exist but no AP picks a task from them.
+  - **Reschedule handling is defined but not fully wired** into the AP idle loop.
+  - **No per-CPU cache-affinity policy or shared-data locking beyond boot-time
+    `AP_INIT_LOCK`.**
 
 ### What Must Be Built
-- Verify AP bring-up on real multi-core hardware/firmware whose MADT reports >1 CPU.
-- Wire per-CPU run queues into the scheduler's context-switch/idle loop so APs actually run tasks.
-- Real IPI handling for rescheduling and inter-processor communication (the reschedule vector is defined and the flag exists; the scheduler consultation point needs wiring).
-- Expand per-CPU data structures (current task, timer state).
+
+- Verify AP bring-up on firmware whose MADT reports more than one CPU.
+- Wire the per-CPU run queues into the AP idle/context-switch loop.
+- Add real reschedule IPI consumption on APs.
+- Expand per-CPU state (current task, timer, stack and APIC state).
 
 ---
 
-## 3. File Management (AMIGADOS/DOS layer)
+## 3. Filesystems and Storage
 
 ### Current Implementation
-- **Syscalls 256–267** (`D_OPEN`–`D_SET_CURRENT_DIR`) wired in the dispatch table.
-- **Exec memory syscalls (22–30)** wired to `TaskSpace` methods (`alloc_mem`, `alloc_pooled`, `free_mem`, `free_pooled`, `create_pool`, `delete_pool`, `avail_mem`) with conformance tests.
-- **DOS library in SDK**: `open`, `close`, `read`, `write`, `seek`, `delete_file`, `create_dir`, `examine`, `current_dir`, `set_current_dir`, `read_dir`, `examine_dir`.
-- **`IORequest` state machine** with `IoState` enum (`New → Opened → Submitted → [QUICK_DONE] → REUSABLE`, with `QUEUED → IN_FLIGHT → DONE → REPLIED`).
-- **`DeviceManager`**: registers drivers, matches by name/unit, dispatches `OpenDevice`/`CloseDevice`/`SendIO`/`DoIO`/`WaitIO`/`AbortIO`.
-- **Driver stubs**: ATA/SATA/NVMe/VGA registered; `OpenDevice` succeeds with unit counts.
-- **`read_dir`** returns `DirEntry` records with `de_size`, `de_type`, `de_name_len`, `de_name`.
+
+- **VFS contract**: `kernel/vfs/src/lib.rs` defines `FileSystem` (lookup,
+  `read_dir`, `read_all`, `read_at`, `write_all`, `write_at`, `create_dir`,
+  `remove`, `rename`, `set_comment`, size queries), `Mount` and `MountTable`.
+- **RAM filesystem**: `fs/ramfs/src/lib.rs` implements a real in-memory
+  filesystem. It is mounted by the kernel at `/ramfs`; `init` populates `RAM:`
+  and `SYS:` trees on top of it.
+- **FAT reader**: `fs/fat/src/lib.rs` implements a read-only FAT12/16/32 reader
+  over a `BlockDevice` trait. It supports root open, path open, directory
+  listing and file reading.
+- **DOS service**: `kernel/dos/src/lib.rs` provides `Bptr` file handles,
+  path resolution through `vela-amiga-path`, open/close/read/write/seek,
+  examine, `read_dir`, create/delete/rename, current-directory handling and
+  segment loading (`load_seg` / `unload_seg`).
+- **Block device layer**: `kernel/drivers/storage/src/lib.rs` defines a
+  `BlockDevice` with sector count, sector size and read-only flag, plus
+  `create_ramdisk`, `read_sectors` and `write_sectors`.
+- **Storage drivers**: AHCI/SATA, NVMe and ATA drivers are registered with the
+  Device Manager. Their discovery logic is present; the actual command
+  submission paths are stubs.
+- **Mounted boot state**: the kernel mounts RAMFS for `RAM:` and `SYS:` during
+  boot, and `init` reports `RAM:` / `SYS:` population counts on the serial log.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: Has `dos.library` with full `BPTR` path handling, `Assign`, `Volume`, `Path` construction, `ExamineSeg/Examine`, `OpenFile/ExFData`, `Seek`, `Write`, `Read`, `CurrentDir`, `SetDate`, `DeleteFile`. Supports both AmigaDOS and POSIX-style paths.
-- **AmigaOS 3.x**: `dos.library` with `DOpen`, `DClose`, `DRead`, `DWrite`, `DSeek`, `DExamine`, `DCreateDir`, `DDeleteDir`, `CurrentDir`, `SetScript`, `Answerfile`. Paths are `BPTR`-based with `Volume` and `Assign` concepts.
-- **VelaOS Gaps**:
-  - **No actual filesystem**: RAMFS is planned but **not implemented**. All file operations against real storage fail.
-  - **No block device layer**: No `BlockDevice` interface, no IOMMU/DMA mapping for real disks. The NVMe/ATA drivers exist but do not implement `DriverOps` fully.
-  - **No volume/assign abstraction**: No volume lists, assign names, or path resolution beyond simple string matching.
-  - **No file system stack**: No FAT, EXT2/3, RAMFS, or any actual filesystem driver. The `read_dir`/`examine_dir` calls have no backing store.
-  - **No symlink/soft link support**: Path resolution is flat string comparison.
+
+- **AROS** has a full DOS library with `Assign`, `Volume`, `Examine`, `Open`,
+  `Read`, `Write`, `Seek`, `DeleteFile`, and multiple real filesystems. It also
+  supports POSIX-style paths and block devices.
+- **AmigaOS 3.x** has `dos.library` with `BPTR` paths, volumes and assigns, and
+  device-based filesystems.
+- **VelaOS gaps**:
+  - **FAT is read-only**. There is no FAT writer, no allocation of clusters and
+    no mount of a real FAT disk at boot.
+  - **AHCI/NVMe/ATA are stubs**. The block-device abstraction exists, but the
+    hardware command paths do not yet read or write real disks.
+  - **No EXT2/3 or other native filesystem**.
+  - **No journaling or crash consistency**.
+  - **RAMFS is memory-only**; it does not persist across boots.
+  - **`assign`/volume support exists at the path layer**, but the DOS service is
+    still a first-generation subset of the full AmigaDOS surface.
 
 ### What Must Be Built
-- **RAMFS** implementation (minimum: create/read/write/ls).
-- **Block device interface** for NVMe/ATA/SATA (implement `DriverOps::probe`/`open`/`submit`).
-- **FAT filesystem** minimum (open/read/close).
-- **Volume/Assign** abstraction for path resolution.
-- **Directory entry caching** for `ls`/`cd` performance.
+
+- A writable FAT or native filesystem over a real block device.
+- Real AHCI/NVMe/ATA command submission.
+- Persistent-disk boot images and mount of disk-backed volumes.
+- Journaling / crash-consistency policy.
+- Full DOS assign/volume behaviour and `Examine` semantics.
 
 ---
 
 ## 4. Network Stack
 
 ### Current Implementation
-- **Zero**. The network stack does not exist.
-- Shell commands `ping`, `ifconfig`, `netstat` all report: "network stack not available in v0.1.0".
-- No TCP/UDP syscalls are wired; no socket API is defined in `numbers.rs`.
-- No device drivers for network controllers.
-- No IP stack, no ARP, no ICMP, no UDP/TCP.
+
+- **Protocol processing**: `kernel/net/src/lib.rs` implements Ethernet framing,
+  IPv4 header parsing/building with checksum verification, UDP datagrams with
+  the pseudo-header checksum, and ARP request/reply parsing and building. It
+  takes a `NetDevice` and transmits completed frames.
+- **BSD-style sockets**: `kernel/socket/src/lib.rs` implements `socket`, `bind`,
+  `connect`, `listen`, `accept`, `sendto`, `recvfrom`, `close` and
+  `setsockopt` with `AF_INET`, `SOCK_STREAM`, `SOCK_DGRAM`, `IPPROTO_UDP` and
+  `IPPROTO_TCP` constants, error codes and a socket registry. `deliver_datagram`
+  feeds received UDP payloads to bound sockets.
+- **Syscall group**: `kernel/syscall/src/numbers.rs` defines `NET_SOCKET` through
+  `NET_SETSOCKOPT` (33–41); `kernel/syscall/src/dispatch.rs` installs all nine
+  handlers.
+- **Driver path**: `drivers/virtio-net/src/lib.rs` performs real PCI discovery
+  for virtio vendor `0x1AF4` and modern/legacy virtio-net device IDs. It accepts
+  frames into a transmit queue and implements `NetDevice`.
+- **Other NICs**: `kernel/drivers/network/src/lib.rs` registers e1000 and RTL8139
+  probe stubs; the primary virtio device is installed as the global transmit
+  endpoint when present.
+- **Shell commands**: `ping`, `ifconfig` and `netstat` are still reported as
+  stubs in the terminal, even though the kernel network services and syscalls
+  exist.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: Has a BSD-socket-compatible network stack with `socket()`/`bind()`/`connect()`/`sendto()`/`recvfrom()` calls, `inet` module for IP processing, `netif` for interface management, `eth` driver framework, and `arp` support. AROS also has `netdb` for DNS resolution.
-- **AmigaOS 3.x**: `network.library` with TCP/IP stack, `ICMP`, `UDP`, `TCP`. Socket API is `bsdsocket` compatible. `arp` and `rarp` support. `netdb` for DNS.
-- **VelaOS Gaps**:
-  - **No network stack at all**: No socket API, no protocol processing, no device drivers for NICs.
-  - **No BSD socket syscalls**: No networking syscalls are defined in `numbers.rs`.
-  - **No network device drivers**: The `network.md` report describes the design, but no driver code exists.
+
+- **AROS** has a BSD-socket-compatible stack, an `inet` module, `netif`,
+  Ethernet drivers, ARP and DNS (`netdb`).
+- **AmigaOS 3.x** has a `bsdsocket`-compatible TCP/IP stack with ICMP, UDP, TCP,
+  ARP and DNS.
+- **VelaOS gaps**:
+  - **TCP is not implemented**. `connect`/`accept`/`listen` on `SOCK_STREAM`
+    return `EOPNOTSUPP` or `EWOULDBLOCK` rather than performing a handshake.
+  - **ICMP is not implemented**, so there is no real `ping`.
+  - **No DNS resolver** (`gethostbyname`).
+  - **No interface configuration or routing table** for `ifconfig`/`netstat`.
+  - **virtio-net has no virtqueue ring**; frames are queued in memory rather
+    than transmitted through a real virtqueue.
+  - **No e1000/RTL8139 hardware implementation** beyond registration/probes.
+  - **No DHCP or network boot configuration**.
 
 ### What Must Be Built
-- BSD socket syscalls (`socket`, `bind`, `connect`, `accept`, `sendto`, `recvfrom`).
-- IP protocol stack (IPv4, ICMP).
-- UDP and TCP implementations.
-- Network device drivers (at minimum a `virtio-net` or simple PCI Ethernet driver).
-- DNS resolver (`gethostbyname`).
-- Network configuration (`ifconfig`/`netstat` actual implementation).
+
+- TCP handshake and connection state machine.
+- ICMP echo/reply for `ping`.
+- DNS resolver and an interface/route table.
+- Real virtqueue setup and DMA-backed NIC transmission.
+- Real e1000/RTL8139 backends or removal of their stub registrations.
+- Shell commands that use the socket API instead of reporting a stub.
 
 ---
 
-## 5. Input/Output and Driver Management
+## 5. I/O and Driver Management
 
 ### Current Implementation
-- **DeviceManager**: `Mutex<Vec<DriverEntry>>`, `Mutex<Vec<DeviceInstance>>`. Registers drivers via `register_driver(name, ops)`, probes devices via `probe_device(info)`, dispatches `OpenDevice`/`CloseDevice`/`SubmitIO`/`CompleteIO`/`AbortIO`.
-- **IORequest state machine**: Full enum with all transition states.
-- **DriverOps trait**: `probe`, `open`, `submit`, `cancel`, `remove`.
-- **Registered drivers**: NVMe, ATA, SATA, VGA, HDMI/DVI. `OpenDevice` succeeds for these.
-- **TimerDriver**: `DriverOps` implementation that wraps `timer_device::dispatch` for `TR_ADDREQUEST`/`TR_GETSYSTIME`/`TR_SETSYSTIME`.
-- **PS/2 port access**: moved to `arch/x86_64/src/ps2.rs` (`DATA_PORT`, `STATUS_PORT`, `read_status`, `read_data`, `write_command`); the byte-stream decoding (`Keyboard`, `Mouse`) remains in the architecture-neutral `kernel/input`.
-- **apic.rs**: IPI sending (`send_init_ipi`, `send_startup_ipi`, `send_ipi`), LVT configuration, timer init, present detection.
+
+- **PCI enumeration**: `arch/x86_64/src/pci.rs` performs real PCI configuration
+  space access through ports `0xCF8` / `0xCFC`, returning bus/device/function,
+  vendor ID, device ID, class and subclass. The boot log reports enumerated PCI
+  devices.
+- **Device Manager**: `kernel/device/src/lib.rs` registers drivers and device
+  instances, probes by vendor/class, and dispatches `OpenDevice`, `CloseDevice`,
+  `SendIO`, `DoIO`, `WaitIO` and `AbortIO`.
+- **IORequest state machine**: full `New → Opened → Submitted → Done` lifecycle
+  with cancellation, reuse and error state.
+- **DMA API**: `kernel/dma/src/lib.rs` provides `dma_alloc`, `dma_free`,
+  `dma_map`, `dma_unmap`, `dma_sync_for_device` and `dma_sync_for_cpu` over a
+  `FrameSource`. On the current x86-64 build the device view is identity-mapped
+  RAM and cache sync is a no-op because x86-64 is coherent for normal RAM.
+- **Storage**: AHCI/SATA, NVMe and ATA drivers register; the `BlockDevice`
+  abstraction and RAM disk support real sector reads/writes.
+- **Graphics**: VGA/VESA framebuffer driver plus AMD, Intel and Nouveau/NVIDIA
+  probe stubs registered with the Device Manager.
+- **Audio**: HDA, AC97 and a null audio backend registered; the null backend
+  accepts PCM and the HDA/AC97 paths are stubs.
+- **Network**: virtio-net PCI discovery plus e1000/RTL8139 stubs.
+- **Input**: PS/2 port access lives in `arch/x86_64/src/ps2.rs`; the
+  architecture-neutral `kernel/input` crate decodes keyboard and mouse byte
+  streams. The boot menu polls the PS/2 keyboard and COM1.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: HIDD (Hardware Independent Driver Interface) framework, PCI/USB bus enumeration, `device_model` for each hardware class. Driver model with `open/close/read/write/ioctl`. Unified device tree enumeration.
-- **AmigaOS 3.x**: `exec.device` devices (`console.device`, `keyboard.device`, `mouse.device`, `disk.device`, `fd.device`, `trackdisk.device`, `audio.device`). Drivers are library-based with function vector tables.
-- **VelaOS Gaps**:
-  - **No device enumeration framework**: No PCI bus scan, no USB enumeration, no ACPI enumeration beyond MADT reading. Drivers are manually registered, not auto-discovered.
-  - **No DMA API**: No `dma_map`, `dma_unmap`, cache-sync primitives.
-  - **No HIDD equivalent**: No input event pipeline, no commodity library.
-  - **No audio pipeline**: `audio.md` exists as design but no code.
-  - **No keyboard/mouse class drivers**: The shell reads `getchar()` from the console, but there is no `input.device` abstraction.
+
+- **AROS** has the HIDD hardware-independent driver interface, PCI/USB
+  enumeration and a unified device tree.
+- **AmigaOS 3.x** has library-based devices (`console.device`, `keyboard.device`,
+  `mouse.device`, `audio.device`, `disk.device`).
+- **VelaOS gaps**:
+  - **AMD, Intel and Nouveau graphics are probe stubs**, not real GPU drivers.
+  - **HDA and AC97 are stubs**; there is no real audio hardware path.
+  - **e1000 and RTL8139 are stubs**; only virtio-net discovery is real.
+  - **AHCI/NVMe/ATA do not submit real commands**.
+  - **`dma_free` is a no-op** while the frame allocator is bump-style.
+  - **No USB/xHCI support**.
+  - **No MSI-X or interrupt routing per device**.
+  - **No real `input.device` / keyboard.device / mouse.device class drivers**.
 
 ### What Must Be Built
-- PCI bus enumeration and driver attachment (DMA API, MSI-X).
-- USB host controller driver (xHCI).
-- `input.device` with `keyboard.device` and `mouse.device`.
-- `audio.device` with mixing and DMA.
-- DMA API with cache-coherency operations.
+
+- Real AMD/Intel/Nouveau GPU initialization and framebuffer mode setting.
+- Real HDA/AC97 codec and DMA audio paths.
+- Real e1000/RTL8139 transmit/receive rings.
+- Real AHCI/NVMe/ATA command queues and interrupt handling.
+- Reclaiming DMA memory and IOMMU mapping where available.
+- USB/xHCI and a proper `input.device` event pipeline.
 
 ---
 
 ## 6. Graphics and Desktop
 
 ### Current Implementation
-- **VGA driver**: Registered, simple framebuffer-like support.
-- **Splash screen**: `boot/uefi-loader/src/splash.rs` draws into the GOP framebuffer.
-- **Shell**: Dynamic prompt `hostname@user> cwd`, `cmd_clear` using form feed + newlines (works over serial).
-- **Commands**: `clear`, `help`, `exit`, `pwd`, `ls`, `cd`, `echo`, `cat`, `whoami`, `hostname`, `ver`, `ping`, `ifconfig`, `netstat`.
-- **Syscalls 31 (`CLEAR_SCREEN`) and 32 (`GET_HOSTNAME`)** wired in kernel, dispatch, and SDK with parity tests.
-- **No graphics library**: `graphics.library` syscalls (64–75) exist in SDK numbers but no kernel implementation.
-- **No intuition.screen/window**: No `intuition.library` implementation.
-- **No layers/raster**: No BitMap, RastPort, Layer composition.
+
+- **Graphics service**: `kernel/graphics/src/lib.rs` implements palettes,
+  pens, raster registration, `RastPort` drawing (`put_pixel`, `line`,
+  `fill_rect`, `stroke_rect`, `text`, clip and mask handling) and error codes.
+- **Layers/compositor**: `kernel/layers/src/lib.rs` implements layer creation,
+  destruction, clipping, front/back ordering, visibility, movement, damage
+  tracking and compositing into a target buffer.
+- **Intuition/window manager**: `kernel/intuition/src/lib.rs` implements
+  screens, windows, titles, bounds, attributes, gadgets, IDCMP-style events,
+  active-window selection, repaint and framebuffer compositing.
+- **Workbench**: `kernel/workbench/src/lib.rs` implements application icons,
+  menus, windows, drop zones and an object registry.
+- **BOOPSI**: `kernel/gui/src/boopsi.rs` implements class IDs, method IDs,
+  object lookup and a registry as the Amiga-style object model.
+- **Facade**: `kernel/gui/src/lib.rs` re-exports `graphics`, `layers`,
+  `intuition` and `workbench` rather than duplicating them.
+- **Syscalls**: graphics syscalls 64–76, layers 128–137, intuition 192–204 and
+  workbench 448–469 are installed in the dispatch table.
+- **Boot display**: the loader passes GOP framebuffer geometry and physical
+  address in `VelaBootInfo`; `kernel/entry` maps the framebuffer, installs the
+  boot console and creates the Graphics, Intuition and Workbench services.
+- **Desktop boot**: `init` reads the boot choice and starts `vela_workbench::run`
+  for the desktop. The serial log says `workbench: ready`.
+- **Terminal**: the shell uses SDK graphics `text` and `write_pixel` calls to
+  render its scrollback and cursor; `clear` is implemented.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: Full `graphics.library` (RastPort, BitMap, ViewPort, Pen, Line, Rect, Text), `layers.library` (Layer creation, composition, z-ordering), `intuition.library` (Screens, Windows, Gadgets, IDCMP), BOOPSI object model. GOP/VBE framebuffer initialization.
-- **AmigaOS 3.x**: `graphics.library` (BitMap, RastPort, Pen, Line, Rect, Circle, Text), `layers.library` (Layer, compositing, Bobs), `intuition.library` (Screen, Window, Gadget, IDCMP), sprites support. Agnus/Denise/Alice custom chips.
-- **VelaOS Gaps**:
-  - **No framebuffer pipeline**: The GOP framebuffer physical address is passed to the kernel via `BootInfo`, but there is no `graphics.library` implementation to map it, handle clipping, or support double-buffering.
-  - **No palette/colormap management**: Color registers are not virtualized.
-  - **No text rendering**: No font rasterization hooked into the graphics library (the font engine exists in `graphics/font` but is not wired).
-  - **No window system**: No screen/windows/gadgets framework.
-  - **No double-buffering or page flipping**: Critical for video output.
+
+- **AROS** has a full `graphics.library`, `layers.library`, `intuition.library`,
+  BOOPSI and hardware framebuffer initialization.
+- **AmigaOS 3.x** has `graphics.library`, `layers.library`, `intuition.library`
+  and custom-chip sprite/display hardware.
+- **VelaOS gaps**:
+  - **AMD/Intel/Nouveau graphics paths are stubs**; the real display is the
+    firmware GOP framebuffer through the VGA driver.
+  - **No hardware acceleration or page flipping**; compositing is software.
+  - **No sprite support**.
+  - **No full font rasterization pipeline** in the graphics library; the font
+    crate exists but is not a complete graphics.library text stack.
+  - **Palette/color-register virtualization is limited** to the service's
+    palette table, not hardware color registers.
+  - **No full IDCMP message delivery to user programs** is wired through the
+    syscall surface; events are modelled in Intuition.
 
 ### What Must Be Built
-- `graphics.library` core: `G_ALLOC_PEN`, `G_SET_PEN`, `G_RECT`, `G_FILL_RECT`, `G_TEXT`, `G_LINE`, `G_MOVE`, `G_SET_CLIP`, `G_PEN_COLOR`, `G_WRITE_PIXEL`.
-- Framebuffer mapping from physical to virtual.
-- Double-buffered software raster.
-- Basic `intuition.library`: `I_OPEN_SCREEN`, `I_OPEN_WINDOW`, `I_SET_ATTRS`, `I_SET_TITLE`, `I_REFRESH`.
-- Color palette management.
+
+- Real GPU drivers and mode setting for AMD/Intel/Nouveau.
+- Hardware double-buffering / page flipping.
+- Sprite support and hardware color registers.
+- A complete graphics.library text/font path.
+- Full IDCMP event delivery through user-space syscalls.
 
 ---
 
 ## 7. Audio
 
 ### Current Implementation
-- **None**. No audio device, no mixer, no DMA audio path. The `audio.md` report exists as a design document only.
+
+- **audio.device-style service**: `kernel/audio/src/lib.rs` implements
+  `AudioDevice` and `Mixer` with channel allocation, channel free, volume,
+  PCM `SampleFrame` writes, start/stop, mixing, clipping counters and sample
+  rate.
+- **Mixer backend**: `kernel/drivers/audio/src/lib.rs` implements
+  `AudioMixer` with PCM streams, per-stream volume (Q16), pause/resume, mixing
+  and clipping, plus a null backend that accepts PCM without hardware.
+- **Hardware stubs**: HDA (Intel HD Audio) and AC97 drivers register as
+  multimedia devices; they are probe/registration stubs, not codec drivers.
+- **Boot registration**: `kernel/entry` registers audio drivers and installs
+  the mixer.
 
 ### Gaps vs AROS/AmigaOS
-- **AROS**: `audio.device` with `ADC`, `DAC`, `write`/`read` sample IO, DMA channel allocation.
-- **AmigaOS 3.x**: `audio.device` with four hardware sound channels, volume, period, frequency control.
-- **VelaOS Gaps**: Complete absence of audio. No `audio.device`, no mixer, no DMA audio path, no syscalls for audio.
+
+- **AROS** has `audio.device` with ADC/DAC sample IO and DMA channel
+  allocation.
+- **AmigaOS 3.x** has `audio.device` with four hardware sound channels,
+  volume, period and frequency control.
+- **VelaOS gaps**:
+  - **No audio syscalls** are defined in `kernel/syscall/src/numbers.rs`; user
+    programs cannot open or write the audio device through the SDK.
+  - **HDA/AC97 are stubs**; there is no real codec initialization, DMA ring or
+    hardware playback.
+  - **No audio DMA path** is wired from the mixer to a device.
+  - **No sample-format conversion** beyond the mixer's `i16` stereo frames.
 
 ### What Must Be Built
-- `audio.device` with DMA and channel allocation.
-- Mixer and sample IO syscalls.
+
+- Audio syscalls (`open`, `write`, `close`, volume, channel allocation).
+- Real HDA/AC97 codec initialization and DMA playback.
+- Format conversion and a user-space audio API.
+- A real audio device pipeline in the desktop.
 
 ---
 
-## 8. Summary of Critical Blockers to v0.2.0
+## 8. Summary of Remaining Blockers and Status
 
-| Subsystem | Status | Blocking Issue |
-|-----------|--------|----------------|
-| Memory management (user VM) | Partial | No per-process page tables; `brk`/`mmap` not fully wired to frame allocator |
-| SMP | Compiles, boot works | AP bring-up not runtime-verified (QEMU MADT reports 1 CPU); no AP task scheduling |
-| Filesystem | Design only | No RAMFS or block device drivers; all file syscalls fail |
-| Network stack | None | Complete stub; `ping`/`ifconfig`/`netstat` report unavailable |
-| Input drivers | Minimal | No `input.device`, no keyboard/mouse class drivers |
-| Graphics | Minimal | No `graphics.library`, no framebuffer pipeline, no intuition |
-| Audio | None | `audio.md` exists as design only |
+| Subsystem | Status | Remaining blocker |
+|---|---|---|
+| Memory / page tables | Functional first generation | CR3 switching not wired; no reclaiming allocator; no `mmap`/swap surface |
+| SMP | Implemented, compile-verified | AP bring-up not runtime-verified (QEMU MADT reports 1 CPU); APs do not run scheduler tasks |
+| Filesystems | RAMFS + read-only FAT | FAT not writable; AHCI/NVMe/ATA command paths are stubs; no persistent disk mount |
+| Network | Ethernet/IPv4/UDP/ARP + sockets | TCP/ICMP/DNS absent; virtio-net has no virtqueue ring; e1000/RTL8139 are stubs; shell commands remain stubs |
+| I/O and drivers | PCI, Device Manager, DMA API, driver registration | AMD/Intel/Nouveau, HDA/AC97, e1000/RTL8139 and AHCI/NVMe/ATA are stubs; no USB; `dma_free` no-op |
+| Graphics | Graphics/layers/intuition/workbench + BOOPSI | Real GPU drivers absent; no hardware acceleration, sprites or full font pipeline |
+| Audio | Mixer and audio.device service | No audio syscalls; HDA/AC97 and DMA audio path are stubs |
+| Boot / desktop | Works | Boot menu terminal-vs-desktop, default desktop, boot-choice syscall `GET_BOOT_CHOICE = 42`, boot ABI version 4 |
+| Shell | Works | `clear`, dynamic prompt, `ver`; network commands are explicit stubs |
 
 ### Architectural Philosophy Notes
 
-1. **No CMake, no shared-core, no CMakeLists** — every crate is built directly via `xtask`, and the build system is Rust-native.
-2. **UEFI 2.11 + custom Boot Protocol** — the loader (`boot/uefi-loader`) uses UEFI `GraphicsOutput` + `SimpleTextInputEx` + its own `vela.toml` configuration format. No Multiboot2.
-3. **Pure Rust, `no_std` + `extern crate alloc`** for driver crates and the kernel.
-4. **Architecture facade (`vela-arch`)** — kernel code imports hardware operations through the facade, not a concrete arch crate. The facade selects the implementation per target (`arch/x86_64` for x86-64; placeholder `arch/aarch64`, `arch/riscv64`, `arch/loongarch64` for compile-check).
-5. **Higher-half kernel** — kernel image mapped at `0xFFFF_8000_0000_0000`, low 128 TiB for user processes.
-6. **SMP uses real trampoline IPIs** — INIT/SIPI sequence is architecturally correct for x86-64, but "real multicore" is compile-verified; runtime multi-core verification depends on firmware MADT reporting >1 CPU.
-7. **Amiga-inspired API surface** — syscall numbers, `ERROR_*` codes, `MEMF_*` flags, `IORequest` state machine, and `dos.library` operations modeled on AmigaOS 3.1, implemented in Rust with no 68000 compatibility shims.
-8. **Four-architecture support via `xtask::Arch`** — X86_64 (full), Aarch64/Loongarch64/Riscv64 compile-check only.
+1. **No CMake, no shared-core, no Multiboot2** — the build is Rust-native and the
+   boot path is UEFI 2.11 plus a custom unified boot protocol.
+2. **Architecture-neutral kernel APIs** — hardware operations go through the
+   `vela-arch` facade; `arch/*` holds architecture-specific code.
+3. **Pure Rust, `no_std` + `alloc`** for the kernel and drivers.
+4. **Higher-half kernel** — kernel at `0xFFFF_8000_0000_0000`; low address range
+   for user programs.
+5. **Real SMP trampoline IPIs** — INIT/deassert/SIPI is implemented, but runtime
+   multicore scheduling remains unverified in this QEMU/OVMF environment.
+6. **Amiga-inspired API surface** — syscall numbers, error codes, `IORequest`
+   state machine, DOS operations and BOOPSI are modelled on AmigaOS/AROS but
+   implemented independently in Rust.
+7. **Four target architectures** — x86-64 is the boot target; aarch64, riscv64
+   and loongarch64 are compile-checked only.
 
 ### Recommendations for v0.2.0
 
-1. **Priority 1**: Implement RAMFS (minimum viable filesystem) so `read_dir`, `open`, `write`, `seek` actually work. This unblocks the shell and conformance tests.
-2. **Priority 2**: Wire `brk`/`mmap` syscalls to the frame allocator through the page mapper, enabling user processes to allocate heap memory.
-3. **Priority 3**: Implement a `virtio-net` or simple PCI Ethernet driver + BSD socket API so `ping`, `ifconfig`, `netstat` function.
-4. **Priority 4**: Add `graphics.library` core functions mapped to the GOP framebuffer, enabling basic drawing and text output.
-5. **Priority 5**: Verify SMP on multi-core firmware; add per-CPU task dispatch so APs run tasks.
-6. **Design**: Finalize RAMFS layout (inode structure, directory entries), block device interface, and network protocol suite before writing code.
+1. Wire CR3 switching and reclaiming memory so user processes are isolated and
+   memory can be reused.
+2. Implement TCP/ICMP/DNS and real virtqueues so networking is not just a
+   registration path.
+3. Implement real AHCI/NVMe/ATA command submission and a writable FAT or native
+   filesystem.
+4. Add audio syscalls and real HDA/AC97 DMA playback.
+5. Verify AP bring-up on firmware that reports more than one CPU and connect APs
+   to the per-CPU scheduler queues.
+6. Replace AMD/Intel/Nouveau and e1000/RTL8139 stubs with real drivers where the
+   hardware is available.
+7. Add USB/xHCI and a proper `input.device` event pipeline.
 
 ---
 
 *Analysis for /home/mobtgzhang/VelaOS/reports/issues-001.md*
-*Updated: 2026-11-08*
+*Updated: 2026-11-09*

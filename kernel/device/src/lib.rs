@@ -94,6 +94,8 @@ pub mod errors {
     pub const ABORTED: i32 = -5;
     /// The device is busy.
     pub const BUSY: i32 = -6;
+    /// The message is too large for the device.
+    pub const EMSGSIZE: i32 = -7;
 }
 
 /// The IORequest state machine.

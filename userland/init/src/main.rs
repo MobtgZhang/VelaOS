@@ -104,23 +104,43 @@ pub fn session() -> ! {
         api::power_off();
     }
 
-    log("init: starting shell\n");
-    hand_over_to_shell();
+    // The kernel's boot menu reports 0 for terminal and 1 for desktop.
+    // A failed query is treated as the default desktop: a machine that cannot
+    // read its own choice should still show the desktop, which is the boot
+    // policy the menu documents.
+    let choice = match api::boot_choice() {
+        Ok(value) => value,
+        Err(_) => 1,
+    };
 
-    // The shell returned. In v0.1.0 that means the user typed `exit`, so the
-    // machine stops rather than sitting on a shell nobody is driving.
+    if choice == 0 {
+        log("init: starting shell\n");
+        hand_over_to_shell();
+    } else {
+        log("init: starting desktop\n");
+        hand_over_to_desktop();
+    }
+
+    // The session returned. In v0.1.0 that means the user typed `exit` or the
+    // desktop closed, so the machine stops rather than sitting on a session
+    // nobody is driving.
     log("init: session ended\n");
     api::power_off()
 }
 
-/// Where the shell takes over.
+/// Where the terminal session takes over.
 ///
-/// A separate function so the *handover* is one identifiable step. When the
-/// desktop becomes a real second task, this body becomes the spawn and
-/// everything around it stays exactly where it is.
+/// A separate function so the *handover* is one identifiable step. A later
+/// boot step can replace this body with a spawn without changing the rest.
 #[cfg(target_os = "none")]
 fn hand_over_to_shell() {
     vela_shell::Shell::new().run();
+}
+
+/// Where the desktop takes over.
+#[cfg(target_os = "none")]
+fn hand_over_to_desktop() {
+    vela_workbench::run();
 }
 
 /// The bare-metal entry point.

@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use xtask::qemu::{self, Paths, Vm};
 use xtask::qemu::strip_ansi;
+use xtask::qemu::{self, Paths, Vm};
 use xtask::Arch;
 
 /// The repository root.
@@ -255,14 +255,21 @@ pub fn run_shell_roundtrip(
     let paths = Paths::tagged(root, tag);
     let vm = Vm::start(image, paths, false, 1).context("starting QEMU")?;
 
-    // The shell must be at its prompt before the first key lands, or the
-    // bytes are read as noise by whatever is running instead.
+    // The kernel banner appears before the boot menu runs, so this only
+    // proves the machine has reached the menu. The menu's default is the
+    // desktop; the round trip must explicitly pick the terminal entry.
     anyhow::ensure!(
         vm.wait_for_markers(qemu::BOOT_MARKERS, timeout),
-        "the kernel never reached its banner, so there is no shell to type into"
+        "the kernel never reached its banner, so there is no boot menu to select"
     );
+    vm.monitor_command("sendkey 1")?;
+    std::thread::sleep(Duration::from_millis(300));
+
+    // The terminal choice is now in effect; the shell must be at its prompt
+    // before the first keystroke lands, or the bytes are read as noise by
+    // whatever is running instead.
     anyhow::ensure!(
-        vm.wait_for_markers(qemu::USERLAND_MARKERS, timeout),
+        vm.wait_for_markers(qemu::SHELL_MARKERS, timeout),
         "the userland never reached the shell"
     );
     // The prompt itself is printed by the shell just after the last marker;

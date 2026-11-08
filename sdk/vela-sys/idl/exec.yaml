@@ -36,6 +36,14 @@
 library: exec.library
 prefix: EXEC
 functions:
+  - name: GetBootChoice
+    lvo: -248
+    offset: GETBOOTCHOICE
+    stub: get_boot_choice
+    syscall: GET_BOOT_CHOICE
+    number: 42
+    kernel: GET_BOOT_CHOICE
+    status: implemented
   - name: AllocMem
     lvo: -240
     offset: ALLOCMEM

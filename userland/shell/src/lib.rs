@@ -108,8 +108,8 @@ impl Shell {
         // Show the current directory, if we can read it.
         let mut buf = [0u8; 256];
         if let Ok(len) = api::current_dir(&mut buf) {
-            let s = core::str::from_utf8(&buf[..len.min(buf.len() - 1)])
-                .unwrap_or("<invalid utf-8>");
+            let s =
+                core::str::from_utf8(&buf[..len.min(buf.len() - 1)]).unwrap_or("<invalid utf-8>");
             if !s.is_empty() {
                 api::print(s);
             }

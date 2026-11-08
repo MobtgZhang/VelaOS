@@ -16,10 +16,16 @@ path = "src/main.rs"
 
 [dependencies]
 vela-sys.workspace = true
-# The shell is *linked* into `init` rather than spawned — there is no
-# `RunSeg` in v0.1.0, and adding one for a single user would be a mechanism
-# with exactly one user. See `hand_over_to_shell`.
+
+# The shell and the desktop are *linked* into `init` rather than spawned —
+# there is no `RunSeg` in v0.1.0, and adding one for a single user would be a
+# mechanism with exactly one user. The boot-menu choice selects which one.
+# They are bare-metal-only dependencies: the hosted build never calls either,
+# so declaring them here rather than unconditionally keeps them out of the
+# host dependency set.
+[target.'cfg(target_os = "none")'.dependencies]
 vela-shell.workspace = true
+vela-workbench.workspace = true
 
 [dev-dependencies]
 vela-hosted.workspace = true

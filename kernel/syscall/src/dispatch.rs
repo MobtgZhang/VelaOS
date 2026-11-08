@@ -789,6 +789,10 @@ pub mod exec_handlers {
     /// Arguments: `buf` (a user pointer), `len` (the buffer size). Returns
     /// the number of bytes written, excluding the NUL terminator, or `RANGE`
     /// when the buffer is empty.
+    pub fn get_boot_choice(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+        SyscallResult::ok(crate::boot_choice() as u64)
+    }
+
     pub fn get_hostname(args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
         let buf = args.get(0);
         let len = args.get(1) as usize;
@@ -845,6 +849,7 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::DELETE_POOL, exec_handlers::delete_pool);
     table.install(numbers::CLEAR_SCREEN, exec_handlers::clear_screen);
     table.install(numbers::GET_HOSTNAME, exec_handlers::get_hostname);
+    table.install(numbers::GET_BOOT_CHOICE, exec_handlers::get_boot_choice);
 
     // The `utility.library` group:
 
@@ -878,6 +883,20 @@ pub fn builtin_table() -> DispatchTable {
         numbers::DOS_SET_CURRENT_DIR,
         crate::dos_handlers::set_current_dir,
     );
+
+    // The `net.library` group: BSD sockets. The handlers live in
+    // [`crate::socket_handlers`] and reach the global socket service
+    // ([`vela_kernel_socket::service`]), which kernel/entry installs during
+    // boot.
+    table.install(numbers::NET_SOCKET, crate::socket_handlers::socket);
+    table.install(numbers::NET_BIND, crate::socket_handlers::bind);
+    table.install(numbers::NET_CONNECT, crate::socket_handlers::connect);
+    table.install(numbers::NET_LISTEN, crate::socket_handlers::listen);
+    table.install(numbers::NET_ACCEPT, crate::socket_handlers::accept);
+    table.install(numbers::NET_SENDTO, crate::socket_handlers::sendto);
+    table.install(numbers::NET_RECVFROM, crate::socket_handlers::recvfrom);
+    table.install(numbers::NET_CLOSE, crate::socket_handlers::close);
+    table.install(numbers::NET_SETSOCKOPT, crate::socket_handlers::setsockopt);
 
     // The `graphics.library` group: pens and raster drawing. Every drawing
     // call names a *window* rather than a rast port, because a program does
@@ -1381,6 +1400,11 @@ mod tests {
                 "exec syscall {number} has no handler",
             );
         }
+        // The boot-policy syscall is outside the numbered library ranges.
+        assert!(
+            table.is_implemented(numbers::GET_BOOT_CHOICE),
+            "boot-choice syscall has no handler",
+        );
         // Every group that has a library installed is installed by the
         // built-in table, and the count says so: every number the kernel
         // defines has a handler, and no number it does not define has one.
@@ -1393,7 +1417,9 @@ mod tests {
                 + numbers::INTUITION_COUNT
                 + numbers::UTILITY_COUNT
                 + numbers::ICON_COUNT
-                + numbers::WORKBENCH_COUNT) as usize
+                + numbers::WORKBENCH_COUNT
+                + numbers::NET_COUNT
+                + numbers::BOOT_CHOICE_COUNT) as usize
         );
     }
 

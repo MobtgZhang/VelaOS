@@ -87,6 +87,10 @@ pub const DELETE_POOL: u64 = 30;
 pub const CLEAR_SCREEN: u64 = 31;
 /// `exec.library`: read the machine's hostname into a buffer.
 pub const GET_HOSTNAME: u64 = 32;
+/// `exec.library`: report the boot-menu choice.
+///
+/// `0` = terminal, `1` = desktop.
+pub const GET_BOOT_CHOICE: u64 = 42;
 
 /// The size of a program page, in bytes.
 ///

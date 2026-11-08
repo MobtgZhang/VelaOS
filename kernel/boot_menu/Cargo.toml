@@ -1,0 +1,11 @@
+[package]
+name = "vela-kernel-boot-menu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Boot menu: terminal vs desktop selection at startup"
+
+[dependencies]
+vela-arch.workspace = true
+spin.workspace = true

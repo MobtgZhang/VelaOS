@@ -179,6 +179,51 @@ pub const CLEAR_SCREEN: u64 = 31;
 /// written (excluding the NUL terminator), or `RANGE` when `buf` is empty or
 /// too small.
 pub const GET_HOSTNAME: u64 = 32;
+/// `exec.library`: report the boot-menu choice.
+///
+/// Returns `0` for terminal and `1` for desktop. This is the only boot-time
+/// policy the user space needs, and it is a value rather than an opaque handle.
+pub const GET_BOOT_CHOICE: u64 = 42;
+
+/// `net.library`: create a socket.
+///
+/// Arguments: `domain`, `type`, `protocol`. Returns a socket handle.
+pub const NET_SOCKET: u64 = 33;
+/// `net.library`: bind a socket to a local address.
+///
+/// Arguments: `sockfd`, `addr_ptr`, `addrlen`. Returns zero.
+pub const NET_BIND: u64 = 34;
+/// `net.library`: connect a socket to a peer address.
+///
+/// Arguments: `sockfd`, `addr_ptr`, `addrlen`. Returns zero.
+pub const NET_CONNECT: u64 = 35;
+/// `net.library`: mark a socket as a passive acceptor.
+///
+/// Arguments: `sockfd`, `backlog`. Returns zero.
+pub const NET_LISTEN: u64 = 36;
+/// `net.library`: accept an incoming connection.
+///
+/// Arguments: `sockfd`, `addr_ptr`, `addrlen`. Returns a new socket handle.
+pub const NET_ACCEPT: u64 = 37;
+/// `net.library`: send a datagram.
+///
+/// Arguments: `sockfd`, `buf_ptr`, `len`, `flags`, `dest_ptr`, `addrlen`.
+/// Returns the number of bytes sent.
+pub const NET_SENDTO: u64 = 38;
+/// `net.library`: receive a datagram.
+///
+/// Arguments: `sockfd`, `buf_ptr`, `len`, `flags`, `src_ptr`, `addrlen`.
+/// Returns the number of bytes received.
+pub const NET_RECVFROM: u64 = 39;
+/// `net.library`: close a socket.
+///
+/// Arguments: `sockfd`. Returns zero.
+pub const NET_CLOSE: u64 = 40;
+/// `net.library`: set a socket option.
+///
+/// Arguments: `sockfd`, `level`, `optname`, `optval_ptr`, `optlen`.
+/// Returns zero.
+pub const NET_SETSOCKOPT: u64 = 41;
 
 /// `graphics.library`: reserve a pen in a palette.
 pub const GRAPHICS_ALLOC_PEN: u64 = 64;
@@ -397,6 +442,11 @@ pub const UTILITY_COUNT: u64 = 3;
 pub const ICON_COUNT: u64 = 21;
 /// The number of syscalls in the `workbench.library` group.
 pub const WORKBENCH_COUNT: u64 = 22;
+/// The number of syscalls in the `net.library` group.
+pub const NET_COUNT: u64 = 9;
+/// `GET_BOOT_CHOICE` is the one boot-policy syscall outside the numbered
+/// library ranges; it sits in the `exec` group.
+pub const BOOT_CHOICE_COUNT: u64 = 1;
 
 /// The highest syscall number the kernel defines.
 pub const MAX: u64 = WORKBENCH_WORKBENCH_CONTROL;
@@ -620,7 +670,7 @@ mod tests {
     use std::vec::Vec;
 
     /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 118] = [
+    const ALL: [(u64, SyscallGroup); 119] = [
         (CREATE_MSG_PORT, SyscallGroup::Exec),
         (DELETE_MSG_PORT, SyscallGroup::Exec),
         (PUT_MSG, SyscallGroup::Exec),
@@ -645,6 +695,7 @@ mod tests {
         (GETCHAR, SyscallGroup::Exec),
         (CLEAR_SCREEN, SyscallGroup::Exec),
         (GET_HOSTNAME, SyscallGroup::Exec),
+        (GET_BOOT_CHOICE, SyscallGroup::Exec),
         (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
         (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
         (GRAPHICS_SET_PEN, SyscallGroup::Graphics),

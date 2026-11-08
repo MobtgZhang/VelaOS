@@ -43,6 +43,7 @@
 
 #![no_std]
 
+#[macro_use]
 extern crate alloc;
 
 // Off bare metal the host build links the standard library, which the
@@ -60,6 +61,7 @@ pub mod ids;
 pub mod intuition_handlers;
 pub mod layers_handlers;
 pub mod numbers;
+pub mod socket_handlers;
 pub mod task_space;
 pub mod userspace;
 pub mod utility_handlers;
@@ -133,14 +135,19 @@ pub use numbers::SyscallArgs;
 /// The machine's hostname string, leaked for the kernel's lifetime.
 ///
 /// Set once during boot alongside [`hostname`].
-static HOSTNAME_STR: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+static HOSTNAME_STR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The boot choice the user made at the boot menu.
+///
+/// `0` means terminal, `1` means desktop. The value is written once during
+/// boot and is read by `GetBootChoice`, so `init` can decide which session to
+/// start without any user pointer or private kernel state.
+static BOOT_CHOICE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
 
 /// The console write function, set once during boot.
 ///
 /// Points at `serial::puts` on bare metal, or a test sink on the host.
-static CONSOLE_WRITE: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+static CONSOLE_WRITE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// The machine's hostname.
 pub fn hostname() -> &'static str {
@@ -161,7 +168,24 @@ pub fn hostname() -> &'static str {
 pub unsafe fn set_hostname(name: &'static str) {
     // SAFETY: written once during boot, before any task runs.
     let leaked: &'static &'static str = Box::leak(Box::new(name));
-    HOSTNAME_STR.store(leaked as *const &'static str as u64, core::sync::atomic::Ordering::Release);
+    HOSTNAME_STR.store(
+        leaked as *const &'static str as u64,
+        core::sync::atomic::Ordering::Release,
+    );
+}
+
+/// The boot choice: `0` terminal, `1` desktop.
+pub fn boot_choice() -> u32 {
+    BOOT_CHOICE.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Set the boot choice.
+///
+/// # Safety
+///
+/// Must be called once during boot, before any user task runs.
+pub unsafe fn set_boot_choice(choice: u32) {
+    BOOT_CHOICE.store(choice, core::sync::atomic::Ordering::Release);
 }
 
 /// Set the console write function.
@@ -171,7 +195,10 @@ pub unsafe fn set_hostname(name: &'static str) {
 /// Must be called exactly once, during boot, before any task runs.
 pub unsafe fn set_console_write(f: fn(&str)) {
     // SAFETY: written once during boot, before any task runs.
-    CONSOLE_WRITE.store(f as *const () as usize as u64, core::sync::atomic::Ordering::Release);
+    CONSOLE_WRITE.store(
+        f as *const () as usize as u64,
+        core::sync::atomic::Ordering::Release,
+    );
 }
 
 /// Print a string to the console.

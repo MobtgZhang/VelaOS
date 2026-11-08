@@ -69,9 +69,9 @@
 
 use alloc::vec::Vec;
 
-use vela_elf_loader::{ph_flags, Elf64Image, ElfHeader, LoadedSegment, EM_X86_64, ET_EXEC};
-use vela_arch_common::{MapError, PageFlags, PAGE_SIZE};
 use vela_arch::addrspace::AddressSpace;
+use vela_arch_common::{MapError, PageFlags, PAGE_SIZE};
+use vela_elf_loader::{ph_flags, Elf64Image, ElfHeader, LoadedSegment, EM_X86_64, ET_EXEC};
 
 use crate::task_space::FrameSource;
 pub use crate::task_space::{

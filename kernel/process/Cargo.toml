@@ -1,0 +1,13 @@
+[package]
+name = "vela-kernel-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Process management: user mode, address spaces, process lifecycle"
+
+[dependencies]
+vela-arch-common.workspace = true
+vela-kernel-exec.workspace = true
+vela-kernel-syscall.workspace = true
+spin.workspace = true

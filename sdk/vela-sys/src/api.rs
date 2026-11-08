@@ -647,21 +647,32 @@ pub fn clear_screen() -> Result<()> {
 /// `buf` is not a valid user pointer.
 pub fn hostname(buf: &mut [u8]) -> Result<usize> {
     if buf.is_empty() {
-        return Err(Error { code: errors::RANGE });
+        return Err(Error {
+            code: errors::RANGE,
+        });
     }
     let ptr = buf.as_mut_ptr() as u64;
     let len = buf.len() as u64;
     // SAFETY: `buf` is a live, writable slice of exactly `len` bytes and the
     // kernel validates the range before writing. `GET_HOSTNAME` is syscall 32.
-    let packed = unsafe {
-        library_base::exec::base().call(32, [ptr, len, 0, 0, 0, 0])
-    };
+    let packed = unsafe { library_base::exec::base().call(32, [ptr, len, 0, 0, 0, 0]) };
     check(packed).map(|v| v as usize)
 }
 
 // ---------------------------------------------------------------------------
 // Program memory
 // ---------------------------------------------------------------------------
+
+/// The boot-menu choice: `0` for terminal, `1` for desktop.
+///
+/// `init` is the one program that needs this. The kernel stores the choice as
+/// a value rather than a pointer, so asking for it is one syscall with no
+/// argument buffer.
+pub fn boot_choice() -> Result<u32> {
+    let packed =
+        unsafe { library_base::exec::base().call(offset::EXEC_GETBOOTCHOICE, [0, 0, 0, 0, 0, 0]) };
+    check(packed).map(|v| v as u32)
+}
 
 /// The size of a program page, in bytes.
 ///

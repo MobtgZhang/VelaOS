@@ -26,6 +26,34 @@ members = [
   "kernel/layers",
   "kernel/intuition",
   "kernel/input",
+  "kernel/dma",
+  "kernel/net",
+  "kernel/socket",
+  "kernel/audio",
+  "kernel/process",
+  "kernel/gui",
+  "kernel/boot_menu",
+  # fs
+  "fs/ramfs",
+  "fs/amiga-path",
+  "fs/fat",
+  # userland
+  "sdk/vela-sys",
+  "userland/init",
+  "userland/shell",
+  "userland/workbench",
+  "userland/apps/guitest",
+  "userland/terminal",
+  # drivers
+  "drivers/nvme",
+  "drivers/ata",
+  "drivers/sata",
+  "drivers/vga",
+  "drivers/virtio-net",
+  "kernel/drivers/graphics",
+  "kernel/drivers/audio",
+  "kernel/drivers/network",
+  "kernel/drivers/storage",
   # amiga abi + spec
   "amiga/abi-native64",
   "amiga/abi-guest32",
@@ -55,7 +83,6 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -65,9 +92,6 @@ vela-elf-loader = { path = "boot/elf-loader" }
 vela-arch-common = { path = "arch/common" }
 vela-arch-x86_64 = { path = "arch/x86_64" }
 vela-arch = { path = "arch/facade" }
-vela-arch-aarch64 = { path = "arch/aarch64" }
-vela-arch-riscv64 = { path = "arch/riscv64" }
-vela-arch-loongarch64 = { path = "arch/loongarch64" }
 vela-kernel-core = { path = "kernel/core" }
 vela-kernel-memory = { path = "kernel/memory" }
 vela-kernel-scheduler = { path = "kernel/scheduler" }
@@ -88,6 +112,9 @@ vela-driver-nvme = { path = "drivers/nvme" }
 vela-driver-ata = { path = "drivers/ata" }
 vela-driver-sata = { path = "drivers/sata" }
 vela-driver-vga = { path = "drivers/vga" }
+vela-driver-virtio-net = { path = "drivers/virtio-net" }
+vela-kernel-net = { path = "kernel/net" }
+vela-kernel-socket = { path = "kernel/socket" }
 vela-abi-native64 = { path = "amiga/abi-native64" }
 vela-abi-guest32 = { path = "amiga/abi-guest32" }
 vela-renderer2d = { path = "graphics/renderer2d" }
@@ -98,6 +125,13 @@ vela-amiga-path = { path = "fs/amiga-path" }
 vela-sys = { path = "sdk/vela-sys" }
 vela-hosted = { path = "platforms/hosted" }
 vela-shell = { path = "userland/shell" }
+vela-workbench = { path = "userland/workbench" }
+vela-kernel-process = { path = "kernel/process" }
+vela-kernel-boot-menu = { path = "kernel/boot_menu" }
+vela-driver-graphics = { path = "kernel/drivers/graphics" }
+vela-driver-audio = { path = "kernel/drivers/audio" }
+vela-driver-network = { path = "kernel/drivers/network" }
+vela-driver-storage = { path = "kernel/drivers/storage" }
 
 spin = { version = "0.9", default-features = false, features = ["once", "spin_mutex"] }
 uefi = { version = "0.41", default-features = false }

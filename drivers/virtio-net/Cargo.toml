@@ -1,0 +1,13 @@
+[package]
+name = "vela-driver-virtio-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "virtio-net PCI network driver"
+
+[dependencies]
+vela-arch.workspace = true
+vela-kernel-device.workspace = true
+vela-kernel-net.workspace = true
+spin.workspace = true

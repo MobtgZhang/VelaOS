@@ -447,6 +447,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-driver-audio"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
+name = "vela-driver-graphics"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+ "vela-kernel-graphics",
+]
+
+[[package]]
+name = "vela-driver-network"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+ "vela-kernel-net",
+]
+
+[[package]]
 name = "vela-driver-nvme"
 version = "0.1.0"
 dependencies = [
@@ -463,11 +489,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-driver-storage"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-device",
+]
+
+[[package]]
 name = "vela-driver-vga"
 version = "0.1.0"
 dependencies = [
  "spin",
  "vela-kernel-device",
+]
+
+[[package]]
+name = "vela-driver-virtio-net"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch",
+ "vela-kernel-device",
+ "vela-kernel-net",
 ]
 
 [[package]]
@@ -484,6 +528,10 @@ version = "0.1.0"
 dependencies = [
  "vela-font",
 ]
+
+[[package]]
+name = "vela-fs-fat"
+version = "0.1.0"
 
 [[package]]
 name = "vela-guitest"
@@ -513,7 +561,6 @@ dependencies = [
  "vela-kernel-syscall",
  "vela-kernel-workbench",
  "vela-ramfs",
- "vela-renderer2d",
 ]
 
 [[package]]
@@ -523,6 +570,22 @@ dependencies = [
  "vela-hosted",
  "vela-shell",
  "vela-sys",
+ "vela-workbench",
+]
+
+[[package]]
+name = "vela-kernel-audio"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
+name = "vela-kernel-boot-menu"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch",
 ]
 
 [[package]]
@@ -552,6 +615,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-kernel-dma"
+version = "0.1.0"
+dependencies = [
+ "vela-arch",
+ "vela-arch-common",
+]
+
+[[package]]
 name = "vela-kernel-dos"
 version = "0.1.0"
 dependencies = [
@@ -570,9 +641,15 @@ dependencies = [
  "vela-arch-common",
  "vela-boot-protocol",
  "vela-driver-ata",
+ "vela-driver-audio",
+ "vela-driver-graphics",
+ "vela-driver-network",
  "vela-driver-nvme",
  "vela-driver-sata",
+ "vela-driver-storage",
  "vela-driver-vga",
+ "vela-driver-virtio-net",
+ "vela-kernel-boot-menu",
  "vela-kernel-console",
  "vela-kernel-core",
  "vela-kernel-device",
@@ -584,6 +661,9 @@ dependencies = [
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-memory",
+ "vela-kernel-net",
+ "vela-kernel-process",
+ "vela-kernel-socket",
  "vela-kernel-syscall",
  "vela-kernel-timer",
  "vela-kernel-workbench",
@@ -605,6 +685,17 @@ dependencies = [
  "spin",
  "vela-boot-protocol",
  "vela-renderer2d",
+]
+
+[[package]]
+name = "vela-kernel-gui"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-graphics",
+ "vela-kernel-intuition",
+ "vela-kernel-layers",
+ "vela-kernel-workbench",
 ]
 
 [[package]]
@@ -655,6 +746,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-kernel-net"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
+name = "vela-kernel-process"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch-common",
+ "vela-kernel-exec",
+ "vela-kernel-syscall",
+]
+
+[[package]]
 name = "vela-kernel-scheduler"
 version = "0.1.0"
 dependencies = [
@@ -662,6 +770,15 @@ dependencies = [
  "vela-arch",
  "vela-arch-common",
  "vela-kernel-exec",
+]
+
+[[package]]
+name = "vela-kernel-socket"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-kernel-exec",
+ "vela-kernel-net",
 ]
 
 [[package]]
@@ -681,6 +798,8 @@ dependencies = [
  "vela-kernel-icon",
  "vela-kernel-intuition",
  "vela-kernel-layers",
+ "vela-kernel-net",
+ "vela-kernel-socket",
  "vela-kernel-vfs",
  "vela-kernel-workbench",
  "vela-renderer2d",
@@ -809,6 +928,13 @@ dependencies = [
  "vela-font",
  "vela-renderer2d",
  "vela-theme-classic",
+]
+
+[[package]]
+name = "vela-userland-terminal"
+version = "0.1.0"
+dependencies = [
+ "vela-sys",
 ]
 
 [[package]]

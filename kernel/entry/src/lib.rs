@@ -58,15 +58,21 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use vela_boot_protocol::VelaBootInfo;
 use vela_arch::addrspace::{activate, AddressSpace, IdentityPhys};
-use vela_arch::{apic, idt, paging, regs, serial};
 use vela_arch::smp::{bring_up_aps, TRAMPOLINE_PAGES};
+use vela_arch::{apic, idt, paging, regs, serial};
+use vela_boot_protocol::VelaBootInfo;
+use vela_driver_audio::register_all as register_audio_drivers;
+use vela_driver_graphics::{register_all as register_graphics_drivers, FramebufferInfo};
+use vela_driver_network::register_all as register_network_drivers;
+use vela_driver_storage::register_all as register_storage_drivers;
+use vela_kernel_boot_menu::{boot_menu, init_boot_menu, BootChoice};
 use vela_kernel_core::Level;
 use vela_kernel_device::{errors, DeviceInfo, DeviceManager, DriverOps, IORequest, IoState};
 use vela_kernel_memory::{
     init_heap, BootReservations, FrameAllocator, KernelHeap, MemoryMap, MemoryPlan, PAGE_SIZE,
 };
+use vela_kernel_process::init_process_table;
 use vela_kernel_syscall::dispatch::{builtin_table, DispatchTable};
 use vela_kernel_timer::{advance_tick, timer_device};
 
@@ -260,6 +266,28 @@ fn install_builtin_devices() {
     vela_driver_sata::register_ahci_controller(0, 0, 1);
     // VGA/HDMI/DVI display.
     vela_driver_vga::register_pci_device(0, 0, 0);
+
+    // Real PCI enumeration: discover every function on every bus and register
+    // any virtio-net NICs so the socket layer can transmit through them.
+    let devices = vela_arch::pci::enumerate();
+    let nets = vela_driver_virtio_net::register_pci_devices(&devices);
+    let net_count = nets.len();
+    // Install the first virtio-net as the network stack's transmit device,
+    // so BSD sockets have somewhere to send Ethernet frames. The device is
+    // leaked so it lives for the rest of the boot (the install takes a
+    // `&'static` reference).
+    if let Some(first) = nets.into_iter().next() {
+        let leaked: &'static Arc<vela_driver_virtio_net::VirtioNet> = Box::leak(Box::new(first));
+        let net: &'static dyn vela_kernel_net::NetDevice = &**leaked;
+        // SAFETY: `install_net_device` runs once during boot, before any
+        // socket syscall can transmit.
+        unsafe { vela_kernel_net::install_net_device(net) };
+    }
+    serial::puts("VELA-KERNEL: PCI enumerated ");
+    serial::puts_dec(devices.len() as u64);
+    serial::puts(" devices, ");
+    serial::puts_dec(net_count as u64);
+    serial::puts(" network interface(s)\n");
 }
 
 /// Advance the timer clocks once per APIC tick.
@@ -763,6 +791,10 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // SAFETY: the space is leaked, so the reference outlives the kernel.
     unsafe { vela_kernel_syscall::task_space::install_kernel_space(space) };
 
+    // --- Process table -------------------------------------------------------
+    // Initialize the process table for user-mode task management.
+    unsafe { init_process_table() };
+
     // --- 10. Segments ------------------------------------------------------
     //
     // The GDT must be installed before anything depends on a segment
@@ -784,9 +816,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // SAFETY: as above — the GDT is installed, so the selectors in
     // `STAR_VALUE` name real descriptors. The kernel's dispatch function is
     // registered with the gate so the entry stub can reach it.
-    unsafe {
-        vela_arch::syscall::gate::install(vela_kernel_syscall::dispatch::syscall_dispatch)
-    };
+    unsafe { vela_arch::syscall::gate::install(vela_kernel_syscall::dispatch::syscall_dispatch) };
     serial::puts("VELA-KERNEL: gdt and syscall gate installed\n");
 
     // --- 11. Interrupts ----------------------------------------------------
@@ -815,6 +845,30 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     install_builtin_devices();
     serial::puts("VELA-KERNEL: device manager initialised\n");
 
+    // --- Real hardware drivers -----------------------------------------------
+    //
+    // Enumerate PCI and register all hardware drivers:
+    // graphics (VGA/VESA + AMD/Intel/NVIDIA stubs),
+    // audio (HDA/AC97/null + mixer),
+    // network (virtio-net/e1000/RTL8139),
+    // storage (AHCI/NVMe/ATA + block layer).
+    //
+    // The framebuffer geometry comes from the boot handoff and is needed by
+    // the graphics driver registration *before* the services are installed.
+    let (screen_width, screen_height, framebuffer) = display_geometry(&boot_info);
+    let fb = FramebufferInfo {
+        address: framebuffer.address,
+        width: framebuffer.width,
+        height: framebuffer.height,
+        stride_bytes: framebuffer.stride_bytes,
+        format: 0, // BGR from GOP
+    };
+    register_graphics_drivers(Some(fb));
+    register_audio_drivers();
+    register_network_drivers();
+    register_storage_drivers();
+    serial::puts("VELA-KERNEL: hardware drivers registered\n");
+
     // --- 9. Services -------------------------------------------------------
     // The Exec service, the DOS service and the syscall dispatch table are
     // installed *before* the banner, so that a user program started after
@@ -837,7 +891,6 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // The framebuffer is installed *before* Intuition, because compositing is
     // what writes to it and a compositor with no framebuffer would have
     // nothing to write to.
-    let (screen_width, screen_height, framebuffer) = display_geometry(&boot_info);
     install_framebuffer(framebuffer);
     // The boot-time text console, over the same framebuffer. It renders the
     // guest's `PutChar` output on the screen the user is looking at; without
@@ -864,6 +917,9 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
         Box::leak(Box::new(vela_kernel_icon::IconService::new()));
     let workbench: &'static vela_kernel_workbench::Workbench =
         Box::leak(Box::new(vela_kernel_workbench::Workbench::new()));
+    // The socket service (BSD sockets) — installed before the syscall gate
+    // so `net.library` syscalls have a service to dispatch to.
+    unsafe { vela_kernel_socket::install(vela_kernel_socket::SocketService::new()) };
     let table: &'static DispatchTable = Box::leak(Box::new(builtin_table()));
     // SAFETY: the kernel is single-CPU and this runs once, during boot,
     // before any user code runs.
@@ -937,12 +993,39 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     unsafe { vela_kernel_syscall::set_hostname("vela") };
     serial::puts("VELA-KERNEL: VelaOS 0.1.0 ready\n");
     BOOTED.store(true, Ordering::Release);
+
+    // --- Boot menu: terminal vs desktop --------------------------------------
+    //
+    // Show a menu on the serial console allowing the user to choose between
+    // a terminal (shell) session and the graphical desktop. The default is
+    // desktop, selected after a 10-second timeout.
+    unsafe { init_boot_menu() };
+    let menu = boot_menu();
+    let choice = menu.run();
+    let choice = choice.unwrap_or_else(|| {
+        // Timeout: use the default entry.
+        let default = menu.default();
+        menu.choice(default).unwrap_or(BootChoice::Desktop)
+    });
+
+    serial::puts("VELA-KERNEL: boot choice: ");
+    match choice {
+        BootChoice::Terminal => serial::puts("terminal\n"),
+        BootChoice::Desktop => serial::puts("desktop\n"),
+    }
+    // SAFETY: written once during boot, before `init` runs. The value is the
+    // session `init` will start.
+    unsafe {
+        vela_kernel_syscall::set_boot_choice(match choice {
+            BootChoice::Terminal => 0,
+            BootChoice::Desktop => 1,
+        });
+    }
+
     // --- 11. Ring 3 ---------------------------------------------------------
     //
-    // The banner is printed *before* the first user instruction so that a
-    // program that faults on its very first instruction still leaves a boot
-    // log that says how far the machine got. The boot smoke test keys on this
-    // marker for the same reason.
+    // Start init. The init process reads the boot choice to decide whether to
+    // launch a terminal shell or the graphical desktop.
     if boot_info.initrd_paddr != 0 && boot_info.initrd_bytes > 0 {
         serial::puts("VELA-KERNEL: starting init from ");
         serial::puts_hex(boot_info.initrd_paddr);

@@ -27,8 +27,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-use vela_arch::{self as arch, current_cpu_id};
 use vela_arch::apic::{self, RESCHEDULE_VECTOR};
+use vela_arch::{self as arch, current_cpu_id};
 
 use crate::task::RunQueue;
 
@@ -40,8 +40,7 @@ const MAX_CPUS: usize = 256;
 /// Each entry is `None` until the CPU has run [`init_this_cpu`]. Only a CPU
 /// touches its own queue outside of initialisation, so there is no
 /// cross-CPU lock contention on the hot path.
-static RUN_QUEUES: [Mutex<Option<RunQueue>>; MAX_CPUS] =
-    [const { Mutex::new(None) }; MAX_CPUS];
+static RUN_QUEUES: [Mutex<Option<RunQueue>>; MAX_CPUS] = [const { Mutex::new(None) }; MAX_CPUS];
 
 /// Whether each CPU has initialised its run queue.
 static CPU_INIT: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
@@ -76,7 +75,9 @@ pub fn enqueue_on(cpu: usize, task: usize, priority: u8) -> bool {
         return false;
     }
     let mut queue = RUN_QUEUES[cpu].lock();
-    let Some(queue) = queue.as_mut() else { return false };
+    let Some(queue) = queue.as_mut() else {
+        return false;
+    };
     queue.enqueue(task, priority);
     true
 }
@@ -156,7 +157,10 @@ pub fn acknowledge_reschedule() {
 
 /// How many CPUs have initialised run queues.
 pub fn cpu_count() -> usize {
-    CPU_INIT.iter().filter(|b| b.load(Ordering::Acquire)).count()
+    CPU_INIT
+        .iter()
+        .filter(|b| b.load(Ordering::Acquire))
+        .count()
 }
 
 /// A no-op region in which a reschedule flag is consumed, keeping the

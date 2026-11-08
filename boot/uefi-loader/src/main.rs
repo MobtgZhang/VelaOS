@@ -1026,10 +1026,12 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
 
     // ACPI 2.0+: the XSDT physical address is at offset 24.
     // ACPI 1.0:  the RSDT physical address is at offset 16.
+    // The RSDP is not guaranteed to be 8-byte aligned, so these loads must
+    // be unaligned reads rather than `*const u64` pointer dereferences.
     let table_paddr = if revision >= 2 {
-        unsafe { *(rsdp_paddr as *const u64).add(3) } // 3 * 8 = 24
+        unsafe { core::ptr::read_unaligned((rsdp_paddr + 24) as *const u64) }
     } else {
-        unsafe { *(rsdp_paddr as *const u32).add(4) as u64 } // 4 * 4 = 16
+        unsafe { core::ptr::read_unaligned((rsdp_paddr + 16) as *const u32) as u64 }
     };
 
     if table_paddr == 0 {
@@ -1038,8 +1040,11 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
 
     // Read the XSDT/RSDT header: signature (4 bytes), length (4 bytes).
     let table_sig = unsafe { core::slice::from_raw_parts(table_paddr as *const u8, 4) };
-    let table_len = unsafe { *(table_paddr as *const u32).add(1) } as usize;
+    let table_len = unsafe { core::ptr::read_unaligned((table_paddr + 4) as *const u32) } as usize;
     if table_sig != b"XSDT" && table_sig != b"RSDT" {
+        return 1;
+    }
+    if table_len <= 36 {
         return 1;
     }
 
@@ -1050,12 +1055,14 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
     let entry_count = (table_len - 36) / entry_size;
     for i in 0..entry_count {
         // Entries begin at byte offset 36 (right after the header); each entry
-        // is 8 bytes for XSDT or 4 bytes for RSDT. x86-64 permits unaligned
-        // loads, so we read through a byte pointer at the exact offset.
+        // is 8 bytes for XSDT or 4 bytes for RSDT. The table address is not
+        // guaranteed to be aligned for the entry width, so use unaligned reads.
         let entry_paddr = if table_sig == b"XSDT" {
-            unsafe { *((table_paddr as *const u8).add(36 + 8 * i) as *const u64) }
+            unsafe { core::ptr::read_unaligned((table_paddr + 36 + (8 * i) as u64) as *const u64) }
         } else {
-            unsafe { *((table_paddr as *const u8).add(36 + 4 * i) as *const u32) as u64 }
+            unsafe {
+                core::ptr::read_unaligned((table_paddr + 36 + (4 * i) as u64) as *const u32) as u64
+            }
         };
 
         if entry_paddr == 0 {
@@ -1069,7 +1076,8 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
         }
 
         // Found the MADT. Count type-0 (Local APIC) entries.
-        let madt_len = unsafe { *(entry_paddr as *const u32).add(1) } as usize;
+        let madt_len =
+            unsafe { core::ptr::read_unaligned((entry_paddr + 4) as *const u32) } as usize;
         let mut offset = 36; // Standard ACPI table header size
         let mut cpu_count = 0u32;
 

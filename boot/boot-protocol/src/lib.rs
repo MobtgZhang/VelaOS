@@ -37,7 +37,10 @@ pub const BOOT_MAGIC: u64 = u64::from_le_bytes(*b"VELABOOT");
 /// [`mem_type`] discriminant rather than the firmware's `EFI_MEMORY_TYPE`
 /// value. The loader translates on the way out, so the kernel sees one
 /// numbering regardless of what the firmware said.
-pub const BOOT_ABI_VERSION: u32 = 3;
+///
+/// Version 4 added `cpu_count`, so the structure grew from 216 to 224 bytes
+/// and shifted every bundled-payload and handoff field by eight bytes.
+pub const BOOT_ABI_VERSION: u32 = 4;
 
 /// The memory-type discriminants the boot handoff uses.
 ///
@@ -205,7 +208,7 @@ pub mod arch_flags {
     pub const PAGE_TABLES_PROVIDED: u64 = 1 << 5;
 }
 
-/// The boot handoff structure, version 2.
+/// The boot handoff structure, version 4.
 ///
 /// Laid out `#[repr(C)]` with explicit padding. All fields are little-endian,
 /// which matches every architecture VelaOS v0.1.0 targets.
@@ -215,8 +218,12 @@ pub mod arch_flags {
 /// * **Version 1** — the original layout, 184 bytes.
 /// * **Version 2** — added [`Self::kernel_vaddr_base`], [`Self::heap_paddr`],
 ///   [`Self::heap_bytes`], [`Self::pool_paddr`] and [`Self::pool_bytes`], and
-///   gave [`Self::page_table_paddr`] a defined meaning. The struct is now
-///   224 bytes.
+///   gave [`Self::page_table_paddr`] a defined meaning. The struct grew to
+///   216 bytes.
+/// * **Version 3** — no layout change; the memory-map descriptor `type` field
+///   became the ABI's own [`mem_type`] discriminant.
+/// * **Version 4** — added [`Self::cpu_count`] between the firmware tables and
+///   the bundled payloads. The struct grew to 224 bytes.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct VelaBootInfo {
@@ -324,7 +331,7 @@ pub struct VelaBootInfo {
 
 /// Reasons [`VelaBootInfo::check_identity`] rejects a handoff.
 impl VelaBootInfo {
-    /// Build a zeroed, version-2 instance.
+    /// Build a zeroed, current-version instance.
     ///
     /// Every field other than the identity fields starts at 0, which the
     /// kernel reads as "not provided". Used by the loader as its starting

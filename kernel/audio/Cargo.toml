@@ -1,0 +1,10 @@
+[package]
+name = "vela-kernel-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Audio device and PCM mixer"
+
+[dependencies]
+spin.workspace = true
