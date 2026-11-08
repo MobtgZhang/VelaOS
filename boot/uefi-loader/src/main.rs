@@ -1005,9 +1005,9 @@ pub fn fill_acpi_rsdp_from_config_table() -> u64 {
 
 /// Parse the ACPI MADT to count the number of processors.
 ///
-/// Reads the RSDP at `rsdp_paddr`, follows it to the XSDT, finds the MADT,
-/// and counts type-0 (Local APIC) entries. Returns 1 if any step fails —
-/// single-core is the safe fallback.
+/// Reads the RSDP at `rsdp_paddr`, follows it to the XSDT (ACPI 2.0+) or
+/// RSDT (ACPI 1.0), finds the MADT, and counts type-0 (Local APIC) entries.
+/// Returns 1 if any step fails — single-core is the safe fallback.
 fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
     if rsdp_paddr == 0 {
         return 1;
@@ -1015,39 +1015,47 @@ fn parse_madt_cpu_count(rsdp_paddr: u64) -> u32 {
 
     // Read the RSDP signature (8 bytes at offset 0).
     let signature = unsafe { core::slice::from_raw_parts(rsdp_paddr as *const u8, 8) };
-    if &signature[0..4] != b"RSD " {
+    if &signature[0..8] != b"RSD PTR " {
         return 1;
     }
 
-    // ACPI 2.0+ RSDP has the XSDT physical address at offset 36.
-    // ACPI 1.0 has the RSDT at offset 16. Prefer XSDT when present.
-    let xsdt_paddr = if signature == b"RSD PTR " {
-        // ACPI 1.0: RSDT at offset 16.
-        unsafe { (rsdp_paddr + 16) as *const u32 as u32 as u64 }
+    // The ACPI revision byte at offset 15: 0 means ACPI 1.0 (RSDT only),
+    // 2 or greater means ACPI 2.0+ (XSDT present). The signature is
+    // "RSD PTR " in both revisions, so it cannot be used to tell them apart.
+    let revision = unsafe { *(rsdp_paddr as *const u8).add(15) };
+
+    // ACPI 2.0+: the XSDT physical address is at offset 24.
+    // ACPI 1.0:  the RSDT physical address is at offset 16.
+    let table_paddr = if revision >= 2 {
+        unsafe { *(rsdp_paddr as *const u64).add(3) } // 3 * 8 = 24
     } else {
-        // ACPI 2.0+: XSDT at offset 36.
-        unsafe { (rsdp_paddr + 36) as *const u64 as u64 }
+        unsafe { *(rsdp_paddr as *const u32).add(4) as u64 } // 4 * 4 = 16
     };
 
-    if xsdt_paddr == 0 {
+    if table_paddr == 0 {
         return 1;
     }
 
     // Read the XSDT/RSDT header: signature (4 bytes), length (4 bytes).
-    let xsdt_sig = unsafe { core::slice::from_raw_parts(xsdt_paddr as *const u8, 4) };
-    let xsdt_len = unsafe { *(xsdt_paddr as *const u32).add(1) } as usize;
-    if xsdt_sig != b"XSDT" && xsdt_sig != b"RSDT" {
+    let table_sig = unsafe { core::slice::from_raw_parts(table_paddr as *const u8, 4) };
+    let table_len = unsafe { *(table_paddr as *const u32).add(1) } as usize;
+    if table_sig != b"XSDT" && table_sig != b"RSDT" {
         return 1;
     }
 
-    // The table contains an array of 64-bit physical addresses (XSDT) or
-    // 32-bit (RSDT). Walk each entry looking for the MADT (signature "APIC").
-    let entry_count = (xsdt_len - 36) / if xsdt_sig == b"XSDT" { 8 } else { 4 };
+    // The table contains an array of physical addresses (64-bit for XSDT,
+    // 32-bit for RSDT) immediately after the 36-byte ACPI table header.
+    // Walk each entry looking for the MADT (signature "APIC").
+    let entry_size = if table_sig == b"XSDT" { 8 } else { 4 };
+    let entry_count = (table_len - 36) / entry_size;
     for i in 0..entry_count {
-        let entry_paddr = if xsdt_sig == b"XSDT" {
-            (unsafe { *(xsdt_paddr as *const u64).add(4 + i) }) as u64
+        // Entries begin at byte offset 36 (right after the header); each entry
+        // is 8 bytes for XSDT or 4 bytes for RSDT. x86-64 permits unaligned
+        // loads, so we read through a byte pointer at the exact offset.
+        let entry_paddr = if table_sig == b"XSDT" {
+            unsafe { *((table_paddr as *const u8).add(36 + 8 * i) as *const u64) }
         } else {
-            (unsafe { *(xsdt_paddr as *const u32).add(4 + i) }) as u64
+            unsafe { *((table_paddr as *const u8).add(36 + 4 * i) as *const u32) as u64 }
         };
 
         if entry_paddr == 0 {

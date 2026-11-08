@@ -59,14 +59,14 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use vela_boot_protocol::VelaBootInfo;
-use vela_hal_x86_64::addrspace::{activate, AddressSpace, IdentityPhys};
-use vela_hal_x86_64::{apic, idt, paging, regs, serial};
+use vela_arch::addrspace::{activate, AddressSpace, IdentityPhys};
+use vela_arch::{apic, idt, paging, regs, serial};
+use vela_arch::smp::{bring_up_aps, TRAMPOLINE_PAGES};
 use vela_kernel_core::Level;
 use vela_kernel_device::{errors, DeviceInfo, DeviceManager, DriverOps, IORequest, IoState};
 use vela_kernel_memory::{
     init_heap, BootReservations, FrameAllocator, KernelHeap, MemoryMap, MemoryPlan, PAGE_SIZE,
 };
-use vela_kernel_smp::bring_up_aps;
 use vela_kernel_syscall::dispatch::{builtin_table, DispatchTable};
 use vela_kernel_timer::{advance_tick, timer_device};
 
@@ -176,10 +176,10 @@ struct UserFrames(&'static FrameAllocator);
 unsafe impl Sync for UserFrames {}
 
 impl vela_kernel_syscall::task_space::FrameSource for UserFrames {
-    fn alloc_frame(&self) -> Result<u64, vela_hal_common::MapError> {
+    fn alloc_frame(&self) -> Result<u64, vela_arch_common::MapError> {
         self.0
             .alloc_frame()
-            .ok_or(vela_hal_common::MapError::OutOfMemory)
+            .ok_or(vela_arch_common::MapError::OutOfMemory)
     }
 
     unsafe fn free_frame(&self, pa: u64) {
@@ -307,7 +307,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
         serial::puts("VELA-KERNEL: bad boot handoff: ");
         serial::puts(&e.to_string());
         serial::puts("\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_BAD_HANDOFF);
+        vela_arch::qemu_exit::power_off(EXIT_BAD_HANDOFF);
     }
     serial::puts("VELA-KERNEL: boot info accepted\n");
 
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // from it.
     if boot_info.heap_bytes == 0 || boot_info.heap_paddr == 0 {
         serial::puts("VELA-KERNEL: the loader reserved no heap\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     }
     // The heap's *metadata* — the bump allocator's own bookkeeping — lives in
     // the first bytes of the loader's reservation, and the bump region starts
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     let heap_meta_bytes = core::mem::size_of::<KernelHeap>();
     if (boot_info.heap_bytes as usize) <= heap_meta_bytes {
         serial::puts("VELA-KERNEL: the loader reserved no heap\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     }
     // SAFETY: the loader reserved the region, it is page-aligned and larger
     // than the metadata, and it is identity-mapped by the bootstrap tables.
@@ -451,7 +451,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             serial::puts("VELA-KERNEL: cannot plan physical memory: ");
             serial::puts(&e.to_string());
             serial::puts("\n");
-            vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
         }
     };
     serial::puts("VELA-KERNEL: plan ");
@@ -535,7 +535,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // The heap is identity-mapped — it is at the same virtual and physical
     // address — so the PML4's physical address *is* its virtual address, and
     // the identity translation is honest rather than a placeholder.
-    let mut space = AddressSpace::new(vela_hal_common::AddressSpaceId(0));
+    let mut space = AddressSpace::new(vela_arch_common::AddressSpaceId(0));
     let pml4_pa = space.pml4_phys(&IdentityPhys);
     space.set_pml4_base(pml4_pa);
 
@@ -588,7 +588,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     serial::puts_dec(identity.len() as u64);
     serial::puts(" chunks\n");
     for chunk in &identity {
-        let flags = vela_hal_common::PageFlags::kernel_rw();
+        let flags = vela_arch_common::PageFlags::kernel_rw();
         let result = if chunk.len == LARGE_PAGE_BYTES {
             space.map_large_page(chunk.paddr, chunk.paddr, flags)
         } else {
@@ -600,7 +600,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             serial::puts(": ");
             serial::puts(&e.to_string());
             serial::puts("\n");
-            vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
         }
     }
 
@@ -637,7 +637,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             serial::puts("VELA-KERNEL: the loader's ");
             serial::puts(name);
             serial::puts(" is outside the identity map\n");
-            vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
         }
     }
 
@@ -671,12 +671,12 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             kernel_base,
             boot_info.kernel_paddr,
             (text_pages * PAGE_SIZE) as usize,
-            vela_hal_common::PageFlags::kernel_rx(),
+            vela_arch_common::PageFlags::kernel_rx(),
         ) {
             serial::puts("VELA-KERNEL: cannot map the kernel text: ");
             serial::puts(&e.to_string());
             serial::puts("\n");
-            vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
         }
         // The data, read-write.
         if text_pages < kernel_pages {
@@ -684,12 +684,12 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
                 kernel_base + text_pages * PAGE_SIZE,
                 boot_info.kernel_paddr + text_pages * PAGE_SIZE,
                 ((kernel_pages - text_pages) * PAGE_SIZE) as usize,
-                vela_hal_common::PageFlags::kernel_rw(),
+                vela_arch_common::PageFlags::kernel_rw(),
             ) {
                 serial::puts("VELA-KERNEL: cannot map the kernel data: ");
                 serial::puts(&e.to_string());
                 serial::puts("\n");
-                vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+                vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
             }
         }
         serial::puts("VELA-KERNEL: kernel image mapped at ");
@@ -713,11 +713,11 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // Both are mapped uncached, which is what `PageFlags::mmio` expresses.
     // Both were excluded from the identity map above, so there is no second,
     // conflicting mapping of the same physical page.
-    if let Err(e) = space.map_page(LAPIC_BASE, LAPIC_BASE, vela_hal_common::PageFlags::mmio()) {
+    if let Err(e) = space.map_page(LAPIC_BASE, LAPIC_BASE, vela_arch_common::PageFlags::mmio()) {
         serial::puts("VELA-KERNEL: cannot map the local APIC: ");
         serial::puts(&e.to_string());
         serial::puts("\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     }
     if boot_info.framebuffer_paddr != 0 && boot_info.framebuffer_bytes > 0 {
         let fb_pages = boot_info.framebuffer_bytes.div_ceil(PAGE_SIZE);
@@ -725,12 +725,12 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             boot_info.framebuffer_paddr,
             boot_info.framebuffer_paddr,
             (fb_pages * PAGE_SIZE) as usize,
-            vela_hal_common::PageFlags::mmio(),
+            vela_arch_common::PageFlags::mmio(),
         ) {
             serial::puts("VELA-KERNEL: cannot map the framebuffer: ");
             serial::puts(&e.to_string());
             serial::puts("\n");
-            vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+            vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
         }
     }
 
@@ -740,7 +740,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     let stack_top = heap.alloc(KERNEL_STACK_BYTES as usize, 16).unwrap_or(0);
     if stack_top == 0 {
         serial::puts("VELA-KERNEL: cannot allocate the kernel stack\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     }
     serial::puts("VELA-KERNEL: stack at ");
     serial::puts_hex(stack_top as u64);
@@ -778,12 +778,15 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // new table does not have.
     // SAFETY: this runs once, during boot, with interrupts disabled, before
     // any user code exists.
-    unsafe { vela_hal_x86_64::gdt::install() };
+    unsafe { vela_arch::gdt::install() };
 
     // The syscall gate, whose selectors must match the GDT just installed.
     // SAFETY: as above — the GDT is installed, so the selectors in
-    // `STAR_VALUE` name real descriptors.
-    unsafe { vela_kernel_syscall::gate::install() };
+    // `STAR_VALUE` name real descriptors. The kernel's dispatch function is
+    // registered with the gate so the entry stub can reach it.
+    unsafe {
+        vela_arch::syscall::gate::install(vela_kernel_syscall::dispatch::syscall_dispatch)
+    };
     serial::puts("VELA-KERNEL: gdt and syscall gate installed\n");
 
     // --- 11. Interrupts ----------------------------------------------------
@@ -895,17 +898,17 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
         // kernel's page tables, so those low pages must be mapped identity-wise
         // in the kernel's address space. If a page is already mapped by the
         // ordinary identity map, that mapping is sufficient.
-        for page in vela_kernel_smp::TRAMPOLINE_PAGES {
+        for page in TRAMPOLINE_PAGES {
             if space.is_mapped(page) {
                 continue;
             }
-            if let Err(e) = space.map_page(page, page, vela_hal_common::PageFlags::kernel_rw()) {
+            if let Err(e) = space.map_page(page, page, vela_arch_common::PageFlags::kernel_rw()) {
                 serial::puts("VELA-KERNEL: cannot map the SMP trampoline page at ");
                 serial::puts_hex(page);
                 serial::puts(": ");
                 serial::puts(&e.to_string());
                 serial::puts("\n");
-                vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+                vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
             }
         }
 
@@ -917,7 +920,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             let base = heap.alloc(KERNEL_STACK_BYTES as usize, 16).unwrap_or(0);
             if base == 0 {
                 serial::puts("VELA-KERNEL: cannot allocate an AP stack\n");
-                vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+                vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
             }
             ap_stacks.push(base as u64 + KERNEL_STACK_BYTES);
         }
@@ -1001,7 +1004,7 @@ fn start_init(
 
     let Some(frames) = vela_kernel_syscall::task_space::frames() else {
         serial::puts("VELA-KERNEL: no frame allocator is installed for user space\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     };
 
     let task = exec.create_task();
@@ -1016,7 +1019,7 @@ fn start_init(
                 serial::puts("VELA-KERNEL: cannot load init: ");
                 serial::puts(&e.to_string());
                 serial::puts("\n");
-                vela_hal_x86_64::qemu_exit::power_off(EXIT_BAD_INITRD);
+                vela_arch::qemu_exit::power_off(EXIT_BAD_INITRD);
             }
         };
 
@@ -1030,16 +1033,16 @@ fn start_init(
     let stack_base = heap.alloc(KERNEL_STACK_BYTES as usize, 16).unwrap_or(0);
     if stack_base == 0 {
         serial::puts("VELA-KERNEL: cannot allocate init's kernel stack\n");
-        vela_hal_x86_64::qemu_exit::power_off(EXIT_NO_MEMORY);
+        vela_arch::qemu_exit::power_off(EXIT_NO_MEMORY);
     }
     // SAFETY: the stack is live heap memory, it is not aliased, and this runs
     // once before any ring-3 code exists.
-    unsafe { vela_hal_x86_64::gdt::set_ring0_stack(stack_base as u64 + KERNEL_STACK_BYTES) };
+    unsafe { vela_arch::gdt::set_ring0_stack(stack_base as u64 + KERNEL_STACK_BYTES) };
     // The syscall stub needs a kernel stack of its own: the user's stack is
     // under the program's control and must not be trusted by a handler. It
     // reuses the interrupt stack, which is safe because `syscall` clears the
     // interrupt-enable flag.
-    vela_kernel_syscall::gate::set_kernel_stack(stack_base as u64 + KERNEL_STACK_BYTES);
+    vela_arch::syscall::gate::set_kernel_stack(stack_base as u64 + KERNEL_STACK_BYTES);
 
     // SAFETY: the space is registered and stays alive through the registry's
     // `Arc`. The current CPU is the only one that will run in it.

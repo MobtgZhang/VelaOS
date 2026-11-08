@@ -15,7 +15,7 @@ vela-kernel-intuition.workspace = true
 vela-kernel-layers.workspace = true
 vela-kernel-syscall.workspace = true
 vela-kernel-vfs.workspace = true
-vela-hal-common.workspace = true
+vela-arch-common.workspace = true
 vela-ramfs.workspace = true
 # The SDK, for the libraries whose conformance is a property of the whole
 # chain: IDL → jump table → stub → syscall → handler. Driving `utility.library`

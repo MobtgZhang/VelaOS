@@ -1,0 +1,10 @@
+[package]
+name = "vela-arch-aarch64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "aarch64 architecture placeholder (compile-check only)"
+
+[dependencies]
+vela-arch-common.workspace = true

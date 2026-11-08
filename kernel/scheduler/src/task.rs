@@ -37,6 +37,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use spin::Mutex;
 
+use vela_arch::context::Context;
 use vela_kernel_exec::task::TaskId;
 
 /// The size of a kernel stack, in bytes.
@@ -78,96 +79,6 @@ pub enum TaskState {
     Blocked,
     /// Finished.
     Terminated,
-}
-
-/// The saved register context of a task.
-///
-/// The layout is load-bearing: it must match the order in which
-/// `switch_to` pushes and pops it. See [`Context::switch`].
-///
-/// Only the callee-saved registers are here, for the reason explained in the
-/// module documentation.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct Context {
-    /// The stack pointer.
-    pub rsp: u64,
-    /// The base pointer.
-    pub rbp: u64,
-    /// The callee-saved general registers.
-    pub rbx: u64,
-    /// `r12`–`r15`, also callee-saved.
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    /// The callee-saved XMM registers.
-    ///
-    /// The System V ABI requires `xmm6`–`xmm15` to be preserved across a
-    /// call. The kernel's own code does not use floating point, but a
-    /// user task might, and a context switch that dropped them would corrupt
-    /// it.
-    pub xmm: [u128; 10],
-}
-
-impl Default for Context {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Context {
-    /// A zeroed context.
-    ///
-    /// Used for a task that has not run yet: its first entry goes through
-    /// [`Context::switch_to_entry`], which sets the registers a fresh task
-    /// needs.
-    pub const fn new() -> Self {
-        Self {
-            rsp: 0,
-            rbp: 0,
-            rbx: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-            xmm: [0; 10],
-        }
-    }
-
-    /// The context of a task that starts by calling `entry(arg)`.
-    ///
-    /// The stack pointer is set up so that the first `switch_to` into this
-    /// task lands in the trampoline, which then calls `entry(arg)`.
-    ///
-    /// `stack_top` must be the *top* of the stack, and the stack grows down,
-    /// so the first push lands just below it.
-    pub fn for_entry(stack_top: u64, entry: u64, arg: u64) -> Self {
-        // The ABI requires a 16-byte aligned stack at a call boundary. The
-        // callee-saved registers are pushed by the switch trampoline, so the
-        // alignment is fixed up here: three 8-byte slots of arguments and
-        // saved registers plus a return address make the alignment land
-        // correctly without a `sub`.
-        let aligned = (stack_top) & !0xF;
-        Self {
-            // Leave room for the return address the trampoline pushes, and
-            // align so the ABI's 16-byte rule holds at the first `call`.
-            rsp: aligned - 16,
-            rbp: 0,
-            rbx: 0,
-            // `r12` carries the entry point and `r13` carries the argument.
-            r12: entry,
-            r13: arg,
-            r14: 0,
-            r15: 0,
-            xmm: [0; 10],
-        }
-    }
-
-    /// The stack pointer this context will resume on.
-    pub const fn stack_pointer(&self) -> u64 {
-        self.rsp
-    }
 }
 
 /// A task's identity and scheduling metadata.
@@ -449,41 +360,6 @@ mod tests {
         assert!(!t.is_runnable());
         t.state = TaskState::Terminated;
         assert!(!t.is_runnable());
-    }
-
-    #[test]
-    fn the_context_layout_is_stable() {
-        use core::mem::{align_of, offset_of, size_of};
-        // The context is pushed and popped by hand-written assembly, so its
-        // layout is part of the contract.
-        assert_eq!(offset_of!(Context, rsp), 0);
-        assert_eq!(offset_of!(Context, rbp), 8);
-        assert_eq!(offset_of!(Context, rbx), 16);
-        assert_eq!(offset_of!(Context, r12), 24);
-        assert_eq!(offset_of!(Context, r13), 32);
-        assert_eq!(offset_of!(Context, r14), 40);
-        assert_eq!(offset_of!(Context, r15), 48);
-        assert_eq!(offset_of!(Context, xmm), 64);
-        assert_eq!(align_of::<Context>(), 16);
-        assert!(size_of::<Context>() >= 224);
-    }
-
-    #[test]
-    fn a_fresh_context_is_zeroed() {
-        let c = Context::new();
-        assert_eq!(c.rsp, 0);
-        assert_eq!(c.xmm, [0u128; 10]);
-    }
-
-    #[test]
-    fn an_entry_context_carries_the_entry_and_the_argument() {
-        let c = Context::for_entry(0x8000, 0xDEAD_BEEF, 0x1234);
-        assert_eq!(c.r12, 0xDEAD_BEEF);
-        assert_eq!(c.r13, 0x1234);
-        // The stack pointer is below the top, because the stack grows down.
-        assert!(c.rsp < 0x8000);
-        // And it is 16-byte aligned, as the ABI requires at a call boundary.
-        assert_eq!(c.rsp & 0xF, 0);
     }
 
     #[test]

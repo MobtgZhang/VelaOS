@@ -15,5 +15,5 @@ default = []
 panic-handler = []
 
 [dependencies]
-vela-hal-x86_64.workspace = true
+vela-arch.workspace = true
 spin.workspace = true

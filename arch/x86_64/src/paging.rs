@@ -34,13 +34,13 @@
 use core::arch::asm;
 use core::mem::size_of;
 
-use vela_hal_common::PageFlags;
+use vela_arch_common::PageFlags;
 
 // Only the test module needs these; the paging core itself never names
 // `MapError` or `PAGE_SIZE`, so importing them at module scope would warn on
 // the bare-metal build where `#[cfg(test)]` is compiled out.
 #[cfg(test)]
-use vela_hal_common::{MapError, PAGE_SIZE};
+use vela_arch_common::{MapError, PAGE_SIZE};
 
 /// Entries per page-table level: 512, selected by 9 index bits.
 pub const ENTRIES_PER_TABLE: usize = 512;

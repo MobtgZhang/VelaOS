@@ -25,7 +25,7 @@
 //! result is stored in a static so the steady-state `ticks()` is a couple of
 //! instructions.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::regs;
 
@@ -196,6 +196,13 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 /// It is stored as a raw address because Rust has no atomic function pointer;
 /// zero means "no hook installed".
 static TIMER_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Per-CPU "needs reschedule" flags, set by the reschedule-IPI handler.
+///
+/// A CPU's scheduler consults this at the next safe point and picks a new
+/// task from its run queue. Indexed by APIC ID, which is dense and below 256
+/// on the machines VelaOS targets.
+static RESCHEDULE_PENDING: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
 
 /// Read an APIC MMIO register.
 ///
@@ -436,12 +443,54 @@ unsafe fn send_ipi_with_mode(apic_id: u32, vector: u8, delivery: u32, level: u32
 
 /// Called from the reschedule IPI handler.
 ///
+/// Mark this CPU as needing a reschedule.
+///
+/// Called from the reschedule-IPI handler. The scheduler checks this flag at
+/// the next safe point and picks a new task from its run queue.
+pub fn mark_reschedule_pending() {
+    if !regs::ON_BARE_METAL {
+        return;
+    }
+    let id = this_cpu_apic_id() as usize;
+    if id < RESCHEDULE_PENDING.len() {
+        RESCHEDULE_PENDING[id].store(true, Ordering::Release);
+    }
+}
+
+/// True when this CPU has a pending reschedule it has not yet acknowledged.
+pub fn reschedule_pending() -> bool {
+    if !regs::ON_BARE_METAL {
+        return false;
+    }
+    let id = this_cpu_apic_id() as usize;
+    id < RESCHEDULE_PENDING.len() && RESCHEDULE_PENDING[id].load(Ordering::Acquire)
+}
+
+/// Acknowledge the pending reschedule on this CPU.
+pub fn acknowledge_reschedule() {
+    if !regs::ON_BARE_METAL {
+        return;
+    }
+    let id = this_cpu_apic_id() as usize;
+    if id < RESCHEDULE_PENDING.len() {
+        RESCHEDULE_PENDING[id].store(false, Ordering::Release);
+    }
+}
+
+/// Called from the reschedule IPI handler.
+///
 /// Marks this CPU as needing a reschedule, which the scheduler checks at the
-/// next safe point.
-pub fn on_reschedule_ipi() {
-    // The actual reschedule flag lives in the scheduler; this is the HAL hook
-    // that the IDT handler calls when a reschedule IPI arrives.
-    crate::serial::puts("[apic] reschedule IPI received\n");
+/// next safe point, and acknowledges the interrupt so the APIC keeps
+/// delivering.
+///
+/// # Safety
+///
+/// Writes the APIC's end-of-interrupt register.
+pub unsafe fn on_reschedule_ipi() {
+    mark_reschedule_pending();
+    // SAFETY: an APIC IPI must be acknowledged with EOI or it stops
+    // delivering forever.
+    unsafe { apic_write(APIC_EOI, 0) };
 }
 
 /// Enable the APIC and program the timer to `TICKS_PER_SECOND`.

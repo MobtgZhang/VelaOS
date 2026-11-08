@@ -40,7 +40,7 @@ use vela_kernel_icon::IconService;
 use vela_kernel_intuition::Intuition;
 use vela_kernel_workbench::Workbench;
 
-use vela_hal_common::MapError;
+use vela_arch_common::MapError;
 
 use crate::numbers::{self, errors, SyscallArgs, SyscallResult};
 
@@ -533,7 +533,7 @@ pub mod exec_handlers {
         // Only the low byte is taken. A program passing a wider value is not
         // an error — it is passing a number, and truncating it is the defined
         // behaviour rather than a fault, exactly as `putchar` would.
-        vela_hal_x86_64::serial::putc(args.get(0) as u8);
+        vela_arch::serial::putc(args.get(0) as u8);
         // The same byte onto the framebuffer console, so the output is
         // visible in the QEMU window rather than only in the serial log.
         // When there is no display the console is a no-op, and serial alone
@@ -551,7 +551,7 @@ pub mod exec_handlers {
     /// its timeout. That distinction is the reason this call exists: without
     /// it, "the guest stopped" and "the guest hung" look identical.
     pub fn power_off(args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
-        vela_hal_x86_64::qemu_exit::power_off(args.get(0) as u32)
+        vela_arch::qemu_exit::power_off(args.get(0) as u32)
     }
 
     /// `GetChar` — read one byte from the console.
@@ -565,7 +565,7 @@ pub mod exec_handlers {
         if let Some(byte) = vela_kernel_console::keyboard::read_char() {
             return SyscallResult::ok(byte as u64);
         }
-        match vela_hal_x86_64::serial::getc() {
+        match vela_arch::serial::getc() {
             Some(byte) => SyscallResult::ok(byte as u64),
             None => SyscallResult::err(errors::RANGE),
         }
@@ -1255,6 +1255,73 @@ pub fn handle_syscall(number: u64, args: SyscallArgs) -> SyscallResult {
         workbench: state.workbench,
     };
     state.table.dispatch(number, args, &context)
+}
+
+/// The raw `syscall` entry point called by the architecture's gate stub.
+///
+/// The gate stub (in `vela-arch-x86_64::syscall::gate`) has already run
+/// `swapgs`, switched to the kernel stack, and saved the user return state.
+/// This function reads the ABI registers, dispatches through [`handle_syscall`],
+/// and writes the result back into `RAX`/`RDX`; the stub then restores `RCX`/
+/// `R11` and executes `sysretq`.
+///
+/// # Safety
+///
+/// Only the architecture gate stub may call this, and only from the gate
+/// entry stub. The register reads assume the registers hold the values the
+/// `syscall` instruction left them with.
+pub unsafe extern "C" fn syscall_dispatch() {
+    // The syscall number is in `rax`, and the arguments are in `rdi`, `rsi`,
+    // `rdx`, `r10`, `r8` and `r9` — the System V argument registers except
+    // for `r10` in place of `rcx`, because `rcx` holds the return address.
+    let number: u64;
+    let a0: u64;
+    let a1: u64;
+    let a2: u64;
+    let a3: u64;
+    let a4: u64;
+    let a5: u64;
+    // SAFETY: the `syscall` instruction leaves these registers as the ABI
+    // specifies, and reading them is free of side effects. Each output is
+    // bound to the exact register it reads, and the `nop` writes nothing: a
+    // free `out(reg)` could be allocated *to a not-yet-read source register*,
+    // and the move into it would destroy an argument before it is read.
+    unsafe {
+        core::arch::asm!(
+            "nop",
+            out("rax") number,
+            out("rdi") a0,
+            out("rsi") a1,
+            out("rdx") a2,
+            out("r10") a3,
+            out("r8") a4,
+            out("r9") a5,
+            options(nostack, preserves_flags),
+        );
+    }
+
+    let args = crate::numbers::SyscallArgs::new(a0, a1, a2, a3, a4, a5);
+    let result = handle_syscall(number, args);
+
+    // The result goes back in `rax` and `rdx`, which the stub's `sysretq`
+    // delivers to the caller.
+    //
+    // The registers are named, not left to the allocator: a free `in(reg)`
+    // input could be placed in `rax` or `rdx` itself, and the hardcoded move
+    // into the *other* register would then overwrite it — a release-only
+    // corruption that read back as `error == low 32 bits of value`. The `nop`
+    // writes nothing, so the bound values survive to the `ret` the stub reads
+    // from.
+    //
+    // SAFETY: the registers are bound explicitly and the `nop` has no effects.
+    unsafe {
+        core::arch::asm!(
+            "nop",
+            in("rax") result.value,
+            in("rdx") result.error as u64,
+            options(nostack, preserves_flags),
+        );
+    }
 }
 
 #[cfg(test)]

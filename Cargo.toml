@@ -6,8 +6,12 @@ members = [
   "boot/elf-loader",
   "boot/uefi-loader",
   # hal
-  "hal/common",
-  "hal/x86_64",
+  "arch/common",
+  "arch/x86_64",
+  "arch/facade",
+  "arch/aarch64",
+  "arch/riscv64",
+  "arch/loongarch64",
   # kernel
   "kernel/entry",
   "kernel/core",
@@ -58,8 +62,12 @@ publish = false
 [workspace.dependencies]
 vela-boot-protocol = { path = "boot/boot-protocol" }
 vela-elf-loader = { path = "boot/elf-loader" }
-vela-hal-common = { path = "hal/common" }
-vela-hal-x86_64 = { path = "hal/x86_64" }
+vela-arch-common = { path = "arch/common" }
+vela-arch-x86_64 = { path = "arch/x86_64" }
+vela-arch = { path = "arch/facade" }
+vela-arch-aarch64 = { path = "arch/aarch64" }
+vela-arch-riscv64 = { path = "arch/riscv64" }
+vela-arch-loongarch64 = { path = "arch/loongarch64" }
 vela-kernel-core = { path = "kernel/core" }
 vela-kernel-memory = { path = "kernel/memory" }
 vela-kernel-scheduler = { path = "kernel/scheduler" }
@@ -74,7 +82,6 @@ vela-kernel-input = { path = "kernel/input" }
 vela-kernel-console = { path = "kernel/console" }
 vela-kernel-icon = { path = "kernel/icon" }
 vela-kernel-workbench = { path = "kernel/workbench" }
-vela-kernel-smp = { path = "kernel/smp" }
 vela-kernel-timer = { path = "kernel/timer" }
 vela-kernel-device = { path = "kernel/device" }
 vela-driver-nvme = { path = "drivers/nvme" }

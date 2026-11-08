@@ -25,17 +25,14 @@
 //!
 //! # Per-CPU state
 //!
-//! The HAL's arrays are indexed by APIC ID, which every CPU can read from its
-//! own local APIC. After boot a CPU reads only its own entry, so there is no
-//! cross-CPU contention in the arrays.
-
-#![no_std]
-
-extern crate alloc;
+//! The HAL's arrays are indexed by CPU index, which every CPU can derive from
+//! its local APIC ID via [`crate::CpuArch::current_cpu_id`]. After boot a CPU
+//! reads only its own entry, so there is no cross-CPU contention in the arrays.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
-use vela_hal_x86_64::{apic, gdt, idt, regs, serial, CpuArch, X86Cpu};
+
+use crate::{apic, gdt, idt, regs, serial, CpuArch, X86Cpu};
 
 /// How long the BSP waits for all APs to signal ready, in milliseconds.
 const AP_READY_TIMEOUT_MS: u64 = 5000;

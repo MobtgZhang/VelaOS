@@ -5,7 +5,7 @@
 //! contract if something checks it: this file compares every syscall number
 //! and every error code the SDK publishes against the kernel's own table.
 
-use vela_hal_common::PAGE_SIZE;
+use vela_arch_common::PAGE_SIZE;
 use vela_kernel_syscall::numbers as kernel;
 use vela_sys::numbers as sdk;
 

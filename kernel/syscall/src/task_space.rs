@@ -44,8 +44,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use vela_hal_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
-use vela_hal_x86_64::addrspace::{AddressSpace, IdentityPhys};
+use vela_arch_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
+use vela_arch::addrspace::{AddressSpace, IdentityPhys};
 use vela_kernel_exec::task::TaskId;
 
 use spin::Mutex;
@@ -549,7 +549,7 @@ impl TaskSpace {
     /// outlive the CPU's time in it.
     pub unsafe fn activate(&self) {
         // SAFETY: forwarded from this function's own contract.
-        unsafe { vela_hal_x86_64::addrspace::activate(&self.space) };
+        unsafe { vela_arch::addrspace::activate(&self.space) };
     }
 }
 
@@ -696,12 +696,12 @@ impl Default for SpaceRegistry {
 /// hold the `&mut` borrow at a time, so the aliasing the `&mut` requires
 /// cannot happen.
 pub struct SharedFrames<'a> {
-    inner: spin::Mutex<&'a mut (dyn vela_hal_x86_64::FrameSource + Sync)>,
+    inner: spin::Mutex<&'a mut (dyn vela_arch::FrameSource + Sync)>,
 }
 
 impl<'a> SharedFrames<'a> {
     /// Wrap a mutable borrow of a HAL frame source.
-    pub const fn new(inner: &'a mut (dyn vela_hal_x86_64::FrameSource + Sync)) -> Self {
+    pub const fn new(inner: &'a mut (dyn vela_arch::FrameSource + Sync)) -> Self {
         Self {
             inner: spin::Mutex::new(inner),
         }
@@ -731,7 +731,7 @@ impl FrameSource for SharedFrames<'_> {
 ///
 /// # Why this is not the HAL's trait
 ///
-/// The HAL's [`vela_hal_x86_64::FrameSource`] takes `&mut self`, because the
+/// The HAL's [`vela_arch::FrameSource`] takes `&mut self`, because the
 /// HAL's own mapper consumes frames mutably. The kernel's allocator is
 /// shared, so its methods take `&self`, and this trait states that contract
 /// directly rather than requiring a cast from `&` to `&mut`.

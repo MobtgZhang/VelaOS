@@ -2,7 +2,7 @@
 //!
 //! This crate is the only place in VelaOS that is allowed to know the CPU is an
 //! x86-64. Everything above it — `kernel/memory`, `kernel/scheduler`,
-//! `kernel/exec` — talks to hardware through the traits in `vela-hal-common`,
+//! `kernel/exec` — talks to hardware through the traits in `vela-arch-common`,
 //! which is what keeps the other three architectures implementable.
 //!
 //! # Module map
@@ -14,6 +14,11 @@
 //! | [`idt`] | The interrupt descriptor table and exception handlers |
 //! | [`serial`] | COM1 serial driver, the kernel's log sink |
 //! | [`apic`] | Local APIC timer and a TSC-derived monotonic clock |
+//! | [`context`] | The x86-64 context switch and task-entry trampoline |
+//! | [`syscall`] | The `syscall` gate and ring-3 entry machinery |
+//! | [`ps2`] | PS/2 controller port access |
+//! | [`smp`] | The AP trampoline and application-processor bring-up |
+//! | [`pci`] | Placeholder for future PCI enumeration |
 //!
 //! # Unsafe policy
 //!
@@ -31,12 +36,18 @@ extern crate alloc;
 
 pub mod addrspace;
 pub mod apic;
+pub mod context;
 pub mod gdt;
 pub mod idt;
 pub mod paging;
+pub mod pci;
+pub mod ps2;
 pub mod qemu_exit;
 pub mod regs;
 pub mod serial;
+pub mod smp;
+pub mod syscall;
+pub use syscall::{gate, userspace};
 
 pub use addrspace::{AddressSpace, FrameSource, PhysOfVirt};
 pub use paging::Split;
@@ -55,7 +66,7 @@ pub const KERNEL_DATA_SELECTOR: u16 = gdt::KERNEL_DATA_SELECTOR;
 pub use regs::{cpuid, hlt, read_cr0, read_cr2, read_cr3, write_cr3};
 
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-pub use vela_hal_common::{CpuArch, PlatformTimer};
+pub use vela_arch_common::{CpuArch, PlatformTimer};
 
 /// Per-CPU state, stored as parallel arrays indexed by CPU index.
 ///
@@ -210,6 +221,13 @@ impl PlatformTimer for X86Timer {
     }
 }
 
+/// The index of this CPU, delegating to the architecture's [`CpuArch`]
+/// implementation. Kernel code calls this rather than naming a concrete CPU
+/// type, which keeps `kernel/*` architecture-neutral.
+pub fn current_cpu_id() -> usize {
+    X86Cpu::current_cpu_id()
+}
+
 #[cfg(test)]
 extern crate std;
 
@@ -217,7 +235,7 @@ extern crate std;
 mod tests {
     use super::*;
     use std::vec::Vec;
-    use vela_hal_common::AddressSpaceId;
+    use vela_arch_common::AddressSpaceId;
 
     #[test]
     fn cpu_id_is_zero_on_single_core() {

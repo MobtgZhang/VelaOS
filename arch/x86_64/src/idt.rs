@@ -1177,6 +1177,11 @@ pub unsafe extern "C" fn vela_interrupt_entry(frame: *const InterruptFrame, vect
         // interrupt register, which is writable from any CPU that took an
         // APIC interrupt.
         crate::apic::on_timer_interrupt();
+    } else if v == crate::apic::RESCHEDULE_VECTOR {
+        // A reschedule IPI: mark this CPU as needing a reschedule and
+        // acknowledge the interrupt.
+        // SAFETY: `apic::on_reschedule_ipi` writes EOI.
+        unsafe { crate::apic::on_reschedule_ipi() };
     } else {
         // Every other interrupt is counted but otherwise ignored for now.
         // The legacy PIC's lines are masked by the firmware's own setup in
@@ -1383,7 +1388,7 @@ pub fn init() {
     // Every remaining interrupt vector gets the generic interrupt stub, so
     // that a stray IRQ is counted rather than being an unhandled gate.
     for vector in 32u8..=255u8 {
-        if vector == crate::apic::TIMER_VECTOR {
+        if vector == crate::apic::TIMER_VECTOR || vector == crate::apic::RESCHEDULE_VECTOR {
             continue;
         }
         idt.set_handler(vector, interrupt_stub_address(vector));

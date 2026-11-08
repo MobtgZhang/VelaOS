@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use vela_hal_common::{MapError, PAGE_SIZE};
+use vela_arch_common::{MapError, PAGE_SIZE};
 use vela_test_api_conformance::harness;
 
 use vela_abi_native64::Message;

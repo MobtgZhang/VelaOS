@@ -33,8 +33,8 @@ use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use spin::Mutex;
 
 #[cfg(any(not(test), feature = "panic-handler"))]
-use vela_hal_x86_64::qemu_exit;
-use vela_hal_x86_64::serial;
+use vela_arch::qemu_exit;
+use vela_arch::serial;
 
 /// Log levels, in increasing order of severity.
 ///
@@ -222,7 +222,7 @@ pub fn report_panic(info: &PanicInfo<'_>) -> ! {
     // Stop the world. A timer tick landing in the middle of this report would
     // interleave its output with the panic message.
     // SAFETY: the kernel is aborting; there is no code to return to.
-    vela_hal_x86_64::regs::cli();
+    vela_arch::regs::cli();
 
     serial::puts("\n");
     serial::puts("=====================================================\n");
@@ -247,10 +247,10 @@ pub fn report_panic(info: &PanicInfo<'_>) -> ! {
     }
 
     serial::puts("ticks  : ");
-    serial::puts_dec(vela_hal_x86_64::apic::ticks());
+    serial::puts_dec(vela_arch::apic::ticks());
     serial::puts("\n");
     serial::puts("interrupts: ");
-    serial::puts_dec(vela_hal_x86_64::idt::interrupt_count());
+    serial::puts_dec(vela_arch::idt::interrupt_count());
     serial::puts("\n");
     serial::puts("=====================================================\n");
 

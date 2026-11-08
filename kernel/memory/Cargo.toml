@@ -8,6 +8,6 @@ description = "Physical frame allocator, page mapper, kernel heap"
 
 [dependencies]
 vela-boot-protocol.workspace = true
-vela-hal-common.workspace = true
-vela-hal-x86_64.workspace = true
+vela-arch-common.workspace = true
+vela-arch.workspace = true
 spin.workspace = true

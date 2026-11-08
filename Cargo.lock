@@ -394,6 +394,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-arch"
+version = "0.1.0"
+dependencies = [
+ "vela-arch-common",
+ "vela-arch-x86_64",
+]
+
+[[package]]
+name = "vela-arch-aarch64"
+version = "0.1.0"
+dependencies = [
+ "vela-arch-common",
+]
+
+[[package]]
+name = "vela-arch-common"
+version = "0.1.0"
+
+[[package]]
+name = "vela-arch-loongarch64"
+version = "0.1.0"
+dependencies = [
+ "vela-arch-common",
+]
+
+[[package]]
+name = "vela-arch-riscv64"
+version = "0.1.0"
+dependencies = [
+ "vela-arch-common",
+]
+
+[[package]]
+name = "vela-arch-x86_64"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch-common",
+]
+
+[[package]]
 name = "vela-boot-protocol"
 version = "0.1.0"
 
@@ -456,18 +497,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vela-hal-common"
-version = "0.1.0"
-
-[[package]]
-name = "vela-hal-x86_64"
-version = "0.1.0"
-dependencies = [
- "spin",
- "vela-hal-common",
-]
-
-[[package]]
 name = "vela-hosted"
 version = "0.1.0"
 dependencies = [
@@ -501,8 +530,8 @@ name = "vela-kernel-console"
 version = "0.1.0"
 dependencies = [
  "spin",
+ "vela-arch",
  "vela-font",
- "vela-hal-x86_64",
  "vela-kernel-input",
 ]
 
@@ -511,7 +540,7 @@ name = "vela-kernel-core"
 version = "0.1.0"
 dependencies = [
  "spin",
- "vela-hal-x86_64",
+ "vela-arch",
 ]
 
 [[package]]
@@ -537,13 +566,13 @@ name = "vela-kernel-entry"
 version = "0.1.0"
 dependencies = [
  "spin",
+ "vela-arch",
+ "vela-arch-common",
  "vela-boot-protocol",
  "vela-driver-ata",
  "vela-driver-nvme",
  "vela-driver-sata",
  "vela-driver-vga",
- "vela-hal-common",
- "vela-hal-x86_64",
  "vela-kernel-console",
  "vela-kernel-core",
  "vela-kernel-device",
@@ -555,7 +584,6 @@ dependencies = [
  "vela-kernel-intuition",
  "vela-kernel-layers",
  "vela-kernel-memory",
- "vela-kernel-smp",
  "vela-kernel-syscall",
  "vela-kernel-timer",
  "vela-kernel-workbench",
@@ -621,9 +649,9 @@ name = "vela-kernel-memory"
 version = "0.1.0"
 dependencies = [
  "spin",
+ "vela-arch",
+ "vela-arch-common",
  "vela-boot-protocol",
- "vela-hal-common",
- "vela-hal-x86_64",
 ]
 
 [[package]]
@@ -631,17 +659,9 @@ name = "vela-kernel-scheduler"
 version = "0.1.0"
 dependencies = [
  "spin",
- "vela-hal-common",
- "vela-hal-x86_64",
+ "vela-arch",
+ "vela-arch-common",
  "vela-kernel-exec",
-]
-
-[[package]]
-name = "vela-kernel-smp"
-version = "0.1.0"
-dependencies = [
- "spin",
- "vela-hal-x86_64",
 ]
 
 [[package]]
@@ -650,10 +670,10 @@ version = "0.1.0"
 dependencies = [
  "spin",
  "vela-abi-native64",
+ "vela-arch",
+ "vela-arch-common",
  "vela-elf-loader",
  "vela-font",
- "vela-hal-common",
- "vela-hal-x86_64",
  "vela-kernel-console",
  "vela-kernel-dos",
  "vela-kernel-exec",
@@ -743,7 +763,7 @@ name = "vela-test-api-conformance"
 version = "0.1.0"
 dependencies = [
  "vela-abi-native64",
- "vela-hal-common",
+ "vela-arch-common",
  "vela-hosted",
  "vela-kernel-exec",
  "vela-kernel-graphics",

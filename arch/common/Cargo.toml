@@ -1,5 +1,5 @@
 [package]
-name = "vela-hal-common"
+name = "vela-arch-common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -33,11 +33,11 @@ use clap::ValueEnum;
 pub enum Arch {
     /// x86-64 — boots under UEFI/EDK II with the unified Boot Protocol.
     X86_64,
-    /// aarch64 — compile-checked only (`vela-hal-common`).
+    /// aarch64 — compile-checked only (`vela-arch-common`).
     Aarch64,
-    /// loongarch64 — compile-checked only (`vela-hal-common`).
+    /// loongarch64 — compile-checked only (`vela-arch-common`).
     Loongarch64,
-    /// riscv64 — compile-checked only (`vela-hal-common`).
+    /// riscv64 — compile-checked only (`vela-arch-common`).
     Riscv64,
 }
 
@@ -183,7 +183,7 @@ pub fn check_other_arches(root: &Path) -> Result<()> {
     for target in Arch::check_only_targets() {
         println!("==> cargo check {target}");
         let status = cargo(root)
-            .args(["check", "-p", "vela-hal-common", "--target", target])
+            .args(["check", "-p", "vela-arch-common", "--target", target])
             .status()
             .context("failed to run cargo check")?;
         if !status.success() {

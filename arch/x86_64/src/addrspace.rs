@@ -40,7 +40,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use spin::Mutex;
 
-use vela_hal_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
+use vela_arch_common::{AddressSpaceId, MapError, PageFlags, PAGE_SIZE};
 
 use crate::paging::{
     bytes_covered, encode_flags, entry_flags, flush, invlpg, PageLevel, PageTableEntry,

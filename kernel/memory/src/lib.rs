@@ -6,7 +6,7 @@
 //!    which physical regions are usable. [`FrameAllocator`] turns that into a
 //!    frame-granting allocator over 4 KiB frames.
 //! 2. **How does a virtual address reach a physical frame?** [`PageMapper`]
-//!    is a thin wrapper over the HAL's [`vela_hal_x86_64::AddressSpace`] that
+//!    is a thin wrapper over the HAL's [`vela_arch::AddressSpace`] that
 //!    speaks in pages rather than bytes.
 //! 3. **How does the kernel allocate after `ExitBootServices`?** The firmware
 //!    allocator is gone, so the kernel needs its own. [`KernelHeap`] is a bump
@@ -44,8 +44,8 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use vela_boot_protocol::VelaBootInfo;
-use vela_hal_common::{MapError, PageFlags};
-use vela_hal_x86_64::AddressSpace;
+use vela_arch_common::{MapError, PageFlags};
+use vela_arch::AddressSpace;
 
 extern crate alloc;
 

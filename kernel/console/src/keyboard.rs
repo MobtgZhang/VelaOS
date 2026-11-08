@@ -21,8 +21,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-use vela_hal_x86_64::regs;
-use vela_kernel_input::{ports, status, Keyboard};
+use vela_arch::ps2;
+use vela_kernel_input::{status, Keyboard};
 
 /// The status port's auxiliary bit: the waiting byte is a mouse packet.
 const MOUSE_DATA: u8 = 1 << 5;
@@ -57,8 +57,8 @@ pub fn read_char() -> Option<u8> {
         // the console type garbage when the pointer moved.
         // SAFETY: the status port said a byte is waiting on the data port,
         // which is the only condition under which reading it is defined.
-        let status_byte = unsafe { regs::inb(ports::STATUS) };
-        let scancode = unsafe { regs::inb(ports::DATA) };
+        let status_byte = unsafe { ps2::read_status() };
+        let scancode = unsafe { ps2::read_data() };
         SEEN_CONTROLLER.store(true, Ordering::Release);
         if status_byte & MOUSE_DATA != 0 {
             continue;
@@ -102,6 +102,6 @@ fn ascii_of(event: vela_kernel_input::KeyEvent) -> u8 {
 /// True when the controller has a byte for the host.
 fn output_full() -> bool {
     // SAFETY: the status port is always readable.
-    let status_byte = unsafe { regs::inb(ports::STATUS) };
+    let status_byte = unsafe { ps2::read_status() };
     status_byte & status::OUTPUT_FULL != 0
 }

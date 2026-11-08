@@ -9,5 +9,5 @@ description = "Framebuffer text console and PS/2 keyboard polling"
 [dependencies]
 vela-font.workspace = true
 vela-kernel-input.workspace = true
-vela-hal-x86_64.workspace = true
+vela-arch.workspace = true
 spin.workspace = true

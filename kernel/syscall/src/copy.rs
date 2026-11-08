@@ -39,7 +39,7 @@
 //! spelling is the same two ideas, named for what they do.
 
 #[cfg(target_os = "none")]
-use vela_hal_x86_64::regs::{read_cr0, write_cr0};
+use vela_arch::regs::{read_cr0, write_cr0};
 
 /// The lowest address of the user half of the address space.
 pub const USER_SPACE_BASE: u64 = 0;

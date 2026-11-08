@@ -19,8 +19,8 @@ path = "src/main.rs"
 
 [dependencies]
 vela-boot-protocol.workspace = true
-vela-hal-common.workspace = true
-vela-hal-x86_64.workspace = true
+vela-arch-common.workspace = true
+vela-arch.workspace = true
 vela-kernel-console.workspace = true
 vela-kernel-core.workspace = true
 vela-kernel-dos.workspace = true
@@ -34,7 +34,6 @@ vela-kernel-layers.workspace = true
 vela-kernel-syscall.workspace = true
 vela-ramfs.workspace = true
 vela-kernel-memory.workspace = true
-vela-kernel-smp.workspace = true
 vela-kernel-timer.workspace = true
 vela-kernel-device.workspace = true
 vela-driver-ata.workspace = true

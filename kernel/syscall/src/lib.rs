@@ -54,7 +54,6 @@ extern crate std;
 pub mod copy;
 pub mod dispatch;
 pub mod dos_handlers;
-pub mod gate;
 pub mod graphics_handlers;
 pub mod icon_handlers;
 pub mod ids;

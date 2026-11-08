@@ -8,7 +8,7 @@
 //!   woken. All of it is ordinary code in this module, and all of it is
 //!   unit-testable on the host.
 //! * **Mechanism** — how the CPU actually stops running one task and starts
-//!   another. That is the `switch_to` in [`crate::context`], and it is
+//!   another. That is the `switch_to` in the architecture crate, and it is
 //!   reachable only through the [`ContextSwitch`] trait.
 //!
 //! The split exists because a context switch cannot be meaningfully
@@ -49,11 +49,11 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`task`] | [`Task`], [`Context`], the priority [`RunQueue`] |
-//! | [`context`] | The `switch_to` assembly and the entry trampoline |
+//! | [`task`] | [`Task`], the priority [`RunQueue`], per-CPU state |
+//! | [`smp`] | Per-CPU run queues and dispatch for multicore systems |
 //!
 //! The scheduler's *policy* lives in this module's root; its *mechanism*
-//! lives in [`context`]. See the root documentation for why that split
+//! lives in `arch/*/context.rs`. See the root documentation for why that split
 //! matters.
 //!
 //! # What a VelaOS task is
@@ -91,7 +91,7 @@
 
 extern crate alloc;
 
-pub mod context;
+pub mod smp;
 pub mod task;
 
 use alloc::string::String;
@@ -100,9 +100,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use spin::Mutex;
 
+use vela_arch::context::Context;
 use vela_kernel_exec::task::{BlockedOn, TaskId};
 
-use crate::task::{Context, CpuState, RunQueue, Task, TaskState, PRIORITY_LEVELS};
+use crate::task::{CpuState, RunQueue, Task, TaskState, PRIORITY_LEVELS};
 
 /// The AmigaOS priority range, from 0 (highest) to 19 (lowest).
 pub const AMIGA_PRIORITY_HIGHEST: u8 = 0;

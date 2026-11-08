@@ -7,7 +7,7 @@ publish.workspace = true
 description = "Preemptive priority scheduler and tasks"
 
 [dependencies]
-vela-hal-common.workspace = true
-vela-hal-x86_64.workspace = true
+vela-arch-common.workspace = true
+vela-arch.workspace = true
 vela-kernel-exec.workspace = true
 spin.workspace = true
