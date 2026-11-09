@@ -1000,6 +1000,25 @@ pub fn refresh(composite: bool) -> Result<()> {
     check(packed).map(|_| ())
 }
 
+/// Composite the layer stack to the display, drawing nothing new.
+///
+/// `layers.library`'s `Composite`: every dirty layer is copied back to front
+/// into the framebuffer, and every layer is left clean. This is the call a
+/// program that draws straight into its own layers wants after a repaint —
+/// [`refresh`] and [`repaint_window`] would work too, but both redraw the
+/// system's furniture first, which would wipe the program's own drawing.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when nothing was dirty, which is a successful no-op
+/// in every practical sense and reported only so a caller that cares can tell.
+pub fn composite_screen() -> Result<()> {
+    // SAFETY: no pointers among the arguments.
+    let packed =
+        unsafe { library_base::layers::base().call(offset::LAYERS_COMPOSITE, [0, 0, 0, 0, 0, 0]) };
+    check(packed).map(|_| ())
+}
+
 /// Add a gadget to a window.
 ///
 /// The bounds go through a pointer rather than four registers because the call
