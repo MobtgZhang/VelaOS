@@ -27,6 +27,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use crate::pit;
 use crate::regs;
 
 /// The MMIO base the APIC's registers live at in xAPIC mode.
@@ -185,6 +186,12 @@ static INITIALISED: AtomicU64 = AtomicU64::new(0);
 
 /// TSC frequency in Hz, learned during calibration.
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// The APIC timer's bus frequency in Hz, as measured against the calibrated
+/// TSC. Zero until [`calibrate_timer`] has measured it; the diagnostic log
+/// and any later reprogramming read the real rate here rather than the
+/// assumed one.
+static APIC_BUS_HZ: AtomicU64 = AtomicU64::new(0);
 
 /// The logical tick counter: APIC ticks plus TSC interpolation.
 static TICKS: AtomicU64 = AtomicU64::new(0);
@@ -569,7 +576,13 @@ pub fn init() {
     // SAFETY: as above.
     unsafe { apic_write(APIC_TIMER_INITCNT, initial) };
 
-    calibrate_tsc(initial);
+    // Calibrate the clocks the timer's rate depends on, and reprogram the
+    // timer with what they measured. `initial` is only the starting guess:
+    // the APIC bus rate behind it is not architecturally fixed, and a guess
+    // that is wrong by a factor makes every tick-based timeout wrong by the
+    // same factor — including the boot menu's countdown, which would
+    // visibly promise ten seconds and deliver two.
+    calibrate_timer();
 
     // Accept timer interrupts. The spurious vector must be something that will
     // never actually fire; 0xFF is the architectural "ignore" choice.
@@ -608,59 +621,126 @@ pub fn init() {
     crate::serial::puts("\n");
 }
 
-/// Measure the TSC frequency using the APIC timer as a reference.
+/// Calibrate the TSC against the PIT, then the timer against the TSC.
 ///
-/// The APIC timer's own frequency is unknown, so this cannot calibrate the
-/// timer; instead it calibrates the *TSC* by timing a known number of APIC
-/// ticks whose wall-clock duration the firmware-independent APIC bus rate
-/// determines. The result is the ratio of TSC cycles to the bus frequency.
-fn calibrate_tsc(initial_count: u32) {
-    // Let the timer run long enough that TSC measurement dominates the read
-    // latency. 16 periods is comfortably above the resolution of a serial
-    // read of the counter.
-    const PERIODS: u32 = 16;
-    let periods_ns = (PERIODS as u64 * 1_000_000_000u64) / TICKS_PER_SECOND;
-
-    let tsc_start = regs::tsc();
-    let start = now_nanos();
-
-    // Busy-wait for the calibrated interval using the same clock the TSC is
-    // being compared against would be circular; sleep on the TSC itself and
-    // measure how far the nanosecond clock advanced.
-    let target = start + periods_ns;
-    while now_nanos() < target {
-        regs::pause();
+/// # The chain of references, and why it stops here
+///
+/// Every clock in the kernel is ultimately measured against another: the
+/// scheduler's quantum is a number of APIC timer ticks, and the nanosecond
+/// clock is a number of TSC cycles. Both rates are *assumed* by the
+/// constants above — the APIC bus rate is not architecturally fixed, and
+/// neither is the TSC's — and calibrating one against the other would only
+/// measure how consistent the two assumptions were.
+///
+/// The PIT breaks the chain: its oscillator is architecturally fixed at
+/// 1193182 Hz, so timing the TSC against it gives a real TSC rate, and
+/// timing the APIC timer's countdown against that gives a real bus rate.
+/// The timer is then reprogrammed with the measured rate, which is what
+/// makes a tick genuinely `1 / TICKS_PER_SECOND` of a second.
+///
+/// Off bare metal — hosted tests — this does nothing: there is no PIT and
+/// no APIC, and the hosted runtime drives time itself.
+fn calibrate_timer() {
+    if !regs::ON_BARE_METAL {
+        return;
     }
 
-    let tsc_elapsed = regs::tsc().wrapping_sub(tsc_start);
-    let ns_elapsed = now_nanos() - start;
-
-    // TSC Hz = cycles per nanosecond, times 1e9. Guard against a zero
-    // measurement on a host with a broken reference clock.
-    if let Some(hz) = tsc_elapsed
-        .saturating_mul(1_000_000_000)
-        .checked_div(ns_elapsed)
-    {
-        if hz > 1_000_000 {
+    // 1. The TSC, against the PIT. The first CPU to boot does this; the APs
+    //    find `TSC_HZ` already set and skip the PIT, which is a per-machine
+    //    resource an AP must not contend for.
+    if TSC_HZ.load(Ordering::Acquire) == 0 {
+        // SAFETY: the kernel owns the PIT.
+        if let Some(hz) = unsafe { pit::calibrate_tsc() } {
             TSC_HZ.store(hz, Ordering::Release);
+            crate::serial::puts("[apic] tsc calibrated: ");
+            crate::serial::puts_dec(hz);
+            crate::serial::puts(" Hz\n");
+        } else {
+            crate::serial::puts("[apic] pit calibration failed; using the assumed rates\n");
         }
     }
-    let _ = initial_count;
+
+    // 2. This timer's bus rate, timed by the calibrated TSC.
+    let tsc_hz = TSC_HZ.load(Ordering::Acquire);
+    if tsc_hz == 0 {
+        // No PIT either: keep the assumed initial count, which the caller
+        // already programmed. A wrong-but-steady rate beats no timer.
+        return;
+    }
+    let Some(bus_hz) = measure_bus_hz(tsc_hz) else {
+        crate::serial::puts("[apic] bus rate measurement failed; keeping the assumed rate\n");
+        return;
+    };
+
+    let per_tick = (bus_hz / TICKS_PER_SECOND).clamp(1, 0x00FF_FFFF) as u32;
+    // SAFETY: the APIC registers, which this driver owns. The divide
+    // configuration is re-affirmed because the measurement ran the timer
+    // through a one-shot, and the order matters: mode first, then the
+    // initial count that starts the next period.
+    unsafe {
+        apic_write(APIC_TIMER_DIV, divide::BY_1);
+        apic_write(APIC_LVT_TIMER, lvt::PERIODIC | TIMER_VECTOR as u32);
+        apic_write(APIC_TIMER_INITCNT, per_tick);
+    }
+    APIC_BUS_HZ.store(bus_hz, Ordering::Release);
+    crate::serial::puts("[apic] bus rate measured: ");
+    crate::serial::puts_dec(bus_hz);
+    crate::serial::puts(" Hz; timer reprogrammed for ");
+    crate::serial::puts_dec(TICKS_PER_SECOND);
+    crate::serial::puts(" ticks/s\n");
 }
 
-/// A free-running nanosecond counter.
+/// Measure this timer's bus frequency by timing its own countdown.
 ///
-/// Uses the calibrated TSC when available, and falls back to the APIC tick
-/// count (coarser) when calibration has not run. Either way the result is
-/// monotonic, which is the only property calibration code relies on.
-fn now_nanos() -> u64 {
-    let hz = TSC_HZ.load(Ordering::Acquire);
-    if hz == 0 {
-        // Uncalibrated: use raw TSC deltas at an assumed nominal rate. Good
-        // enough for a calibration loop that only needs a stable interval.
-        return regs::tsc() / 20;
+/// The timer is run one-shot from a known count, and the count that
+/// disappeared during a TSC-measured window is the bus rate. The window is
+/// about two milliseconds: long enough that register-read latency is noise,
+/// short enough that even a very fast bus cannot run the known count out
+/// and end the measurement early.
+///
+/// Returns `None` when the countdown expired inside the window — the rate
+/// was too fast for the window, and the caller keeps its assumption rather
+/// than publish a number it knows is short.
+fn measure_bus_hz(tsc_hz: u64) -> Option<u64> {
+    const KNOWN_COUNT: u32 = 0x00FF_FFFF;
+
+    // SAFETY: the APIC registers, which this driver owns. The LVT is left
+    // masked, so the one-shot delivers nothing; the mask does not stop the
+    // countdown, which is the property the measurement relies on.
+    unsafe {
+        apic_write(APIC_LVT_TIMER, lvt::MASKED | TIMER_VECTOR as u32);
+        apic_write(APIC_TIMER_INITCNT, KNOWN_COUNT);
     }
-    regs::tsc().saturating_mul(1_000_000_000) / hz
+
+    let start_count = apic_read(APIC_TIMER_CURCNT) as u64;
+    let start_tsc = regs::tsc();
+    // A two-millisecond window, in TSC cycles.
+    let window = tsc_hz / 500;
+    while regs::tsc().wrapping_sub(start_tsc) < window {
+        regs::pause();
+    }
+    let end_tsc = regs::tsc();
+    let end_count = apic_read(APIC_TIMER_CURCNT) as u64;
+
+    // Expired: the measurement window outlasted the known count, so the
+    // disappearance cannot be turned into a rate.
+    if end_count == 0 {
+        return None;
+    }
+    let counts = start_count.saturating_sub(end_count);
+    if counts == 0 {
+        return None;
+    }
+    let cycles = end_tsc.saturating_sub(start_tsc);
+    if cycles == 0 {
+        return None;
+    }
+    let bus_hz = counts.checked_mul(tsc_hz)?.checked_div(cycles)?;
+    // A rate below a megahertz or above eight gigahertz is not a
+    // measurement, it is a mistake — the caller keeps its assumption.
+    (1_000_000..=8_000_000_000)
+        .contains(&bus_hz)
+        .then_some(bus_hz)
 }
 
 /// The current logical tick count.
@@ -730,7 +810,15 @@ pub fn on_timer_interrupt() {
     unsafe { apic_write(APIC_EOI, 0) };
 }
 
-/// The APIC bus frequency assumed for the initial-count calculation.
+/// The APIC bus frequency *assumed* for the starting initial-count
+/// calculation.
+///
+/// This is a guess, not a fact: the APIC timer's bus rate is not
+/// architecturally fixed, and QEMU's model runs it at a different rate than
+/// common silicon. [`calibrate_timer`] measures the real rate against the
+/// PIT-calibrated TSC and reprograms the timer; this constant only seeds the
+/// countdown the measurement is timed against, and is what the timer keeps
+/// running at when the machine has no PIT to measure with.
 pub const APIC_BUS_FREQ_HZ: u64 = 100_000_000;
 
 #[cfg(test)]

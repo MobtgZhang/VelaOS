@@ -41,6 +41,7 @@ pub mod gdt;
 pub mod idt;
 pub mod paging;
 pub mod pci;
+pub mod pit;
 pub mod ps2;
 pub mod qemu_exit;
 pub mod regs;
