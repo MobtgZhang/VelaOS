@@ -770,17 +770,20 @@ pub mod exec_handlers {
 
     /// `ClearScreen` — clear the console screen.
     ///
-    /// No arguments. Returns zero on success. On a serial console this scrolls
-    /// content off-screen with newlines; on a terminal emulator it also sends
-    /// the ANSI clear sequence.
+    /// No arguments. Returns zero on success.
+    ///
+    /// The framebuffer console erases its own grid and homes its cursor,
+    /// which is the clear the user in front of the QEMU window sees. The
+    /// serial log additionally receives the ANSI clear sequence, because a
+    /// serial console has no grid to erase — the terminal emulator on the
+    /// far end is the thing that clears itself.
     pub fn clear_screen(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
-        // ANSI ESC [ 2 J / ESC [ H for terminal emulators that support it.
+        // ANSI ESC [ 2 J / ESC [ H for terminal emulators on the serial log.
         crate::print_console("\x1b[2J\x1b[H");
-        // Scroll off-screen on a serial console: form feed plus newlines.
-        crate::print_console("\x0c");
-        for _ in 0..40 {
-            crate::print_console("\n");
-        }
+        // The real clear: erase the framebuffer console's grid. With no
+        // display this is a no-op, and the ANSI sequence above is the whole
+        // story — the headless configuration.
+        vela_kernel_console::clear();
         SyscallResult::ok(0)
     }
 

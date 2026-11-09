@@ -267,6 +267,21 @@ impl Console {
     }
 }
 
+/// Clear the whole console grid and home the cursor.
+///
+/// A program's "clear the screen" — the `ClearScreen` syscall — lands here.
+/// The console owns the grid and the cursor, so the clearing is the console's
+/// operation, not the caller's: a caller that tried to clear by printing
+/// newlines would scroll instead of erase, and one that printed an ANSI
+/// sequence would find no parser to read it, because [`putc`] understands
+/// only `\n`, `\r` and backspace.
+pub fn clear() {
+    let mut state = STATE.lock();
+    if let Some(console) = state.as_mut() {
+        console.clear();
+    }
+}
+
 /// Write one byte to the console.
 ///
 /// The three control characters a terminal needs are handled here rather
