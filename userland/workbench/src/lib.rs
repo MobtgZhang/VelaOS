@@ -597,6 +597,16 @@ impl Desktop {
 
         // The dropped-down menu, over everything else.
         self.paint_open_menu();
+
+        // Make the painting visible. Everything above drew into layers, and
+        // layers are not the screen: until somebody composites, the display
+        // shows whatever was there before — which is a boot console, and a
+        // desktop that never gets past it looks like a black screen with
+        // boot text in the corner. `Composite` copies the dirty layers to
+        // the framebuffer and redraws nothing, which is why it is the call
+        // here rather than `Refresh`: a refresh would repaint the system's
+        // furniture over the picture this method just drew.
+        let _ = api::composite_screen();
     }
 
     /// Paint one icon: a frame, a glyph block, and its name.
