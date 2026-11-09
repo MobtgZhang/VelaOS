@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 
 use vela_sys::api;
 
-/// How many directory entries `ls` reads at once.
+/// How many directory entries a listing reads at once.
 const DIR_BUFFER_ENTRIES: usize = 32;
 
 /// How many bytes of input a single line can hold.
@@ -41,6 +41,21 @@ const LINE_CAPACITY: usize = 256;
 
 /// The default user name shown in the prompt.
 const USER_NAME: &str = "vela";
+
+/// The banner printed when the shell starts.
+///
+/// "VelaOS" in the classic figlet `big` style. Written out rather than
+/// composed at runtime because the shell has no font of its own and the
+/// console renders one byte per cell: an ASCII drawing is the only drawing
+/// available. The exact spelling is kept out of `ver`'s answer so a boot
+/// test that waits for the version string can still trust it came from a
+/// typed command rather than from this banner.
+const BANNER: &str = r"__      __  _        ____   _____
+\ \    / / | |      / __ \ / ____|
+ \ \  / /__| | __ _| |  | | (___
+  \ \/ / _ \ |/ _` | |  | |\___ \
+   \  /  __/ | (_| | |__| |____) |
+    \/ \___|_|\__,_|\____/|_____/ ";
 
 /// The result of running a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,22 +114,30 @@ impl Shell {
         }
     }
 
-    /// Print the prompt: `hostname@user> current_directory`.
+    /// Print the startup banner.
+    ///
+    /// The drawing first, then one line naming the system and a blank line
+    /// so the first prompt starts clear of the art. Printed once, when the
+    /// shell starts — a prompt that redrew the banner on every command
+    /// would scroll it away on anything but an empty screen.
+    fn print_banner() {
+        api::print(BANNER);
+        api::print("\n");
+        api::print("An AmigaOS-inspired operating system\n\n");
+    }
+
+    /// Print the prompt: `hostname@username:> `.
+    ///
+    /// The form is the shell's own: machine, user, and a colon-terminated
+    /// separator, the way a shell that runs *before* a filesystem may not
+    /// have a meaningful current directory to show. Where the shell is is
+    /// what `cd` alone answers, so the prompt stays out of the business of
+    /// repeating it.
     fn prompt(&self) {
         api::print(&self.hostname);
         api::print("@");
         api::print(USER_NAME);
-        api::print("> ");
-        // Show the current directory, if we can read it.
-        let mut buf = [0u8; 256];
-        if let Ok(len) = api::current_dir(&mut buf) {
-            let s =
-                core::str::from_utf8(&buf[..len.min(buf.len() - 1)]).unwrap_or("<invalid utf-8>");
-            if !s.is_empty() {
-                api::print(s);
-            }
-        }
-        api::print(" ");
+        api::print(":> ");
     }
 
     /// Read one line from the console, echoing as we go.
@@ -186,6 +209,7 @@ impl Shell {
 
     /// Run the shell forever, or until a command asks to halt.
     pub fn run(mut self) -> ! {
+        Self::print_banner();
         while let CommandResult::Continue = self.run_once() {}
         api::print("vela: session ended\n");
         api::power_off()
@@ -198,10 +222,16 @@ impl Shell {
             "clear" | "cls" => Self::cmd_clear(),
             "exit" | "quit" | "halt" => CommandResult::Halt,
             "pwd" => Self::cmd_pwd(),
-            "ls" | "dir" => Self::cmd_ls(&cmd.args),
+            "list" | "ls" => Self::cmd_list(&cmd.args),
+            "dir" => Self::cmd_dir(&cmd.args),
             "cd" => Self::cmd_cd(&cmd.args),
             "echo" => Self::cmd_echo(&cmd.args),
-            "cat" => Self::cmd_cat(&cmd.args),
+            "cat" => Self::cmd_cat("cat", &cmd.args),
+            "type" => Self::cmd_cat("type", &cmd.args),
+            "makedir" | "md" => Self::cmd_makedir(&cmd.args),
+            "delete" | "rm" | "erase" => Self::cmd_delete(&cmd.args),
+            "rename" | "mv" => Self::cmd_rename(&cmd.args),
+            "copy" | "cp" => Self::cmd_copy(&cmd.args),
             "whoami" => Self::cmd_whoami(),
             "hostname" => Self::cmd_hostname(&cmd.args),
             "ver" | "version" => Self::cmd_ver(),
@@ -226,10 +256,15 @@ impl Shell {
         api::print("  clear           - clear the screen\n");
         api::print("  exit            - leave the shell and stop the machine\n");
         api::print("  pwd             - print the current directory\n");
-        api::print("  ls [path]       - list a directory (dir is a synonym)\n");
+        api::print("  list [path]     - list a directory in detail (ls is a synonym)\n");
+        api::print("  dir [path]      - list a directory's names only\n");
         api::print("  cd <path>       - change the current directory; cd alone prints it\n");
+        api::print("  makedir <path>  - create a directory (md is a synonym)\n");
+        api::print("  delete <path>   - delete a file or directory (rm, erase)\n");
+        api::print("  rename <a> <b>  - rename a file or directory (mv)\n");
+        api::print("  copy <a> <b>    - copy a file (cp)\n");
         api::print("  echo <text>     - print text to the console\n");
-        api::print("  cat <file>      - print a file's contents\n");
+        api::print("  type <file>     - print a file's contents (cat is a synonym)\n");
         api::print("  whoami          - print the current user\n");
         api::print("  hostname        - print the machine's hostname\n");
         api::print("  ver             - print the system version\n");
@@ -240,14 +275,11 @@ impl Shell {
     }
 
     fn cmd_clear() -> CommandResult {
-        // A real clear on a serial console: emit enough newlines plus a form
-        // feed to push current content off the visible area. ANSI escape
-        // sequences are harmless on a serial port but do not clear it, so
-        // scrolling is the portable approach.
-        api::print("\x0c");
-        for _ in 0..60 {
-            api::print("\n");
-        }
+        // The `ClearScreen` syscall: the framebuffer console erases its grid
+        // and homes its cursor, and the serial log gets the ANSI sequence.
+        // Printing newlines here instead would scroll rather than clear,
+        // which is the bug this call exists to avoid.
+        let _ = api::clear_screen();
         CommandResult::Continue
     }
 
@@ -267,45 +299,232 @@ impl Shell {
         CommandResult::Continue
     }
 
-    fn cmd_ls(args: &[String]) -> CommandResult {
-        // No directory named means the one the shell is in. The kernel's
-        // resolver treats a bare name as relative to its current directory,
-        // so `ls` reads back the path first and lists that: passing an empty
-        // string would fail long before any filesystem, because an empty
-        // path parses to nothing at all.
-        let path = match args.first() {
-            Some(arg) => arg.clone(),
+    /// List a directory, one name per line.
+    ///
+    /// `dir` is the AmigaOS quick look: names only, with a directory's
+    /// entries marked so a user can tell what `cd` would accept. The
+    /// detailed listing is [`Shell::cmd_list`].
+    fn cmd_dir(args: &[String]) -> CommandResult {
+        let Some(path) = Self::listing_path("dir", args) else {
+            return CommandResult::Continue;
+        };
+        match Self::read_entries(&path) {
+            Ok(entries) => {
+                for entry in &entries {
+                    api::print(entry.name());
+                    if entry.is_dir() {
+                        api::print(" (dir)");
+                    }
+                    api::print("\n");
+                }
+            }
+            Err(()) => Self::report_list_error("dir", &path),
+        }
+        CommandResult::Continue
+    }
+
+    /// List a directory in detail, the way AmigaOS's `List` does.
+    ///
+    /// One line per entry — name, kind, size — followed by a count, so the
+    /// summary a `List` ends with survives too. Directories report their
+    /// kind instead of a size, because a directory's size is an internal
+    /// detail of the filesystem rather than something a user asked for.
+    fn cmd_list(args: &[String]) -> CommandResult {
+        let Some(path) = Self::listing_path("list", args) else {
+            return CommandResult::Continue;
+        };
+        match Self::read_entries(&path) {
+            Ok(entries) => {
+                let mut files = 0u32;
+                let mut dirs = 0u32;
+                for entry in &entries {
+                    api::print(&Self::padded(entry.name(), 24));
+                    if entry.is_dir() {
+                        api::print("<dir>");
+                        dirs += 1;
+                    } else {
+                        api::print_int(entry.de_size);
+                        files += 1;
+                    }
+                    api::print("\n");
+                }
+                api::print_int(files as u64);
+                api::print(" files, ");
+                api::print_int(dirs as u64);
+                api::print(" directories\n");
+            }
+            Err(()) => Self::report_list_error("list", &path),
+        }
+        CommandResult::Continue
+    }
+
+    /// The path a listing command was given, or the current directory.
+    ///
+    /// No directory named means the one the shell is in. The kernel's
+    /// resolver treats a bare name as relative to its current directory, so
+    /// `dir` reads back the path first and lists that: passing an empty
+    /// string would fail long before any filesystem, because an empty
+    /// path parses to nothing at all.
+    fn listing_path(command: &str, args: &[String]) -> Option<String> {
+        match args.first() {
+            Some(arg) => Some(arg.clone()),
             None => match Self::current_dir_path() {
-                Some(dir) => dir,
+                Some(dir) => Some(dir),
                 None => {
-                    api::print("vela: ls: cannot read current directory\n");
-                    return CommandResult::Continue;
+                    api::print("vela: ");
+                    api::print(command);
+                    api::print(": cannot read current directory\n");
+                    None
                 }
             },
-        };
+        }
+    }
+
+    /// Read a directory's entries, with the kind and size of each.
+    fn read_entries(path: &str) -> Result<Vec<vela_sys::api::DirEntry>, ()> {
         let mut buf = [vela_sys::api::DirEntry {
             de_size: 0,
             de_type: 0,
             de_name_len: 0,
             de_name: [0; vela_sys::api::DIR_NAME_LEN],
         }; DIR_BUFFER_ENTRIES];
+        match api::read_dir(path, &mut buf) {
+            Ok(count) => Ok(buf.iter().take(count).cloned().collect()),
+            Err(_) => Err(()),
+        }
+    }
 
-        match api::read_dir(&path, &mut buf) {
-            Ok(count) => {
-                for entry in buf.iter().take(count) {
-                    let kind = if entry.is_dir() { "dir" } else { "file" };
-                    api::print(kind);
-                    api::print("  ");
-                    api::print(entry.name());
-                    api::print("\n");
-                }
-            }
+    /// The message a failed listing prints.
+    fn report_list_error(command: &str, path: &str) {
+        api::print("vela: ");
+        api::print(command);
+        api::print(": cannot read directory ");
+        api::print(path);
+        api::print("\n");
+    }
+
+    /// A string padded on the right to a minimum width.
+    ///
+    /// For the column of names a `list` aligns. Bytes, not chars, because
+    /// the console is a byte grid and a name's *displayed* width is its
+    /// byte count.
+    fn padded(s: &str, width: usize) -> String {
+        let mut out = String::from(s);
+        while out.len() < width {
+            out.push(' ');
+        }
+        out
+    }
+
+    /// `makedir` — create a directory.
+    fn cmd_makedir(args: &[String]) -> CommandResult {
+        let Some(path) = args.first() else {
+            api::print("vela: makedir: missing directory name\n");
+            return CommandResult::Continue;
+        };
+        match api::create_dir(path) {
+            Ok(()) => {}
+            // "Already there" is the outcome `makedir` wanted, so it is
+            // reported as success the way init's boot-time creation does.
+            Err(e) if e.code == vela_sys::api::errors::OBJECT_IN_USE => {}
             Err(_) => {
-                api::print("vela: ls: cannot read directory ");
-                api::print(&path);
+                api::print("vela: makedir: cannot create ");
+                api::print(path);
                 api::print("\n");
             }
         }
+        CommandResult::Continue
+    }
+
+    /// `delete` — remove a file or directory, one path per argument.
+    fn cmd_delete(args: &[String]) -> CommandResult {
+        if args.is_empty() {
+            api::print("vela: delete: missing file\n");
+            return CommandResult::Continue;
+        }
+        for path in args {
+            match api::delete_file(path) {
+                Ok(()) => {}
+                Err(_) => {
+                    api::print("vela: delete: cannot delete ");
+                    api::print(path);
+                    api::print("\n");
+                }
+            }
+        }
+        CommandResult::Continue
+    }
+
+    /// `rename` — give a file or directory a new name.
+    fn cmd_rename(args: &[String]) -> CommandResult {
+        if args.len() < 2 {
+            api::print("vela: rename: usage: rename <from> <to>\n");
+            return CommandResult::Continue;
+        }
+        let from = &args[0];
+        let to = &args[1];
+        match api::rename(from, to) {
+            Ok(()) => {}
+            Err(_) => {
+                api::print("vela: rename: cannot rename ");
+                api::print(from);
+                api::print(" to ");
+                api::print(to);
+                api::print("\n");
+            }
+        }
+        CommandResult::Continue
+    }
+
+    /// `copy` — duplicate a file's contents under a new name.
+    fn cmd_copy(args: &[String]) -> CommandResult {
+        if args.len() < 2 {
+            api::print("vela: copy: usage: copy <from> <to>\n");
+            return CommandResult::Continue;
+        }
+        let from = &args[0];
+        let to = &args[1];
+        let source = match api::open(from, vela_sys::api::mode::READ) {
+            Ok(file) => file,
+            Err(_) => {
+                api::print("vela: copy: cannot open ");
+                api::print(from);
+                api::print("\n");
+                return CommandResult::Continue;
+            }
+        };
+        let target = match api::open(to, vela_sys::api::mode::WRITE) {
+            Ok(file) => file,
+            Err(_) => {
+                let _ = api::close(source);
+                api::print("vela: copy: cannot create ");
+                api::print(to);
+                api::print("\n");
+                return CommandResult::Continue;
+            }
+        };
+        let mut buf = [0u8; 256];
+        loop {
+            match api::read(source, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if api::write(target, &buf[..n]).is_err() {
+                        api::print("vela: copy: cannot write ");
+                        api::print(to);
+                        api::print("\n");
+                        break;
+                    }
+                }
+                Err(_) => {
+                    api::print("vela: copy: cannot read ");
+                    api::print(from);
+                    api::print("\n");
+                    break;
+                }
+            }
+        }
+        let _ = api::close(source);
+        let _ = api::close(target);
         CommandResult::Continue
     }
 
@@ -351,9 +570,16 @@ impl Shell {
         CommandResult::Continue
     }
 
-    fn cmd_cat(args: &[String]) -> CommandResult {
+    /// `cat` / `type` — print a file's contents.
+    ///
+    /// One handler for the two names: `cat` is the Unix spelling this
+    /// shell grew up with and `type` the AmigaDOS one, and the only
+    /// difference between them is which name errors report.
+    fn cmd_cat(name: &str, args: &[String]) -> CommandResult {
         if args.is_empty() {
-            api::print("vela: cat: missing file\n");
+            api::print("vela: ");
+            api::print(name);
+            api::print(": missing file\n");
             return CommandResult::Continue;
         }
         let path = &args[0];
@@ -373,7 +599,9 @@ impl Shell {
                 let _ = api::close(file);
             }
             Err(_) => {
-                api::print("vela: cat: cannot open ");
+                api::print("vela: ");
+                api::print(name);
+                api::print(": cannot open ");
                 api::print(path);
                 api::print("\n");
             }
