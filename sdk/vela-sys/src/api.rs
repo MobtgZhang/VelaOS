@@ -1571,6 +1571,127 @@ pub fn rename(from: &str, to: &str) -> Result<()> {
     check(packed).map(|_| ())
 }
 
+/// Add or re-point an assign.
+///
+/// The name is the assign's name *without* the colon, the way `Assign`
+/// itself takes it. Re-pointing a system assign is refused by the kernel.
+///
+/// # Errors
+///
+/// [`errors::INVALID_NAME`] when the name is empty, or
+/// [`errors::OBJECT_IN_USE`] when the name belongs to a system assign.
+pub fn add_assign(name: &str, target: &str) -> Result<()> {
+    let name_bytes = c_string(name);
+    let target_bytes = c_string(target);
+    // SAFETY: both strings are live for the call; the kernel copies them out.
+    let packed = unsafe {
+        library_base::dos::base().call(
+            offset::DOS_ADDASSIGN,
+            [
+                name_bytes.as_ptr() as u64,
+                target_bytes.as_ptr() as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
+/// Remove an assign.
+///
+/// # Errors
+///
+/// [`errors::NOT_FOUND`] when there is no such assign to remove.
+pub fn remove_assign(name: &str) -> Result<()> {
+    let name_bytes = c_string(name);
+    // SAFETY: `name_bytes` is live for the call; the kernel copies it out.
+    let packed = unsafe {
+        library_base::dos::base().call(
+            offset::DOS_REMOVEASSIGN,
+            [name_bytes.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
+/// One assign, as [`list_assigns`] reports it.
+///
+/// The layout mirrors the kernel's record exactly — the kernel writes whole
+/// records into the caller's array, so a field out of place would make every
+/// entry after the first read as garbage. The inline buffers keep the reply
+/// a single copy, as [`DirEntry`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct AssignEntry {
+    /// The assign's name, NUL-terminated, without the colon.
+    pub ae_name: [u8; ASSIGN_NAME_LEN],
+    /// The name's length, excluding the terminator.
+    pub ae_name_len: u8,
+    /// The targets, NUL-terminated, joined with single spaces in search
+    /// order.
+    pub ae_targets: [u8; ASSIGN_TARGETS_LEN],
+    /// The targets' length, excluding the terminator.
+    pub ae_targets_len: u8,
+    /// Non-zero when the system created the assign.
+    pub ae_system: u8,
+}
+
+/// The size of an [`AssignEntry`]'s inline name buffer.
+pub const ASSIGN_NAME_LEN: usize = 32;
+
+/// The size of an [`AssignEntry`]'s inline targets buffer.
+pub const ASSIGN_TARGETS_LEN: usize = 192;
+
+/// The size of one [`AssignEntry`], in bytes.
+///
+/// `size_of` rather than an arithmetic summary, for the same reason
+/// [`DIR_ENTRY_SIZE`] is: the kernel's record and this struct must agree on
+/// the stride or every entry after the first is garbage.
+pub const ASSIGN_ENTRY_SIZE: usize = core::mem::size_of::<AssignEntry>();
+
+impl AssignEntry {
+    /// The assign's name, or `""` when it is not valid UTF-8.
+    pub fn name(&self) -> &str {
+        let len = (self.ae_name_len as usize).min(ASSIGN_NAME_LEN);
+        core::str::from_utf8(&self.ae_name[..len]).unwrap_or("")
+    }
+
+    /// The assign's targets, in search order, or `""` when they are not
+    /// valid UTF-8.
+    pub fn targets(&self) -> &str {
+        let len = (self.ae_targets_len as usize).min(ASSIGN_TARGETS_LEN);
+        core::str::from_utf8(&self.ae_targets[..len]).unwrap_or("")
+    }
+
+    /// True when the system created the assign, so `remove_assign` will
+    /// refuse it.
+    pub const fn is_system(&self) -> bool {
+        self.ae_system != 0
+    }
+}
+
+/// Enumerate the assigns, filling `out` and returning how many were written.
+///
+/// One entry per assign, in creation order — the system's first, because
+/// they were made first. A scan that wants more entries than one call
+/// returns calls again with the rest of the array.
+///
+/// # Errors
+///
+/// [`errors::RANGE`] when `out` is empty.
+pub fn list_assigns(out: &mut [AssignEntry]) -> Result<usize> {
+    let ptr = out.as_mut_ptr() as u64;
+    let max = out.len() as u64;
+    // SAFETY: `out` is a live, writable slice of exactly `max` records that
+    // the kernel writes whole records into — never a partial one.
+    let packed =
+        unsafe { library_base::dos::base().call(offset::DOS_LISTASSIGNS, [ptr, max, 0, 0, 0, 0]) };
+    check(packed).map(|v| v as usize)
+}
+
 /// Look a path up, reporting its size, type, protection and timestamp.
 ///
 /// # Errors

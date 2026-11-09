@@ -36,6 +36,30 @@
 library: dos.library
 prefix: DOS
 functions:
+  - name: ListAssigns
+    lvo: -128
+    offset: LISTASSIGNS
+    stub: list_assigns
+    syscall: D_LIST_ASSIGNS
+    number: 271
+    kernel: DOS_LIST_ASSIGNS
+    status: implemented
+  - name: RemoveAssign
+    lvo: -120
+    offset: REMOVEASSIGN
+    stub: remove_assign
+    syscall: D_REMOVE_ASSIGN
+    number: 270
+    kernel: DOS_REMOVE_ASSIGN
+    status: implemented
+  - name: AddAssign
+    lvo: -112
+    offset: ADDASSIGN
+    stub: add_assign
+    syscall: D_ADD_ASSIGN
+    number: 269
+    kernel: DOS_ADD_ASSIGN
+    status: implemented
   - name: Rename
     lvo: -104
     offset: RENAME

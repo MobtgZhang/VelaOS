@@ -200,6 +200,12 @@ pub const D_EXAMINE_DIR: u64 = 266;
 pub const D_SET_CURRENT_DIR: u64 = 267;
 /// `dos.library`: rename a file or directory.
 pub const D_RENAME: u64 = 268;
+/// `dos.library`: add or re-point an assign.
+pub const D_ADD_ASSIGN: u64 = 269;
+/// `dos.library`: remove an assign.
+pub const D_REMOVE_ASSIGN: u64 = 270;
+/// `dos.library`: enumerate the assigns.
+pub const D_LIST_ASSIGNS: u64 = 271;
 
 /// `utility.library`: find a tag in a tag list.
 pub const U_FIND_TAG: u64 = 320;

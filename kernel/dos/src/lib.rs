@@ -222,9 +222,38 @@ impl Dos {
         self.mounts.unmount(point)
     }
 
-    /// The resolver's assigns.
-    pub fn assigns(&self) -> &vela_amiga_path::AssignTable {
-        &self.resolver.assigns
+    /// The resolver's assigns, as a snapshot.
+    ///
+    /// Each entry is the assign's name, its targets in search order, and
+    /// whether the system created it. A snapshot rather than a reference,
+    /// because the table is behind a lock: assigns can be added and removed
+    /// while the system runs, and a caller holding a reference into the
+    /// table would hold the lock too.
+    pub fn assigns(&self) -> Vec<(String, Vec<String>, bool)> {
+        self.resolver
+            .assigns
+            .lock()
+            .all()
+            .iter()
+            .map(|a| (a.name.clone(), a.targets.clone(), a.system))
+            .collect()
+    }
+
+    /// Add or re-point an assign.
+    ///
+    /// Returns `false` when the name belongs to a system assign, which a
+    /// program must not be able to re-point — `SYS:` failing to resolve
+    /// would make the whole namespace unusable.
+    pub fn add_assign(&self, name: &str, targets: Vec<String>) -> bool {
+        self.resolver.add_assign(name, targets)
+    }
+
+    /// Remove an assign.
+    ///
+    /// Returns `false` when the name is not a removable assign: either it
+    /// does not exist, or the system created it.
+    pub fn remove_assign(&self, name: &str) -> bool {
+        self.resolver.remove_assign(name)
     }
 
     /// Set the current directory.

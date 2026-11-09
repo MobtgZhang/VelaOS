@@ -415,3 +415,74 @@ fn dos_read_dir_lists_every_entry_of_a_multi_entry_directory() {
         "the slot beyond the reply's count must stay untouched"
     );
 }
+
+/// The assign calls add, list and remove an assign, end to end.
+///
+/// The three calls drive the whole chain from `vela_sys::api::add_assign`
+/// through the DOS library base, its generated jump table, the stub, the
+/// hosted dispatch and the kernel's handler — the same chain the other DOS
+/// tests exercise, but for assigns, whose state the *resolver* owns rather
+/// than any filesystem: an assign added here must make `Open` reach the
+/// target's directory by name afterwards.
+///
+/// The name is unique to this test so that it cannot collide with an assign
+/// another test created: the services are shared, and an assign added here
+/// would outlive this test otherwise.
+#[test]
+fn dos_assign_calls_add_list_and_remove() {
+    let _guard = ready();
+
+    api::create_dir("RAM:assign-target").expect("CreateDir");
+    api::add_assign("TESTWORK", "RAM:assign-target").expect("AddAssign");
+
+    // The assign resolves like a volume: a file inside it is reachable
+    // through the assign's name, which is the whole point of an assign.
+    let file =
+        api::open("TESTWORK:leaf.txt", api::mode::WRITE).expect("Open through the new assign");
+    api::close(file).expect("Close");
+    let info = api::examine("TESTWORK:leaf.txt").expect("Examine through the new assign");
+    assert_eq!(
+        info.fi_size, 0,
+        "the file behind the assign must be examinable"
+    );
+
+    // Listing reports it, with its target and its ownership — and it also
+    // reports the system's assigns, which were there before any program ran.
+    let mut entries = [api::AssignEntry {
+        ae_name: [0; api::ASSIGN_NAME_LEN],
+        ae_name_len: 0,
+        ae_targets: [0; api::ASSIGN_TARGETS_LEN],
+        ae_targets_len: 0,
+        ae_system: 0,
+    }; 24];
+    let count = api::list_assigns(&mut entries).expect("ListAssigns");
+    assert!(count >= 1, "there is at least the assign this test added");
+    let mine = entries[..count]
+        .iter()
+        .find(|e| e.name() == "TESTWORK")
+        .expect("the assign this test added must be listed");
+    assert_eq!(mine.targets(), "RAM:assign-target");
+    assert!(
+        !mine.is_system(),
+        "an assign a program added is not the system's"
+    );
+    assert!(
+        entries[..count]
+            .iter()
+            .any(|e| e.is_system() && e.name() == "SYS"),
+        "the system's own assigns must be listed too, marked as the system's"
+    );
+
+    // Re-pointing a *system* assign is refused, and the assign is left where
+    // it was.
+    api::add_assign("SYS", "RAM:assign-target")
+        .expect_err("re-pointing a system assign must be refused");
+
+    // Removing a user assign works; the name stops resolving. Removing it a
+    // second time is a not-found rather than a success, because there is
+    // nothing left to remove.
+    api::remove_assign("TESTWORK").expect("RemoveAssign");
+    api::open("TESTWORK:leaf.txt", api::mode::READ)
+        .expect_err("an assign that was removed must stop resolving");
+    api::remove_assign("TESTWORK").expect_err("removing a missing assign must be refused");
+}

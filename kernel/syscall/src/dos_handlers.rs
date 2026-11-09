@@ -707,6 +707,191 @@ fn split_last(path: &str) -> Option<(String, String)> {
     Some((path[..index].to_string(), path[index + 1..].to_string()))
 }
 
+// ---------------------------------------------------------------------------
+// Assigns
+// ---------------------------------------------------------------------------
+
+/// The largest `ListAssigns` reply a single call will produce.
+///
+/// The same shape as [`MAX_DIR_ENTRIES`]: an assign scan is a sequence of
+/// calls rather than one unbounded allocation in the kernel.
+pub const MAX_ASSIGN_ENTRIES: usize = 64;
+
+/// `AddAssign` — create or re-point an assign.
+///
+/// Arguments: `name_ptr` (the assign's name, *without* the colon),
+/// `target_ptr` (the single place it stands for). The kernel's assigns are
+/// one-target-per-name; a multi-target search list is built by re-pointing,
+/// which is what `Assign NAME: PUSH` would do on AmigaOS.
+///
+/// Returns zero on success, or `OBJECT_IN_USE` when the name belongs to a
+/// system assign, which no program may re-point — `SYS:` failing to resolve
+/// would take the whole namespace with it.
+pub fn add_assign(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let name_ptr = args.get(0);
+    let target_ptr = args.get(1);
+    let name = match copy_path(name_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    let target = match copy_path(target_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    if name.is_empty() {
+        return SyscallResult::err(errors::INVALID_NAME);
+    }
+    if ctx.dos.add_assign(&name, alloc::vec![target]) {
+        SyscallResult::ok(0)
+    } else {
+        SyscallResult::err(errors::OBJECT_IN_USE)
+    }
+}
+
+/// `RemoveAssign` — delete an assign.
+///
+/// Arguments: `name_ptr` (the assign's name, without the colon). Returns
+/// zero on success, or `NOT_FOUND` when there is no such assign to remove.
+pub fn remove_assign(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let name_ptr = args.get(0);
+    let name = match copy_path(name_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    if ctx.dos.remove_assign(&name) {
+        SyscallResult::ok(0)
+    } else {
+        SyscallResult::err(errors::NOT_FOUND)
+    }
+}
+
+/// `ListAssigns` — enumerate the assigns.
+///
+/// Arguments: `out_ptr` (a user array of [`AssignEntryRecord`]),
+/// `max_entries` (its length in records). Returns how many records were
+/// written: one per assign, in creation order, the system's first because
+/// they were made first.
+pub fn list_assigns(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let out_ptr = args.get(0);
+    let max_entries = args.get(1);
+    let Some(max_entries) = bounded_len(max_entries) else {
+        return SyscallResult::err(errors::RANGE);
+    };
+    if max_entries == 0 {
+        return SyscallResult::err(errors::RANGE);
+    }
+    let assigns = ctx.dos.assigns();
+
+    let limit = assigns.len().min(max_entries).min(MAX_ASSIGN_ENTRIES);
+    if limit == 0 {
+        return SyscallResult::ok(0);
+    }
+    let record = AssignEntryRecord::SIZE;
+    let bytes = limit.saturating_mul(record);
+
+    let mut reply = Vec::with_capacity(bytes);
+    for (name, targets, system) in assigns.iter().take(limit) {
+        reply.extend_from_slice(&AssignEntryRecord::from_assign(name, targets, *system).to_bytes());
+    }
+    // SAFETY: the destination is a user pointer validated by `copy_to_user`,
+    // and the caller asked for at least this many records.
+    match unsafe { crate::copy::copy_to_user(out_ptr, reply.as_ptr(), bytes) } {
+        Ok(_) => SyscallResult::ok(limit as u64),
+        Err(e) => SyscallResult::err(e),
+    }
+}
+
+/// The user-visible form of one assign.
+///
+/// # Layout
+///
+/// ```text
+/// offset  0  [u8; 32]   ae_Name
+/// offset 32  u8         ae_NameLen
+/// offset 33  [u8; 192]  ae_Targets
+/// offset 225  u8        ae_TargetsLen
+/// offset 226  u8        ae_System
+/// ```
+///
+/// The name is inline rather than a pointer, for the same reason
+/// [`DirEntryRecord`]'s is: an inline buffer makes the whole reply a single
+/// copy and leaves the user's array layout identical to the kernel's. The
+/// targets are the assign's search list joined with single spaces, which is
+/// also how AmigaOS's `Assign` command prints a multi-target assign.
+///
+/// A name or target list longer than its buffer is truncated, not refused:
+/// an enumeration that fails entirely because one entry is long is an
+/// enumeration a program cannot use at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[allow(
+    non_snake_case,
+    reason = "the AmigaOS field names are CamelCase by convention"
+)]
+pub struct AssignEntryRecord {
+    /// The assign's name, NUL-terminated, without the colon.
+    pub ae_Name: [u8; ASSIGN_NAME_LEN],
+    /// The name's length, excluding the terminator.
+    pub ae_NameLen: u8,
+    /// The targets, NUL-terminated, joined with single spaces.
+    pub ae_Targets: [u8; ASSIGN_TARGETS_LEN],
+    /// The targets' length, excluding the terminator.
+    pub ae_TargetsLen: u8,
+    /// Non-zero when the system created the assign.
+    pub ae_System: u8,
+}
+
+/// The size of an [`AssignEntryRecord`]'s inline name buffer.
+pub const ASSIGN_NAME_LEN: usize = 32;
+
+/// The size of an [`AssignEntryRecord`]'s inline targets buffer.
+pub const ASSIGN_TARGETS_LEN: usize = 192;
+
+impl AssignEntryRecord {
+    /// The size of one record, in bytes.
+    ///
+    /// `size_of` rather than an arithmetic summary, for the same reason
+    /// [`DirEntryRecord::SIZE`] is: the array's stride and the kernel's step
+    /// must be the same expression or every record after the first lands
+    /// wrong.
+    pub const SIZE: usize = core::mem::size_of::<AssignEntryRecord>();
+
+    /// Build a record from an assign's name, targets and ownership.
+    pub fn from_assign(name: &str, targets: &[String], system: bool) -> Self {
+        let mut out = Self {
+            ae_Name: [0; ASSIGN_NAME_LEN],
+            ae_NameLen: 0,
+            ae_Targets: [0; ASSIGN_TARGETS_LEN],
+            ae_TargetsLen: 0,
+            ae_System: u8::from(system),
+        };
+        let name_bytes = name.as_bytes();
+        let name_len = name_bytes.len().min(ASSIGN_NAME_LEN - 1);
+        out.ae_Name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+        out.ae_NameLen = name_len as u8;
+
+        let joined = targets.join(" ");
+        let target_bytes = joined.as_bytes();
+        let target_len = target_bytes.len().min(ASSIGN_TARGETS_LEN - 1);
+        out.ae_Targets[..target_len].copy_from_slice(&target_bytes[..target_len]);
+        out.ae_TargetsLen = target_len as u8;
+        out
+    }
+
+    /// The record's bytes, in the layout a user program sees.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..ASSIGN_NAME_LEN].copy_from_slice(&self.ae_Name);
+        out[ASSIGN_NAME_LEN] = self.ae_NameLen;
+        let targets_at = ASSIGN_NAME_LEN + 1;
+        let targets_to = targets_at + ASSIGN_TARGETS_LEN;
+        out[targets_at..targets_to].copy_from_slice(&self.ae_Targets);
+        out[targets_to] = self.ae_TargetsLen;
+        out[targets_to + 1] = self.ae_System;
+        out
+    }
+}
+
 #[cfg(test)]
 extern crate std;
 

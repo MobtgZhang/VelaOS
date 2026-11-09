@@ -319,6 +319,12 @@ impl Assign {
     }
 }
 
+/// How many assign hops a target resolution may chain.
+///
+/// `A:` pointing at `B:` pointing at `C:` is legal; a cycle is not, and the
+/// depth bound is what turns one into a bounded chain rather than a loop.
+const ASSIGN_TARGET_DEPTH: u8 = 8;
+
 /// The table of assigns.
 #[derive(Debug, Clone, Default)]
 pub struct AssignTable {
@@ -386,6 +392,37 @@ impl AssignTable {
         table
     }
 
+    /// Insert an assign, or replace an existing *user* assign.
+    ///
+    /// Returns `false` when the name is already taken by a **system** assign,
+    /// in which case the existing one is left alone. Overwriting a system
+    /// assign would let a program break the system's path resolution, but
+    /// re-defining a program's own assign is an ordinary operation — AmigaDOS
+    /// re-points assigns all the time.
+    pub fn replace(&mut self, assign: Assign) -> bool {
+        match self.position(&assign.name) {
+            Some(index) => {
+                if self.assigns[index].system {
+                    return false;
+                }
+                self.assigns[index] = assign;
+                true
+            }
+            None => {
+                self.assigns.push(assign);
+                true
+            }
+        }
+    }
+
+    /// The index of the assign with this name, case-insensitively.
+    fn position(&self, name: &str) -> Option<usize> {
+        let folded = fold_case(name);
+        self.assigns
+            .iter()
+            .position(|a| fold_case(&a.name) == folded)
+    }
+
     /// Insert an assign.
     ///
     /// Returns `false` when an assign with that name already exists, in
@@ -447,6 +484,11 @@ impl AssignTable {
     pub fn names(&self) -> Vec<String> {
         self.assigns.iter().map(|a| a.name.clone()).collect()
     }
+
+    /// Every assign, in creation order.
+    pub fn all(&self) -> &[Assign] {
+        &self.assigns
+    }
 }
 
 /// A resolved path: a backend path and the assign it came through.
@@ -503,7 +545,12 @@ impl PathProbe for AnyPath {
 #[derive(Debug)]
 pub struct Resolver {
     /// The assigns.
-    pub assigns: AssignTable,
+    ///
+    /// A lock rather than a plain field, because assigns can be added and
+    /// removed while the system runs — `Assign WORK: SYS:Work` is a runtime
+    /// operation — and the resolver is shared as `&Resolver` everywhere. The
+    /// current directory is behind a lock for the same reason.
+    pub assigns: Mutex<AssignTable>,
     /// The current directory.
     ///
     /// A lock rather than a plain field, because the process that *is* the
@@ -529,7 +576,7 @@ impl Resolver {
     /// directory.
     pub fn new() -> Self {
         Self {
-            assigns: AssignTable::with_builtins(),
+            assigns: Mutex::new(AssignTable::with_builtins()),
             current: Mutex::new(AmigaPath {
                 volume: None,
                 path: "/".to_string(),
@@ -597,7 +644,10 @@ impl Resolver {
             });
         }
 
-        let Some(assign) = self.assigns.find(volume) else {
+        // The lock guard is a local rather than part of the `let Some` so
+        // the borrow of `assign` inside it lives as long as the resolution.
+        let assigns = self.assigns.lock();
+        let Some(assign) = assigns.find(volume) else {
             // An unknown volume name. It might still be a real mount point
             // — a filesystem mounted at `/Volumes/Foo` — but the resolver
             // does not know about mounts; it knows about assigns.
@@ -609,11 +659,21 @@ impl Resolver {
             return Err(errors::NO_VOLUME);
         }
 
+        // Targets are Amiga paths, not backend paths: `Assign WORK: SYS:Work`
+        // is how AmigaDOS writes a new assign, and a target that names a
+        // volume has to be resolved through the assigns before it can be
+        // joined onto.
+        let targets: Vec<String> = assign
+            .targets
+            .iter()
+            .map(|t| Self::backend_target(&assigns, t, ASSIGN_TARGET_DEPTH))
+            .collect();
+
         // A single-target assign resolves without consulting the
         // filesystem: the path is valid whether or not the file exists.
-        if assign.targets.len() == 1 {
+        if targets.len() == 1 {
             return Ok(Resolved {
-                backend: join_path(&assign.targets[0], relative),
+                backend: join_path(&targets[0], relative),
                 volume: Some(volume.clone()),
                 assign: Some(assign.name.clone()),
                 target_index: 0,
@@ -622,7 +682,7 @@ impl Resolver {
 
         // A multi-target assign is a search list: the first target that has
         // the file wins.
-        for (index, target) in assign.targets.iter().enumerate() {
+        for (index, target) in targets.iter().enumerate() {
             let candidate = join_path(target, relative);
             if probe.exists(&candidate) {
                 return Ok(Resolved {
@@ -638,23 +698,63 @@ impl Resolver {
         // is creating the file needs somewhere to create it, and reporting
         // "not found" would be wrong for a create.
         Ok(Resolved {
-            backend: join_path(&assign.targets[0], relative),
+            backend: join_path(&targets[0], relative),
             volume: Some(volume.clone()),
             assign: Some(assign.name.clone()),
             target_index: 0,
         })
     }
 
+    /// The backend form of one assign target.
+    ///
+    /// A target with no colon already *is* a backend path — the built-in
+    /// assigns are written that way — so it is returned as it stands. A
+    /// target that names a volume (`SYS:Work`) is resolved through the
+    /// assigns, taking the first target of each assign it passes through,
+    /// because a target is a *place* and a search list has no single place:
+    /// the first one is the one a create would use.
+    ///
+    /// `depth` bounds the chain — `A:` pointing at `B:` pointing at `C:` is
+    /// legal, but a cycle would otherwise loop forever.
+    ///
+    /// The table is passed in already locked, because the caller holds the
+    /// lock for the whole resolution and the spin lock is not reentrant.
+    fn backend_target(table: &AssignTable, target: &str, depth: u8) -> String {
+        if depth == 0 {
+            return target.to_string();
+        }
+        let Ok(parsed) = AmigaPath::parse(target) else {
+            return target.to_string();
+        };
+        let Some(volume) = &parsed.volume else {
+            return target.to_string();
+        };
+        let Some(assign) = table.find(volume) else {
+            return target.to_string();
+        };
+        let Some(first) = assign.targets.first() else {
+            return target.to_string();
+        };
+        let resolved = Self::backend_target(table, first, depth - 1);
+        // The join takes a *relative* part, exactly as `resolve_parsed`
+        // builds one: a target's own directory part has already been
+        // consumed by the recursion.
+        join_path(&resolved, parsed.path.trim_start_matches('/'))
+    }
+
     /// Create or replace an assign.
     ///
     /// Returns `false` when the name is already taken by a system assign.
-    pub fn add_assign(&mut self, name: &str, targets: Vec<String>) -> bool {
-        self.assigns.insert(Assign::new(name, targets))
+    pub fn add_assign(&self, name: &str, targets: Vec<String>) -> bool {
+        self.assigns.lock().replace(Assign::new(name, targets))
     }
 
     /// Remove an assign.
-    pub fn remove_assign(&mut self, name: &str) -> bool {
-        self.assigns.remove(name)
+    ///
+    /// Returns `false` when the name is not a removable assign: either it is
+    /// not there at all, or it is one of the system's.
+    pub fn remove_assign(&self, name: &str) -> bool {
+        self.assigns.lock().remove(name)
     }
 }
 
