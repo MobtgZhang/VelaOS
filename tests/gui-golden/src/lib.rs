@@ -223,6 +223,21 @@ pub fn capture(
         );
     }
 
+    // Wait for the desktop itself, not just for the kernel. Between the two
+    // sits the boot menu, whose default timeout is ten seconds — long enough
+    // that a fixed settle after the banner would capture the menu rather
+    // than the desktop it is about to boot.
+    let settled = vm.wait_for_markers(qemu::USERLAND_MARKERS, BOOT_TIMEOUT);
+    if !settled {
+        let log = vm.serial_log();
+        drop(vm);
+        bail!(
+            "the machine never reached the desktop's ready marker, so there is \
+             no desktop to capture.\n--- serial log ---\n{}",
+            qemu::strip_ansi(&log)
+        );
+    }
+
     // Let the desktop finish drawing.
     std::thread::sleep(SETTLE_TIME);
 
