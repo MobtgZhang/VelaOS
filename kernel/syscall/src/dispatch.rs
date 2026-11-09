@@ -878,7 +878,7 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::DOS_MKDIR, crate::dos_handlers::mkdir);
     // The calls with no slot in the base range are installed at the numbers
     // that continue the group, because the group reserves 64 slots and only
-    // eight are used so far.
+    // thirteen are used so far.
     table.install(numbers::DOS_EXAMINE, crate::dos_handlers::examine);
     table.install(numbers::DOS_CURRENT_DIR, crate::dos_handlers::current_dir);
     table.install(numbers::DOS_EXAMINE_DIR, crate::dos_handlers::examine_dir);
@@ -886,6 +886,7 @@ pub fn builtin_table() -> DispatchTable {
         numbers::DOS_SET_CURRENT_DIR,
         crate::dos_handlers::set_current_dir,
     );
+    table.install(numbers::DOS_RENAME, crate::dos_handlers::rename);
 
     // The `net.library` group: BSD sockets. The handlers live in
     // [`crate::socket_handlers`] and reach the global socket service

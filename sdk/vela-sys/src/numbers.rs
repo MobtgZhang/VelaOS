@@ -198,6 +198,8 @@ pub const D_CURRENT_DIR: u64 = 265;
 pub const D_EXAMINE_DIR: u64 = 266;
 /// `dos.library`: change the current directory.
 pub const D_SET_CURRENT_DIR: u64 = 267;
+/// `dos.library`: rename a file or directory.
+pub const D_RENAME: u64 = 268;
 
 /// `utility.library`: find a tag in a tag list.
 pub const U_FIND_TAG: u64 = 320;

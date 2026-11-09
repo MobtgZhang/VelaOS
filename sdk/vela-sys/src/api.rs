@@ -1544,6 +1544,33 @@ pub fn create_dir(path: &str) -> Result<()> {
     check(packed).map(|_| ())
 }
 
+/// Rename a file or directory.
+///
+/// # Errors
+///
+/// [`errors::PATH_NOT_FOUND`] when either path cannot be resolved, or
+/// [`errors::NOT_OWNER`] when a rename across two filesystems is refused —
+/// AmigaOS's `Rename` does not copy data between volumes.
+pub fn rename(from: &str, to: &str) -> Result<()> {
+    let from_bytes = c_string(from);
+    let to_bytes = c_string(to);
+    // SAFETY: both strings are live for the call; the kernel copies them out.
+    let packed = unsafe {
+        library_base::dos::base().call(
+            offset::DOS_RENAME,
+            [
+                from_bytes.as_ptr() as u64,
+                to_bytes.as_ptr() as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
 /// Look a path up, reporting its size, type, protection and timestamp.
 ///
 /// # Errors

@@ -319,6 +319,32 @@ pub fn mkdir(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
     }
 }
 
+/// `Rename` — rename a file or directory.
+///
+/// Arguments: `from_ptr` and `to_ptr` (user pointers to NUL-terminated
+/// AmigaDOS paths). Returns zero on success.
+///
+/// A rename across two filesystems is refused rather than silently turned
+/// into a copy: AmigaOS's `Rename` does not move data between volumes, and
+/// a command that thought it had renamed would then have no idea the
+/// original was left behind.
+pub fn rename(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let from_ptr = args.get(0);
+    let to_ptr = args.get(1);
+    let from = match copy_path(from_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    let to = match copy_path(to_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    match ctx.dos.rename(&from, &to) {
+        Ok(()) => SyscallResult::ok(0),
+        Err(e) => SyscallResult::err(e),
+    }
+}
+
 /// `Examine` — look a path up, filling in a `FileInfo`.
 ///
 /// Arguments: `name_ptr` (the path), `info_ptr` (a user pointer to receive

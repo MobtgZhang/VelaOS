@@ -36,6 +36,14 @@
 library: dos.library
 prefix: DOS
 functions:
+  - name: Rename
+    lvo: -104
+    offset: RENAME
+    stub: rename
+    syscall: D_RENAME
+    number: 268
+    kernel: DOS_RENAME
+    status: implemented
   - name: SetCurrentDir
     lvo: -96
     offset: SETCURRENTDIR
