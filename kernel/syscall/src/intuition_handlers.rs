@@ -69,7 +69,14 @@ pub fn open_screen(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult
         .intuition
         .open_screen(&title, bounds, args.get(5) as u16)
     {
-        Ok(id) => SyscallResult::ok(id.0 as u64),
+        Ok(id) => {
+            // The screen claims the display: the boot console stops drawing,
+            // so its later output cannot punch holes in what the screen's
+            // windows composite. The console's output still reaches the
+            // serial log.
+            vela_kernel_console::detach();
+            SyscallResult::ok(id.0 as u64)
+        }
         Err(e) => SyscallResult::err(e),
     }
 }

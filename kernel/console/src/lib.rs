@@ -322,5 +322,18 @@ pub fn has_display() -> bool {
     HAVE_DISPLAY.load(Ordering::Acquire)
 }
 
+/// Stop drawing on the framebuffer.
+///
+/// The boot console is the display's owner only until something graphical
+/// claims it: when a program opens an Intuition screen, the console's cells
+/// would land on top of the desktop's pixels, and a desktop with boot log
+/// text punched through it looks like a black screen with text in the
+/// corner. After this runs, [`putc`] draws nothing — output still reaches
+/// the serial log, which is where a boot log belongs once the screen has
+/// changed hands.
+pub fn detach() {
+    HAVE_DISPLAY.store(false, Ordering::Release);
+}
+
 #[cfg(test)]
 extern crate std;
