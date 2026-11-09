@@ -27,35 +27,43 @@ use vela_sys::api;
 /// meaningful answer rather than a failure it has to interpret.
 ///
 /// The shape is the classic AmigaOS 3.x / AROS system volume (see
-/// `reports/system.md`): functional directories — `C` for shell commands,
-/// `S` for startup scripts, `Libs` for shared libraries, `Devs` for device
-/// drivers, `Classes` for class libraries, `L` for filesystems and
-/// handlers — rather than Linux's `/bin`, `/etc`, `/usr` split. Alongside
-/// them sit the directories a desktop expects to find: `Fonts`, `Locale`,
-/// `Prefs` (with `Env-Archive`, where `ENVARC:` points), `System`,
-/// `Utilities`, `Workbench`, `Demos`, `Extras`, `Trashcan`, `Storage`,
-/// `Expansion` and `WBStartup`. The transient `T:` and the environment
-/// `ENV:` live under `RAM:` instead, which is where the kernel's assigns
-/// point them.
+/// `reports/System-all.md` §3.1): functional directories — `C` for shell
+/// commands, `S` for startup scripts, `Libs` for shared libraries, `Devs`
+/// for device drivers, `Classes` for class libraries (with the
+/// `Datatypes`, `Gadgets` and `Zune` subdirectories a class library needs),
+/// `L` for filesystems and handlers — rather than Linux's `/bin`, `/etc`,
+/// `/usr` split. Alongside them sit the directories a desktop expects to
+/// find: `boot`, `Fonts`, `Locale`, `Development`, `Prefs` (with
+/// `Env-Archive`, where `ENVARC:` points), `System`, `Tools` (with
+/// `Commodities`), `Utilities`, `Workbench`, `Demos`, `Extras`,
+/// `Trashcan`, `Storage`, `Expansion` and `WBStartup`. The transient `T:`
+/// and the environment `ENV:` live under `RAM:` instead, which is where the
+/// kernel's assigns point them.
 ///
 /// `Devs` carries the subdirectories the desktop expects (`DOSDrivers`,
-/// `DataTypes`, `Keymaps`, `Monitors`, `Printers`).
+/// `DataTypes`, `Drivers`, `Keymaps`, `Monitors`, `Printers`).
 ///
 /// Written out rather than generated so that a change to the tree is a diff a
 /// reviewer can read, and so the order is deliberate: parents before children,
 /// because `MakeDir` refuses a parent that is not there and this program would
 /// otherwise have to tolerate — and hide — a partial failure.
-pub const SYS_TREE: [&str; 25] = [
+pub const SYS_TREE: [&str; 33] = [
     "SYS:",
+    "SYS:boot",
     "SYS:C",
     "SYS:Classes",
+    "SYS:Classes/Datatypes",
+    "SYS:Classes/Gadgets",
+    "SYS:Classes/Zune",
+    "SYS:Development",
+    "SYS:Demos",
     "SYS:Devs",
     "SYS:Devs/DataTypes",
     "SYS:Devs/DOSDrivers",
+    "SYS:Devs/Drivers",
     "SYS:Devs/Keymaps",
     "SYS:Devs/Monitors",
     "SYS:Devs/Printers",
-    "SYS:Demos",
     "SYS:Expansion",
     "SYS:Extras",
     "SYS:Fonts",
@@ -67,6 +75,8 @@ pub const SYS_TREE: [&str; 25] = [
     "SYS:S",
     "SYS:System",
     "SYS:Storage",
+    "SYS:Tools",
+    "SYS:Tools/Commodities",
     "SYS:Trashcan",
     "SYS:Utilities",
     "SYS:WBStartup",
@@ -178,19 +188,23 @@ fn seed_readme(report: &mut Report) {
 const READ_ME: &str = "This is the source for VelaOS's transient state.\n\
 Boot a fresh session and this file returns.\n";
 
-/// Seed the two startup scripts `S:` comes with.
+/// Seed the three startup scripts `S:` comes with.
 ///
 /// AmigaOS boots by executing `S:Startup-Sequence`, which in turn runs
 /// `S:User-Startup` for the user's own additions; AROS keeps the same
-/// convention. VelaOS does not have a script interpreter yet — the shell
-/// reads one command at a time — so nothing executes these files. They are
-/// seeded as data because a boot script that does not exist cannot be
-/// *read* either, and the point of the tree is that a program probing for
-/// any of the report's paths gets a coherent answer. A later boot step that
-/// executes them is an independent change.
+/// convention, and a shell's own startup runs `S:Shell-Startup` before its
+/// first prompt. The shell's `Execute` runs these files' syntax — `.KEY`,
+/// `IF EXISTS`, `Set`, one command per line — so they are written as real
+/// scripts rather than as comments with ambitions, and `Execute
+/// SYS:S/Shell-Startup` from the prompt is a working demonstration. Nothing
+/// executes them *automatically* yet: a boot step that runs them is an
+/// independent change. They are seeded as data because a boot script that
+/// does not exist cannot be *read* either, and the point of the tree is that
+/// a program probing for any of the report's paths gets a coherent answer.
 fn seed_startup_scripts(report: &mut Report) {
     seed_file("SYS:S/Startup-Sequence", STARTUP_SEQUENCE, report);
     seed_file("SYS:S/User-Startup", USER_STARTUP, report);
+    seed_file("SYS:S/Shell-Startup", SHELL_STARTUP, report);
 }
 
 /// Write one seeded text file, counting the outcome.
@@ -242,6 +256,24 @@ const STARTUP_SEQUENCE: &str = "; VelaOS Startup-Sequence\n\
 const USER_STARTUP: &str = "; VelaOS User-Startup\n\
 ; Run from Startup-Sequence, for the user's own additions.\n\
 ; Empty by default, as on AmigaOS.\n";
+
+/// The text `run` drops into `SYS:S/Shell-Startup`.
+///
+/// A shell's own startup script, run before its first prompt: AmigaDOS
+/// shells read `S:Shell-Startup` for the variables and assigns a session
+/// wants to begin with. This one is written in the syntax the shell's
+/// `Execute` actually runs, so it is a working script a user can point at,
+/// not a decoration.
+const SHELL_STARTUP: &str = "; VelaOS Shell-Startup\n\
+; Run by the shell before its first prompt.\n\
+;\n\
+; The session's own assign, pointing at the user's work area.\n\
+IF EXISTS SYS:Work\n\
+  Assign WORK: SYS:Work\n\
+ENDIF\n\
+;\n\
+; A variable every script can read.\n\
+Set Editor Sys:Utilities/MuchMore\n";
 
 /// Create one directory, counting the outcome.
 ///
