@@ -262,16 +262,27 @@ pub fn run_shell_roundtrip(
         vm.wait_for_markers(qemu::BOOT_MARKERS, timeout),
         "the kernel never reached its banner, so there is no boot menu to select"
     );
-    vm.monitor_command("sendkey 1")?;
-    std::thread::sleep(Duration::from_millis(300));
 
-    // The terminal choice is now in effect; the shell must be at its prompt
-    // before the first keystroke lands, or the bytes are read as noise by
-    // whatever is running instead.
-    anyhow::ensure!(
-        vm.wait_for_markers(qemu::SHELL_MARKERS, timeout),
-        "the userland never reached the shell"
-    );
+    // Pick the terminal entry. The keypress may race the menu in either
+    // direction: sent before the menu's first poll it sits in the PS/2
+    // controller waiting to be read, and a machine under load can take a
+    // moment to get there — so if the shell marker never shows up, press
+    // the key again while the menu is still waiting. Once the choice is
+    // made, a second `sendkey 1` reaches the shell as a `1` on its prompt,
+    // which is harmless: the round trip types its own line afterwards.
+    let mut chosen = false;
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        vm.monitor_command("sendkey 1")?;
+        std::thread::sleep(Duration::from_millis(300));
+        let log = strip_ansi(&vm.serial_log());
+        if qemu::SHELL_MARKERS.iter().all(|m| log.contains(m)) {
+            chosen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    anyhow::ensure!(chosen, "the userland never reached the shell");
     // The prompt itself is printed by the shell just after the last marker;
     // a short settle keeps the first keystroke from racing it.
     std::thread::sleep(Duration::from_secs(1));
