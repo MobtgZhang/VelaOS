@@ -28,57 +28,63 @@ use vela_sys::api;
 ///
 /// The shape is the classic AmigaOS 3.x / AROS system volume (see
 /// `reports/system.md`): functional directories — `C` for shell commands,
-/// `Libs` for shared libraries, `Devs` for device drivers, `L` for
-/// filesystems and handlers, `S` for startup scripts — rather than Linux's
-/// `/bin`, `/etc`, `/usr` split. `Devs` carries the subdirectories the
-/// desktop expects (`DOSDrivers`, `DataTypes`, `Keymaps`, `Monitors`,
-/// `Printers`), and `Prefs/Env-Archive` is where `ENVARC:` points.
+/// `S` for startup scripts, `Libs` for shared libraries, `Devs` for device
+/// drivers, `Classes` for class libraries, `L` for filesystems and
+/// handlers — rather than Linux's `/bin`, `/etc`, `/usr` split. Alongside
+/// them sit the directories a desktop expects to find: `Fonts`, `Locale`,
+/// `Prefs` (with `Env-Archive`, where `ENVARC:` points), `System`,
+/// `Utilities`, `Workbench`, `Demos`, `Extras`, `Trashcan`, `Storage`,
+/// `Expansion` and `WBStartup`. The transient `T:` and the environment
+/// `ENV:` live under `RAM:` instead, which is where the kernel's assigns
+/// point them.
+///
+/// `Devs` carries the subdirectories the desktop expects (`DOSDrivers`,
+/// `DataTypes`, `Keymaps`, `Monitors`, `Printers`).
 ///
 /// Written out rather than generated so that a change to the tree is a diff a
 /// reviewer can read, and so the order is deliberate: parents before children,
 /// because `MakeDir` refuses a parent that is not there and this program would
 /// otherwise have to tolerate — and hide — a partial failure.
-pub const SYS_TREE: [&str; 21] = [
+pub const SYS_TREE: [&str; 25] = [
     "SYS:",
     "SYS:C",
     "SYS:Classes",
     "SYS:Devs",
-    "SYS:Devs/DOSDrivers",
     "SYS:Devs/DataTypes",
+    "SYS:Devs/DOSDrivers",
     "SYS:Devs/Keymaps",
     "SYS:Devs/Monitors",
     "SYS:Devs/Printers",
+    "SYS:Demos",
+    "SYS:Expansion",
+    "SYS:Extras",
     "SYS:Fonts",
     "SYS:L",
     "SYS:Libs",
     "SYS:Locale",
     "SYS:Prefs",
-    "SYS:System",
-    "SYS:System/Prefs",
-    "SYS:Storage",
+    "SYS:Prefs/Env-Archive",
     "SYS:S",
-    "SYS:Tools",
+    "SYS:System",
+    "SYS:Storage",
+    "SYS:Trashcan",
     "SYS:Utilities",
     "SYS:WBStartup",
+    "SYS:Workbench",
 ];
 
 /// The directories created under `RAM:`.
 ///
 /// `RAM:` is the writable half of the namespace: the transient state a boot
-/// session wants — scratch space under `T:`, the live environment under
-/// `ENV:` — that a ramfs rebuilds empty on every boot. Written out rather
-/// than generated so that a change to the tree is a diff a reviewer can
-/// read, and so the order is deliberate: parents before children, because
-/// `MakeDir` refuses a parent that is not there and this program would
-/// otherwise have to tolerate — and hide — a partial failure.
-pub const RAM_TREE: [&str; 6] = [
-    "RAM:",
-    "RAM:T",
-    "RAM:Utilities",
-    "RAM:Utilities/Clipboards",
-    "RAM:Clipboards",
-    "RAM:Env",
-];
+/// session wants, and exactly the set AmigaOS and AROS both put on a RAM
+/// disk — scratch space under `T:`, the clipboard under `Clipboards`, the
+/// live environment under `Env:` — all of which a ramfs rebuilds empty on
+/// every boot. Written out rather than generated so that a change to the
+/// tree is a diff a reviewer can read, and so the order is deliberate:
+/// parents before children, because `MakeDir` refuses a parent that is not
+/// there and this program would otherwise have to tolerate — and hide — a
+/// partial failure.
+pub const RAM_TREE: [&str; 4] = ["RAM:", "RAM:T", "RAM:Clipboards", "RAM:Env"];
 
 /// What `init` did, as data.
 ///
@@ -329,7 +335,9 @@ mod tests {
                 "{path} is not on a known volume",
             );
         }
-        assert!(all.contains(&"SYS:System/Prefs"));
+        assert!(all.contains(&"SYS:System"));
+        assert!(all.contains(&"SYS:Workbench"));
+        assert!(all.contains(&"SYS:Prefs/Env-Archive"));
         assert!(all.contains(&"RAM:T"));
     }
 

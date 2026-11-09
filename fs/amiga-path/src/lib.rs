@@ -351,10 +351,14 @@ impl AssignTable {
         table.insert(Assign::system("L", vec!["/System/L".to_string()]));
         table.insert(Assign::system("FONTS", vec!["/System/Fonts".to_string()]));
         table.insert(Assign::system("T", vec!["/ramfs/T".to_string()]));
-        table.insert(Assign::system("ENV", vec!["/ramfs/ENV".to_string()]));
+        table.insert(Assign::system("ENV", vec!["/ramfs/Env".to_string()]));
+        table.insert(Assign::system(
+            "CLIPBOARDS",
+            vec!["/ramfs/Clipboards".to_string()],
+        ));
         table.insert(Assign::system(
             "ENVARC",
-            vec!["/System/Env-Archive".to_string()],
+            vec!["/System/Prefs/Env-Archive".to_string()],
         ));
         table.insert(Assign::system("PREFS", vec!["/System/Prefs".to_string()]));
         table.insert(Assign::system("LOCALE", vec!["/System/Locale".to_string()]));
@@ -372,15 +376,13 @@ impl AssignTable {
             "STORAGE",
             vec!["/System/Storage".to_string()],
         ));
-        // WORKBENCH is seeded later by init's seed_startup_scripts via the
-        // WBStartup/ directory that init creates; it is not a built-in assign
-        // that resolves immediately: keeping it out of with_builtins() avoids
-        // the assign resolving before the WBStartup directory exists, which would
-        // be confusing to assign tests and path probes.
-        // table.insert(Assign::system(
-        //     "WORKBENCH",
-        //     vec!["/System/Workbench".to_string()],
-        // ));
+        // `WORKBENCH:` names the desktop's own directory, which `init`
+        // creates on every boot before any program that would use the
+        // assign runs — so the assign can resolve immediately.
+        table.insert(Assign::system(
+            "WORKBENCH",
+            vec!["/System/Workbench".to_string()],
+        ));
         table
     }
 
