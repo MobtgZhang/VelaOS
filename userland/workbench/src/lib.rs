@@ -149,16 +149,16 @@ const BORDER: i32 = 2;
 /// One thing on the desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    /// The `ramfs` volume.
+    /// The `RAM:` volume.
     RamDisk,
-    /// The `sysfs` volume.
+    /// The `SYS:` volume.
     System,
     /// The text editor.
     Edit,
-    /// The acceptance demo application.
-    GuiTest,
     /// The shell.
     Shell,
+    /// The acceptance demo application.
+    GuiTest,
 }
 
 impl Icon {
@@ -176,10 +176,15 @@ impl Icon {
     ];
 
     /// The icon's displayed name.
+    ///
+    /// Volumes are spelled the way AmigaDOS spells them, colon and all:
+    /// a desktop whose icons say `ramfs` and `sysfs` is a desktop wearing
+    /// Linux filesystem names, and the volume *is* the namespace a user
+    /// types into the shell.
     pub const fn name(self) -> &'static str {
         match self {
-            Icon::RamDisk => "ramfs",
-            Icon::System => "sysfs",
+            Icon::RamDisk => "RAM:",
+            Icon::System => "SYS:",
             Icon::Edit => "Edit",
             Icon::Shell => "Shell",
             Icon::GuiTest => "guitest",
@@ -189,8 +194,8 @@ impl Icon {
     /// What launching it does.
     pub const fn target(self) -> &'static str {
         match self {
-            Icon::RamDisk => "ramfs",
-            Icon::System => "sysfs",
+            Icon::RamDisk => "RAM:",
+            Icon::System => "SYS:",
             Icon::Edit => "Edit",
             Icon::Shell => "Shell",
             Icon::GuiTest => "guitest",
@@ -830,7 +835,7 @@ impl Desktop {
         match action {
             Action::Nothing | Action::Up => {}
             Action::Drawer => {
-                self.open_front_window("ramfs", 140, 140, 360, 240);
+                self.open_front_window("SYS:", 140, 140, 360, 240);
             }
             Action::Readme => {
                 if let Some(front) = self.open_front_window("ReadMe", 200, 180, 420, 260) {
