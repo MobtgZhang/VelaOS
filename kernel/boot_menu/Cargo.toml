@@ -8,4 +8,5 @@ description = "Boot menu: terminal vs desktop selection at startup"
 
 [dependencies]
 vela-arch.workspace = true
+vela-kernel-console.workspace = true
 spin.workspace = true
