@@ -1216,6 +1216,32 @@ fn report_page_fault(f: &InterruptFrame) -> ! {
     serial::puts("\n    RSP        = ");
     serial::puts_hex(f.rsp);
     serial::puts("\n");
+    // A stack dump: the return addresses left on the stack by `call` are what
+    // say *who* faulted, which is the one thing the frame alone cannot.
+    // For a same-privilege fault the CPU pushes no RSP, so the frame's field
+    // is uninitialised; the handler's own stack pointer is the honest one,
+    // and the interrupted call chain sits above it.
+    serial::puts("    stack      =\n");
+    // SAFETY: reading the current `rsp` is the handler's own stack, and the
+    // words above it belong to the stub and to the interrupted call chain —
+    // all mapped, all inside the kernel stack the machine is running on.
+    // The count is bounded well below a page, so the walk cannot run off the
+    // top of a stack that had room to enter this handler in the first place.
+    let mut at: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) at, options(nomem, nostack));
+    }
+    at = (at + 7) & !7;
+    for _ in 0..40 {
+        let word = unsafe { core::ptr::read_unaligned(at as *const u64) };
+        serial::puts("      [");
+        serial::puts_hex(at);
+        serial::puts("] = ");
+        serial::puts_hex(word);
+        serial::puts("\n");
+        at += 8;
+    }
+    serial::puts("\n");
 
     // A user-mode fault with no handler installed is a user bug, not a kernel
     // bug, but it is still unrecoverable in v0.1.0: there is no user signal
