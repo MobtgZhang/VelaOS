@@ -68,8 +68,21 @@
 //! | `EENTRY` | 0x0C  | Trap entry base                                       |
 //!
 //! Returning is a single `ertn`: it copies `PRMD.PPLV` → `CRMD.PLV`,
-//! `PRMD.PIE` → `CRMD.IE` and jumps to `ERA`. See [`crate::userspace`] for
-//! how VelaOS builds `PRMD` before entering ring 3.
+//! `PRMD.PIE` → `CRMD.IE` and jumps to `ERA`. See
+//! [`crate::syscall::userspace`] for how VelaOS builds `PRMD` before
+//! entering ring 3.
+//!
+//! # The entry stub and the frame
+//!
+//! [`vela_trap_entry`] (assembly) is what every vector slot branches to. It
+//! switches to the kernel stack when the trap came from ring 3, saves the
+//! register file into a [`TrapFrame`] on that stack, and calls
+//! [`vela_trap_handler`], which dispatches on the exception code. Before
+//! returning, the stub re-installs `ERA` and `PRMD` *from the frame* and
+//! finishes with a single `ertn` — so a handler that edits `frame.era`
+//! (skipping a faulting instruction, for instance) changes where the
+//! interrupted code resumes, and a nested trap's clobber of the two CSRs is
+//! undone by the outer frame's saved values.
 
 /// The register state a trap saves.
 ///
@@ -149,6 +162,9 @@ pub struct TrapFrame {
     pub era: u64,
     /// The exception status.
     pub estat: u64,
+    /// The `PRMD` the trap was taken with: the interrupted privilege level
+    /// and interrupt enable. Restored before `ertn` (see the module docs).
+    pub prmd: u64,
     /// The mode the processor was in.
     pub crmd: u64,
     /// The bad virtual address, for the address faults.
@@ -159,6 +175,7 @@ impl TrapFrame {
     /// A frame with nothing saved in it.
     pub const fn empty() -> Self {
         Self {
+            prmd: 0,
             ra: 0,
             tp: 0,
             sp: 0,
