@@ -384,6 +384,16 @@ impl Vm {
     /// PNG writer compresses with zlib. A golden test that wants to compare
     /// pixels should not have to implement an inflate.
     pub fn screendump_ppm(&self, out: &Path) -> Result<()> {
+        // Remove any dump a previous run left behind *before* asking QEMU
+        // for a new one. The monitor replies before the dump is written, so
+        // the wait below cannot tell a fresh dump from a complete leftover:
+        // a stale file here would end the wait on the first iteration, and
+        // the dump that followed would truncate the file under the reader.
+        // Starting from "no file" is what makes the wait meaningful.
+        if out.exists() {
+            std::fs::remove_file(out)
+                .with_context(|| format!("removing the stale dump {}", out.display()))?;
+        }
         let cmd = format!("screendump {} -f ppm", out.display());
         let reply = self.monitor_command(&cmd)?;
         if reply.contains("Error") || reply.contains("error") {
