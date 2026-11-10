@@ -426,7 +426,6 @@ fn two_scheduled_tasks_hand_a_semaphore_over() {
 
     let semaphore = exec.init_semaphore(0);
     let holder = exec.create_task();
-    let waiter = exec.create_task();
 
     // The holder takes the lock before anybody else runs.
     assert_eq!(
@@ -436,13 +435,28 @@ fn two_scheduled_tasks_hand_a_semaphore_over() {
 
     let granted = Arc::new(AtomicU32::new(0));
     let ran = Arc::new(AtomicU32::new(0));
+    // The waiter's task id is published by the waiter itself: the task the
+    // scheduler runs is not the task the test created by hand, and waking
+    // the wrong one would leave the waiter asleep.
+    let waiter_id = Arc::new(Mutex::new(TaskId::NONE));
 
     {
         let granted = Arc::clone(&granted);
         let ran = Arc::clone(&ran);
+        let waiter_id = Arc::clone(&waiter_id);
         k.spawn("waiter", 0, move |k| {
             ran.fetch_add(1, Ordering::SeqCst);
             let task = k.exec().current_task();
+            *waiter_id.lock().unwrap() = task;
+            let signals = k.exec().task_signals(task).expect("the waiter is alive");
+            if signals.has_any(SIGF_SINGLE) {
+                // Woken by a grant: confirm the hand-off rather than
+                // acquiring the lock a second time, which would nest it.
+                if k.exec().confirm_grant(task, semaphore).unwrap() {
+                    granted.fetch_add(1, Ordering::SeqCst);
+                }
+                return;
+            }
             match k.exec().obtain_semaphore(task, semaphore, false) {
                 Ok(Obtain::Obtained) => {
                     granted.fetch_add(1, Ordering::SeqCst);
@@ -463,12 +477,16 @@ fn two_scheduled_tasks_hand_a_semaphore_over() {
 
     {
         let ran = Arc::clone(&ran);
+        let waiter_id = Arc::clone(&waiter_id);
         k.spawn("holder", 6, move |k| {
             ran.fetch_add(1, Ordering::SeqCst);
             // The release grants the queued waiter and wakes it with
             // `SIGF_SINGLE`.
             k.exec().release_semaphore(holder, semaphore).unwrap();
-            k.wake(waiter, SIGF_SINGLE);
+            let waiter = *waiter_id.lock().unwrap();
+            if !waiter.is_none() {
+                k.wake(waiter, SIGF_SINGLE);
+            }
         });
     }
 

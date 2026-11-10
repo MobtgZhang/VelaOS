@@ -351,14 +351,13 @@ impl Exec {
     /// lock it can no longer release.
     pub fn exit_task(&self, task: TaskId) -> Vec<Message> {
         let dropped = self.ports.cleanup_task(task);
-        // The semaphore cleanup returns the waiters granted in the dead
-        // task's place, each of which must be woken with the grant signal.
-        let granted = self.semaphores.cleanup_task(task);
-        for waiter in granted {
+        // The semaphore cleanup grants the dead task's locks onward, and
+        // each grantee must be woken with the grant signal.
+        self.semaphores.cleanup_task(task, |waiter| {
             if let Some(signals) = self.task_signals(waiter.task) {
                 signals.raise(SIGF_SINGLE);
             }
-        }
+        });
         self.task_names.lock().retain(|(id, _)| *id != task);
         let mut tasks = self.tasks.lock();
         if task.0 >= 1 {
@@ -454,12 +453,20 @@ impl Exec {
         let Some(signals) = self.task_signals(task) else {
             return Err(errors::NOT_OWNER);
         };
-        let pending =
-            signals.blocked_on() == BlockedOn::Semaphore(id.0) && signals.has_any(SIGF_SINGLE);
-        if !pending {
+        // The task must be waiting for a grant *on this semaphore*. That is
+        // the whole test: a task waiting for something else, or waiting on
+        // nothing, has no grant to confirm.
+        if signals.blocked_on() != BlockedOn::Semaphore(id.0) {
             return Ok(false);
         }
-        signals.end_wait();
+        // The wait is consumed: the task is no longer waiting for a grant.
+        if signals.has_any(SIGF_SINGLE) {
+            signals.end_wait();
+        }
+        // The grant happened if and only if the task holds the lock now.
+        // Checking the lock rather than the signal closes the last window:
+        // a grant whose signal has not been raised yet still shows up as
+        // the lock being held.
         Ok(self.semaphores.holds(task, id))
     }
 
@@ -474,14 +481,16 @@ impl Exec {
     }
 
     /// `ReleaseSemaphore` — give up one nesting level, granting the queue.
+    ///
+    /// The grantees are woken with [`SIGF_SINGLE`] *while the semaphore
+    /// table's lock is still held*, so that a waiter cannot observe the
+    /// grant before the wake and take the lock a second time.
     pub fn release_semaphore(&self, task: TaskId, id: SemaphoreId) -> Result<(), i32> {
-        let granted = self.semaphores.release(task, id)?;
-        for waiter in granted {
+        self.semaphores.release(task, id, |waiter| {
             if let Some(signals) = self.task_signals(waiter.task) {
                 signals.raise(SIGF_SINGLE);
             }
-        }
-        Ok(())
+        })
     }
 
     /// `AddSemaphore` — create a semaphore and list it under a name.
@@ -508,13 +517,11 @@ impl Exec {
 
     /// Delete a semaphore, waking its waiters so they fail rather than hang.
     pub fn delete_semaphore(&self, id: SemaphoreId) -> Result<(), i32> {
-        let wake = self.semaphores.delete(id)?;
-        for waiter in wake {
+        self.semaphores.delete(id, |waiter| {
             if let Some(signals) = self.task_signals(waiter.task) {
                 signals.raise(SIGF_SINGLE);
             }
-        }
-        Ok(())
+        })
     }
 
     /// Create a message port owned by `owner`.
@@ -709,7 +716,19 @@ impl Exec {
             // mask as "return immediately".
             return Ok(Some(0));
         }
-        if signals.begin_wait(mask, BlockedOn::Signal(mask)) {
+        // A task that is waiting for a semaphore grant keeps that reason for
+        // its wait.
+        //
+        // The reason is what tells the kernel "the grant woke me" from "the
+        // wake was something else", and a plain signal wait would lose it:
+        // the waiter would then take the lock a second time — nesting it
+        // one level deeper than it asked for — instead of confirming the
+        // hand-off.
+        let on = match signals.blocked_on() {
+            BlockedOn::Semaphore(id) if mask & SIGF_SINGLE != 0 => BlockedOn::Semaphore(id),
+            _ => BlockedOn::Signal(mask),
+        };
+        if signals.begin_wait(mask, on) {
             // The task blocks; the scheduler resumes it later.
             return Ok(None);
         }

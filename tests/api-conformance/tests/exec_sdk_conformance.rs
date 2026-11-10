@@ -167,6 +167,57 @@ fn sdk_named_semaphore_is_found_by_name() {
 }
 
 #[test]
+fn sdk_acquire_semaphore_waits_for_the_grant() {
+    // The blocking form, driven through the SDK across two threads.
+    //
+    // The thread that waits is the interesting one: it asks for a lock
+    // another thread holds, is queued, and must be woken by the release
+    // and *confirm* the hand-off. Confirming rather than acquiring again
+    // is what keeps the lock from being nested a level deeper than the
+    // first request asked for.
+    let _guard = ready();
+    let kernel = services();
+
+    let semaphore = api::create_semaphore(0).expect("InitSemaphore");
+    let id = vela_kernel_exec::semaphore::SemaphoreId(semaphore.0 as u32);
+    let holder = kernel.exec().create_task();
+    assert_eq!(
+        kernel.exec().obtain_semaphore(holder, id, false).unwrap(),
+        vela_kernel_exec::semaphore::Obtain::Obtained,
+        "the holder takes the lock"
+    );
+
+    // The waiting thread: its own task, its own current-task binding.
+    let semaphore_for_thread = semaphore;
+    let kernel_ptr: &'static vela_hosted::Kernel = kernel;
+    let acquired = std::thread::spawn(move || {
+        kernel_ptr
+            .exec()
+            .set_current_task(kernel_ptr.exec().create_task());
+        api::acquire_semaphore(semaphore_for_thread, false).expect("AcquireSemaphore");
+        // The lock is held exactly once: a nested acquisition would leave
+        // it held after a single release.
+        api::release_semaphore(semaphore_for_thread).expect("ReleaseSemaphore");
+    });
+
+    // Give the waiter time to queue, then release the lock.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    kernel
+        .exec()
+        .release_semaphore(holder, id)
+        .expect("ReleaseSemaphore");
+
+    acquired.join().expect("the waiting thread finishes");
+
+    // And the lock is free again: one acquire, one release.
+    assert!(
+        kernel.exec().attempt_semaphore(holder, id, false).unwrap(),
+        "the lock is free again",
+    );
+    kernel.exec().delete_semaphore(id).ok();
+}
+
+#[test]
 fn sdk_alert_is_accepted() {
     let _guard = ready();
 

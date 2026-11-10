@@ -289,6 +289,18 @@ impl SemaphoreTable {
             grant(sem, task, shared);
             return Ok(Obtain::Obtained);
         }
+        // A task that is already queued for this semaphore must not be
+        // queued a second time.
+        //
+        // The queue holds one entry per waiting task, and a second entry
+        // would grant the same task the lock twice — once for each entry —
+        // so the task would end up holding two levels for one request. A
+        // caller that asks again while it waits (a program polling for the
+        // grant, or a scheduler that resumes it and asks again) is asking
+        // the same question, not a new one.
+        if sem.waiters.iter().any(|waiter| waiter.task == task) {
+            return Ok(Obtain::Queued);
+        }
         sem.waiters.push(Waiter { task, shared });
         Ok(Obtain::Queued)
     }
@@ -321,12 +333,24 @@ impl SemaphoreTable {
     /// granted onward: to every *leading* shared waiter, or — when the first
     /// waiter is exclusive — to that waiter alone.
     ///
-    /// The returned waiters were granted the lock and must be woken with
-    /// `SIGF_SINGLE` by the caller. Releasing a lock the task does not hold
-    /// is [`errors::NOT_OWNER`], the modern spelling of AROS's
-    /// `Alert(AN_SemCorrupt)`; the alert itself is the caller's business,
-    /// because an alert may need to log to a console this table cannot see.
-    pub fn release(&self, task: TaskId, id: SemaphoreId) -> Result<Vec<Waiter>, i32> {
+    /// The granted waiters are woken through `on_grant`, which is called
+    /// **while the table's lock is still held**. That is not an
+    /// implementation detail: the grant and the wake have to be
+    /// indivisible, because a waiter that asks again between the two would
+    /// find the lock already granted and take it a second time — nesting it
+    /// a level deeper than it asked for. Waking the waiter under the lock
+    /// closes that window.
+    ///
+    /// Releasing a lock the task does not hold is [`errors::NOT_OWNER`], the
+    /// modern spelling of AROS's `Alert(AN_SemCorrupt)`; the alert itself is
+    /// the caller's business, because an alert may need to log to a console
+    /// this table cannot see.
+    pub fn release(
+        &self,
+        task: TaskId,
+        id: SemaphoreId,
+        mut on_grant: impl FnMut(&Waiter),
+    ) -> Result<(), i32> {
         let mut inner = self.inner.lock();
         let Some(sem) = inner.semaphore_mut(id) else {
             return Err(errors::NO_OBJECT);
@@ -342,20 +366,24 @@ impl SemaphoreTable {
         }
         sem.nest_count -= 1;
         if sem.nest_count > 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        // The lock is free. Grant onward to the queue.
-        Ok(grant_from_queue(sem))
+        // The lock is free. Grant onward to the queue, waking each grantee
+        // as it is granted.
+        for waiter in grant_from_queue(sem) {
+            on_grant(&waiter);
+        }
+        Ok(())
     }
 
-    /// Delete a semaphore and return its waiters to be woken.
+    /// Delete a semaphore and wake its waiters.
     ///
     /// AmigaOS had no `DeleteSemaphore` — the structure lived in caller
     /// memory and simply went away. A kernel-owned table needs an explicit
-    /// teardown, and a teardown that strands waiters would hang them, so the
-    /// waiters are returned for waking; they retry, see `NO_OBJECT`, and
-    /// fail rather than sleep forever.
-    pub fn delete(&self, id: SemaphoreId) -> Result<Vec<Waiter>, i32> {
+    /// teardown, and a teardown that strands waiters would hang them, so
+    /// the waiters are woken; they retry, see `NO_OBJECT`, and fail rather
+    /// than sleep forever.
+    pub fn delete(&self, id: SemaphoreId, mut on_wake: impl FnMut(&Waiter)) -> Result<(), i32> {
         let mut inner = self.inner.lock();
         let index = id.0 as usize - 1;
         if index >= inner.entries.len() || inner.entries[index].is_none() {
@@ -363,7 +391,10 @@ impl SemaphoreTable {
         }
         let mut sem = inner.entries[index].take().unwrap();
         inner.free.push(id);
-        Ok(core::mem::take(&mut sem.waiters))
+        for waiter in core::mem::take(&mut sem.waiters) {
+            on_wake(&waiter);
+        }
+        Ok(())
     }
 
     /// Release every lock `task` holds and dequeue it from every queue.
@@ -375,9 +406,8 @@ impl SemaphoreTable {
     /// by design, so a shared holder that dies without releasing leaves the
     /// lock shared-held — the same leak a missing `ReleaseSemaphore` is on
     /// any OS, and no worse.
-    pub fn cleanup_task(&self, task: TaskId) -> Vec<Waiter> {
+    pub fn cleanup_task(&self, task: TaskId, mut on_grant: impl FnMut(&Waiter)) {
         let mut inner = self.inner.lock();
-        let mut wake = Vec::new();
         for entry in inner.entries.iter_mut() {
             let Some(sem) = entry else { continue };
             // Release every exclusive nest level the task holds, granting
@@ -385,8 +415,9 @@ impl SemaphoreTable {
             while sem.owner == Some(task) && sem.nest_count > 0 {
                 sem.nest_count -= 1;
                 if sem.nest_count == 0 {
-                    let granted = grant_from_queue(sem);
-                    wake.extend(granted);
+                    for waiter in grant_from_queue(sem) {
+                        on_grant(&waiter);
+                    }
                 }
             }
             // Drop the task from the wait queue.
@@ -394,7 +425,6 @@ impl SemaphoreTable {
                 sem.waiters.remove(pos);
             }
         }
-        wake
     }
 }
 
@@ -539,10 +569,10 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         assert_eq!(f.table.obtain(f.a, f.sem, false), Ok(Obtain::Obtained));
         // Two levels taken: both must be released.
-        assert_eq!(f.table.release(f.a, f.sem), Ok(Vec::new()));
-        assert_eq!(f.table.release(f.a, f.sem), Ok(Vec::new()));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Ok(()));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Ok(()));
         // And a third release is the corruption AROS alerts on.
-        assert_eq!(f.table.release(f.a, f.sem), Err(errors::NOT_OWNER));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Err(errors::NOT_OWNER));
     }
 
     #[test]
@@ -553,7 +583,10 @@ mod tests {
         assert_eq!(f.table.obtain(f.b, f.sem, false), Ok(Obtain::Queued));
         // A releases: the hand-off is atomic — B owns the lock the moment
         // the release returns, before it is even woken.
-        let granted = f.table.release(f.a, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert_eq!(
             granted,
             vec![Waiter {
@@ -565,7 +598,7 @@ mod tests {
         // second acquire would nest one level deeper than it asked for.
         assert!(f.table.holds(f.b, f.sem));
         // And one release is enough: the lock is free again.
-        assert_eq!(f.table.release(f.b, f.sem), Ok(Vec::new()));
+        assert_eq!(f.table.release(f.b, f.sem, |_| {}), Ok(()));
         assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(true));
     }
 
@@ -575,7 +608,10 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         f.table.obtain(f.b, f.sem, false).unwrap();
         f.table.obtain(f.c, f.sem, false).unwrap();
-        let granted = f.table.release(f.a, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         // Only the *first* waiter is granted an exclusive lock.
         assert_eq!(granted.len(), 1);
         assert_eq!(granted[0].task, f.b);
@@ -588,7 +624,7 @@ mod tests {
         let f = fixture();
         f.table.obtain(f.a, f.sem, false).unwrap();
         // B releasing A's lock is the corruption, refused rather than unwound.
-        assert_eq!(f.table.release(f.b, f.sem), Err(errors::NOT_OWNER));
+        assert_eq!(f.table.release(f.b, f.sem, |_| {}), Err(errors::NOT_OWNER));
     }
 
     #[test]
@@ -599,10 +635,13 @@ mod tests {
         // Both shared levels are live; an exclusive request must queue.
         assert_eq!(f.table.obtain(f.c, f.sem, false), Ok(Obtain::Queued));
         // One shared release leaves one held.
-        assert_eq!(f.table.release(f.a, f.sem), Ok(Vec::new()));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Ok(()));
         assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(false));
         // The last shared release grants the exclusive waiter.
-        let granted = f.table.release(f.b, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.b, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert_eq!(
             granted,
             vec![Waiter {
@@ -619,7 +658,10 @@ mod tests {
         // Two shared waiters queue behind the exclusive holder.
         f.table.obtain(f.b, f.sem, true).unwrap();
         f.table.obtain(f.c, f.sem, true).unwrap();
-        let granted = f.table.release(f.a, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert_eq!(granted.len(), 2);
         assert!(granted.iter().all(|w| w.shared));
         // Both hold a shared level: another shared request is granted too.
@@ -632,12 +674,18 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         f.table.obtain(f.b, f.sem, true).unwrap();
         f.table.obtain(f.c, f.sem, false).unwrap();
-        let granted = f.table.release(f.a, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         // B (shared) is granted; C (exclusive) stays queued.
         assert_eq!(granted.len(), 1);
         assert_eq!(granted[0].task, f.b);
         // Releasing B's shared level grants C exclusively.
-        let granted = f.table.release(f.b, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.b, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert_eq!(
             granted,
             vec![Waiter {
@@ -651,7 +699,7 @@ mod tests {
     fn a_released_semaphore_with_no_waiters_is_free() {
         let f = fixture();
         f.table.obtain(f.a, f.sem, false).unwrap();
-        assert_eq!(f.table.release(f.a, f.sem), Ok(Vec::new()));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Ok(()));
         assert_eq!(f.table.attempt(f.b, f.sem, false), Ok(true));
     }
 
@@ -661,7 +709,7 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         assert_eq!(f.table.attempt(f.b, f.sem, false), Ok(false));
         // The failed attempt queued nothing.
-        assert_eq!(f.table.release(f.a, f.sem), Ok(Vec::new()));
+        assert_eq!(f.table.release(f.a, f.sem, |_| {}), Ok(()));
         assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(true));
     }
 
@@ -678,7 +726,8 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         f.table.obtain(f.b, f.sem, false).unwrap();
         f.table.obtain(f.c, f.sem, true).unwrap();
-        let wake = f.table.delete(f.sem).unwrap();
+        let mut wake = Vec::new();
+        f.table.delete(f.sem, |waiter| wake.push(*waiter)).unwrap();
         assert_eq!(wake.len(), 2);
         assert_eq!(wake[0].task, f.b);
         assert!(wake[1].shared);
@@ -695,7 +744,8 @@ mod tests {
         f.table.obtain(f.a, f.sem, false).unwrap();
         f.table.obtain(f.b, f.sem, false).unwrap(); // B queues.
         f.table.obtain(f.c, f.sem, true).unwrap(); // C queues shared.
-        let wake = f.table.cleanup_task(f.a);
+        let mut wake = Vec::new();
+        f.table.cleanup_task(f.a, |waiter| wake.push(*waiter));
         // A's exit performs the same grant a release would: B takes the
         // exclusive lock and C stays queued behind it.
         assert_eq!(
@@ -708,7 +758,10 @@ mod tests {
         assert!(f.table.holds(f.b, f.sem));
         assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(false));
         // B's release hands the lock to C.
-        let granted = f.table.release(f.b, f.sem).unwrap();
+        let mut granted = Vec::new();
+        f.table
+            .release(f.b, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert_eq!(
             granted,
             vec![Waiter {
@@ -726,7 +779,8 @@ mod tests {
         f.table.obtain(f.b, f.sem, false).unwrap(); // B queues.
                                                     // A dies holding two levels. Cleanup unwinds both — the second one
                                                     // empties the nest and grants B exactly once.
-        let wake = f.table.cleanup_task(f.a);
+        let mut wake = Vec::new();
+        f.table.cleanup_task(f.a, |waiter| wake.push(*waiter));
         assert_eq!(
             wake,
             vec![Waiter {
@@ -740,13 +794,35 @@ mod tests {
     }
 
     #[test]
+    fn asking_again_while_waiting_does_not_queue_the_task_twice() {
+        let f = fixture();
+        f.table.obtain(f.a, f.sem, false).unwrap();
+        // B asks and is queued.
+        assert_eq!(f.table.obtain(f.b, f.sem, false), Ok(Obtain::Queued));
+        // B asks again — the same question, not a new one.
+        assert_eq!(f.table.obtain(f.b, f.sem, false), Ok(Obtain::Queued));
+        // A releases: B is granted the lock exactly once.
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
+        assert_eq!(granted.len(), 1, "the task is granted once, not twice");
+        // And the lock carries a single level: one release frees it.
+        assert_eq!(f.table.release(f.b, f.sem, |_| {}), Ok(()));
+        assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(true));
+    }
+
+    #[test]
     fn a_dead_waiter_is_never_granted() {
         let f = fixture();
         f.table.obtain(f.a, f.sem, false).unwrap();
         f.table.obtain(f.b, f.sem, false).unwrap();
         // B dies while queued. A then releases: B must not be granted.
-        f.table.cleanup_task(f.b);
-        let granted = f.table.release(f.a, f.sem).unwrap();
+        f.table.cleanup_task(f.b, |_| {});
+        let mut granted = Vec::new();
+        f.table
+            .release(f.a, f.sem, |waiter| granted.push(*waiter))
+            .unwrap();
         assert!(granted.is_empty(), "a dead waiter is not granted");
         assert_eq!(f.table.attempt(f.c, f.sem, false), Ok(true));
     }
@@ -773,7 +849,7 @@ mod tests {
         let table = SemaphoreTable::new();
         let one = table.init(0);
         let two = table.init(0);
-        table.delete(one).unwrap();
+        table.delete(one, |_| {}).unwrap();
         assert_eq!(table.init(0), one, "the freed id is reused");
         let _ = two;
     }
