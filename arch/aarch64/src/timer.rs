@@ -15,7 +15,7 @@
 //!
 //! # The frequency
 //!
-//! `CNTFRQ_EL1` says how many times the counter ticks per second. QEMU's
+//! `CNTFRQ_EL0` says how many times the counter ticks per second. QEMU's
 //! `virt` model reports 62.5 MHz (or 100 MHz on newer models); the number
 //! is read from the hardware rather than assumed, because a kernel that
 //! assumed the wrong frequency would run its delays at the wrong speed.
@@ -34,8 +34,8 @@ pub fn frequency() -> u64 {
     if !regs::ON_BARE_METAL {
         return 0;
     }
-    // SAFETY: `CNTFRQ_EL1` is readable at EL1 and has no side effects.
-    unsafe { regs::read_sysreg("cntfrq_el1") }
+    // SAFETY: `CNTFRQ_EL0` is readable at EL0 and has no side effects.
+    unsafe { regs::read_sysreg(regs::names::CNTFRQ_EL0) }
 }
 
 /// The physical counter's current value.

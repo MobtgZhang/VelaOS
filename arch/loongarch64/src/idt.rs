@@ -87,8 +87,9 @@
 /// The register state a trap saves.
 ///
 /// The LoongArch trap entry saves the general registers, the return address
-/// (`ERA`), the exception status (`ESTAT`) and the mode (`CRMD`), and it
-/// switches to the kernel stack. The dispatcher receives this frame so that
+/// (`ERA`), the exception status (`ESTAT`), the saved mode (`PRMD`) and the
+/// trap-time mode (`CRMD`), and it switches to the kernel stack. The
+/// dispatcher receives this frame so that
 /// the *same* frame describes the state for every exception — a syscall
 /// reads the arguments out of it, and a fault handler reads the faulting
 /// address and the instruction out of it.
@@ -175,7 +176,6 @@ impl TrapFrame {
     /// A frame with nothing saved in it.
     pub const fn empty() -> Self {
         Self {
-            prmd: 0,
             ra: 0,
             tp: 0,
             sp: 0,
@@ -208,6 +208,7 @@ impl TrapFrame {
             s8: 0,
             era: 0,
             estat: 0,
+            prmd: 0,
             crmd: 0,
             badv: 0,
         }
@@ -454,6 +455,456 @@ pub const fn interrupt_slot(is: u16) -> u64 {
 /// slot arithmetic because the two decide the whole entry layout together.
 pub const VS_SHIFT: u32 = 16;
 
+// ---------------------------------------------------------------------------
+// The frame layout the entry stub builds.
+// ---------------------------------------------------------------------------
+
+/// The offset of each register in a [`TrapFrame`] — the contract between the
+/// [`vela_trap_entry`] assembly and the Rust struct. The tests pin every
+/// offset against the struct's actual field addresses.
+pub mod off {
+    /// `$r1` — the return address.
+    pub const RA: usize = 0;
+    /// `$r2` — the thread pointer.
+    pub const TP: usize = 8;
+    /// `$r3` — the stack pointer.
+    pub const SP: usize = 16;
+    /// `$r4`–`$r11` — the argument registers.
+    pub const A0: usize = 24;
+    /// `$r12`–`$r20` — the temporary registers.
+    pub const T0: usize = 88;
+    /// `$r22` — the frame pointer.
+    pub const FP: usize = 160;
+    /// `$r23`–`$r31` — the callee-saved registers.
+    pub const S0: usize = 168;
+    /// The saved `ERA`.
+    pub const ERA: usize = 240;
+    /// The saved `ESTAT`.
+    pub const ESTAT: usize = 248;
+    /// The saved `PRMD`.
+    pub const PRMD: usize = 256;
+    /// The saved `CRMD`.
+    pub const CRMD: usize = 264;
+    /// The saved `BADV`.
+    pub const BADV: usize = 272;
+
+    /// The `a0`–`a7` block's stride.
+    pub const A_STRIDE: usize = 8;
+    /// The `t0`–`t8` block's stride.
+    pub const T_STRIDE: usize = 8;
+    /// The `s0`–`s8` block's stride.
+    pub const S_STRIDE: usize = 8;
+
+    // The KS CSRs the entry stub uses as scratch. `KS0` parks the
+    // interrupted `t0` while the stub computes; `KS4` parks the interrupted
+    // `sp`; `KS5` holds this CPU's kernel stack top (see
+    // [`set_kernel_stack`]).
+    //
+    // The KS registers are per-CPU by definition, so this scheme needs no
+    // locks on an SMP machine — each core parks in its own CSRs.
+    /// `KS0` — scratch for the interrupted `t0`.
+    pub const KS_SCRATCH_T0: u16 = crate::regs::CSR_KS0;
+    /// `KS4` — scratch for the interrupted `sp`.
+    pub const KS_SCRATCH_SP: u16 = crate::regs::CSR_KS0 + 4;
+    /// `KS5` — this CPU's kernel stack top.
+    pub const KS_KERNEL_STACK: u16 = crate::regs::CSR_KS0 + 5;
+}
+
+/// Encode the `b` (unconditional PC-relative branch) word that jumps from
+/// `from` to `to`.
+///
+/// `b` is opcode `0b010100` — word `0x5000_0000` — with a signed 26-bit
+/// offset in units of 4 bytes. The immediate is split across the word: bits
+/// 25:10 hold `offs[15:0]` and bits 9:0 hold `offs[25:16]`, where `offs` is
+/// `(to - from) >> 2`. The encoding was pinned against GNU as
+/// (`loongarch64-linux-gnu-as`): `b .+4` assembles to `0x5000_0400` and
+/// `b .-4` to `0x53ff_ffff`.
+///
+/// The branch range is ±2²⁵ words = ±128 MiB; `install` asserts the vector
+/// page and the entry stub are within that of each other.
+pub const fn branch_word(from: u64, to: u64) -> u32 {
+    let offs = ((to as i64) - (from as i64)) >> 2;
+    let offs = offs as u64;
+    0x5000_0000 | (((offs & 0xFFFF) << 10) as u32) | (((offs >> 16) & 0x3FF) as u32)
+}
+
+/// Park this CPU's kernel stack top where the trap entry finds it.
+///
+/// The entry stub switches to this stack for any trap that arrives from
+/// ring 3, so it must be called before user code runs or interrupts are
+/// enabled on this CPU. The value lives in the `KS5` CSR, which is per-CPU
+/// by definition — each core parks its own stack without sharing anything.
+///
+/// # Safety
+///
+/// `top` must be the top of a mapped, writable, 16-byte-aligned kernel
+/// stack owned by this CPU.
+pub unsafe fn set_kernel_stack(top: u64) {
+    if !crate::regs::ON_BARE_METAL {
+        return;
+    }
+    // SAFETY: the caller guarantees the stack exists and belongs to this
+    // CPU; the CSR is per-CPU state.
+    unsafe {
+        crate::regs::write_csr::<{ off::KS_KERNEL_STACK }>(top);
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+extern "C" {
+    /// The single trap-entry stub, in assembly below.
+    fn vela_trap_entry();
+}
+
+/// Install the trap-entry page: point `EENTRY` at `base`, program
+/// `ECFG.VS`, and fill every vector slot with a branch to the entry stub.
+///
+/// Every exception slot (`0..=25`) and every interrupt slot (`64..=78`,
+/// i.e. `EENTRY + (64 + line) × VECSIZE`) receives one `b` instruction —
+/// the first word of its 64-byte slot — branching to
+/// `vela_trap_entry`, which then dispatches on the hardware-supplied
+/// exception code. Filling every slot with the *same* target keeps the
+/// install a flat loop: the slot itself carries no information the stub
+/// does not also find in `ESTAT`.
+///
+/// # Safety
+///
+/// `base` must be page-aligned, kernel-writable and executable, with at
+/// least `(64 + 15) × 64` bytes free at it, and must sit within ±128 MiB of
+/// the entry stub (the reach of a `b`). Called before interrupts are
+/// enabled: between the slot fill and the `EENTRY` write a trap would land
+/// in half-installed vectors.
+pub unsafe fn install(base: u64) {
+    #[cfg(target_arch = "loongarch64")]
+    // SAFETY: the caller guarantees the base address, alignment and that
+    // interrupts are off; the writes only touch the vector page.
+    unsafe {
+        let entry = vela_trap_entry as *const () as usize as u64;
+        let mut slot = base;
+        // Exception slots 0..=25, then the interrupt slots 64..=78.
+        for ec in 0..=25u8 {
+            let delta = (entry as i64) - (slot as i64);
+            assert!(
+                delta.abs() <= (1i64 << 25) * 4,
+                "vector slot {ec} out of b's ±128 MiB reach"
+            );
+            core::ptr::write_volatile(slot as *mut u32, branch_word(slot, entry));
+            slot += vec_size(VS_LINUX);
+        }
+        for line in 0..=14u16 {
+            let slot = base + interrupt_entry_offset(line, VS_LINUX);
+            core::ptr::write_volatile(slot as *mut u32, branch_word(slot, entry));
+        }
+        // The branch words are new instruction memory: sync it before the
+        // CPU can fetch any of it.
+        crate::regs::dbar();
+        crate::regs::ibar();
+
+        crate::regs::write_csr::<{ crate::regs::CSR_EENTRY }>(base);
+        // `ECFG.VS` decides the slot arithmetic above; `LIE` (bits 14:0) is
+        // left as `apic::enable_line` programmed it.
+        crate::regs::xchg_csr::<{ crate::regs::CSR_ECFG }>(
+            VS_LINUX << VS_SHIFT,
+            0b111u64 << VS_SHIFT,
+        );
+    }
+    #[cfg(not(target_arch = "loongarch64"))]
+    {
+        // Hosted builds have no vector page to install; the pure pieces
+        // ([`branch_word`], the slot arithmetic) are what the tests cover.
+        let _ = base;
+    }
+}
+
+#[cfg(target_arch = "loongarch64")]
+core::arch::global_asm!(
+    r#"
+    .globl vela_trap_entry
+    .type vela_trap_entry, @function
+vela_trap_entry:
+    # Hardware has already set CRMD.PLV=0, CRMD.IE=0, PRMD (the interrupted
+    # PLV/IE), ERA, ESTAT and BADV/BADI. The general registers are still the
+    # interrupted context's.
+    #
+    # Park the two registers the stub needs as scratch — the interrupted sp
+    # and t0 — in the KS CSRs, which swap rather than clobber.
+    csrwr  $sp, {ks_sp}
+    csrwr  $t0, {ks_t0}
+
+    # Choose the stack. From ring 3 the trap must not run on the (unmapped
+    # or user-writable) user stack: switch to this CPU's kernel stack, which
+    # set_kernel_stack parked in KS5. From ring 0 the interrupted stack is
+    # already a kernel stack; $sp still holds it.
+    csrrd  $t0, {prmd_csr}
+    andi   $t0, $t0, 0x3          # PRMD.PPLV, bits 1:0
+    bne    $t0, $zero, 1f
+    b      2f
+1:  csrrd  $sp, {ks_stack}
+2:
+    # The frame sits below the (possibly new) stack pointer.
+    addi.d $sp, $sp, -{frame_size}
+
+    # The two parked values come back out of the KS CSRs. $t0 is dead from
+    # here on — the interrupted t0 lives in the frame until the restore.
+    csrrd  $t0, {ks_sp}
+    st.d   $t0, $sp, {off_sp}
+    csrrd  $t0, {ks_t0}
+    st.d   $t0, $sp, {off_t0}
+
+    # The rest of the register file, saved in place (nothing below clobbers
+    # a register before its store).
+    st.d   $ra, $sp, {off_ra}
+    st.d   $tp, $sp, {off_tp}
+    st.d   $a0, $sp, {off_a0}
+    st.d   $a1, $sp, {off_a0} + 8
+    st.d   $a2, $sp, {off_a0} + 16
+    st.d   $a3, $sp, {off_a0} + 24
+    st.d   $a4, $sp, {off_a0} + 32
+    st.d   $a5, $sp, {off_a0} + 40
+    st.d   $a6, $sp, {off_a0} + 48
+    st.d   $a7, $sp, {off_a0} + 56
+    st.d   $t1, $sp, {off_t0} + 8
+    st.d   $t2, $sp, {off_t0} + 16
+    st.d   $t3, $sp, {off_t0} + 24
+    st.d   $t4, $sp, {off_t0} + 32
+    st.d   $t5, $sp, {off_t0} + 40
+    st.d   $t6, $sp, {off_t0} + 48
+    st.d   $t7, $sp, {off_t0} + 56
+    st.d   $t8, $sp, {off_t0} + 64
+    st.d   $fp, $sp, {off_fp}
+    st.d   $s0, $sp, {off_s0}
+    st.d   $s1, $sp, {off_s0} + 8
+    st.d   $s2, $sp, {off_s0} + 16
+    st.d   $s3, $sp, {off_s0} + 24
+    st.d   $s4, $sp, {off_s0} + 32
+    st.d   $s5, $sp, {off_s0} + 40
+    st.d   $s6, $sp, {off_s0} + 48
+    st.d   $s7, $sp, {off_s0} + 56
+    st.d   $s8, $sp, {off_s0} + 64
+
+    # The CSR state, saved early — the handler may clobber all of these.
+    csrrd  $t0, {era_csr}
+    st.d   $t0, $sp, {off_era}
+    csrrd  $t0, {estat_csr}
+    st.d   $t0, $sp, {off_estat}
+    csrrd  $t0, {prmd_csr}
+    st.d   $t0, $sp, {off_prmd}
+    csrrd  $t0, {crmd_csr}
+    st.d   $t0, $sp, {off_crmd}
+    csrrd  $t0, {badv_csr}
+    st.d   $t0, $sp, {off_badv}
+
+    # Dispatch: $a0 = the frame, and the handler returns the frame to
+    # restore in $a0 (it may have switched stacks or tasks).
+    move   $a0, $sp
+    la.abs $t8, vela_trap_handler
+    jirl   $ra, $t8, 0
+
+    # Restore. The returned frame pointer is parked in $a7, whose saved
+    # value is restored last, self-referentially ($a7 is both base and
+    # destination of that load).
+    move   $a7, $a0
+    ld.d   $ra, $a7, {off_ra}
+    ld.d   $tp, $a7, {off_tp}
+    ld.d   $a0, $a7, {off_a0}
+    ld.d   $a1, $a7, {off_a0} + 8
+    ld.d   $a2, $a7, {off_a0} + 16
+    ld.d   $a3, $a7, {off_a0} + 24
+    ld.d   $a4, $a7, {off_a0} + 32
+    ld.d   $a5, $a7, {off_a0} + 40
+    ld.d   $a6, $a7, {off_a0} + 48
+    ld.d   $t1, $a7, {off_t0} + 8
+    ld.d   $t2, $a7, {off_t0} + 16
+    ld.d   $t3, $a7, {off_t0} + 24
+    ld.d   $t4, $a7, {off_t0} + 32
+    ld.d   $t5, $a7, {off_t0} + 40
+    ld.d   $t6, $a7, {off_t0} + 48
+    ld.d   $t7, $a7, {off_t0} + 56
+    ld.d   $t8, $a7, {off_t0} + 64
+    ld.d   $fp, $a7, {off_fp}
+    ld.d   $s0, $a7, {off_s0}
+    ld.d   $s1, $a7, {off_s0} + 8
+    ld.d   $s2, $a7, {off_s0} + 16
+    ld.d   $s3, $a7, {off_s0} + 24
+    ld.d   $s4, $a7, {off_s0} + 32
+    ld.d   $s5, $a7, {off_s0} + 40
+    ld.d   $s6, $a7, {off_s0} + 48
+    ld.d   $s7, $a7, {off_s0} + 56
+    ld.d   $s8, $a7, {off_s0} + 64
+
+    # ERA and PRMD are re-installed from the frame: a handler may have
+    # edited them (skipping an instruction, switching tasks) and a nested
+    # trap has clobbered them.
+    ld.d   $t0, $a7, {off_era}
+    csrwr  $t0, {era_csr}
+    ld.d   $t0, $a7, {off_prmd}
+    csrwr  $t0, {prmd_csr}
+
+    # $t0 now holds the old ERA value (dead), so the real t0 is restored
+    # after the CSR writes. $sp follows, then $a7 restores itself last —
+    # every load above still reads the frame through it.
+    ld.d   $t0, $a7, {off_t0}
+    ld.d   $sp, $a7, {off_sp}
+    ld.d   $a7, $a7, {off_a0} + 56
+    ertn
+    .size vela_trap_entry, . - vela_trap_entry
+    "#,
+    ks_t0 = const off::KS_SCRATCH_T0,
+    ks_sp = const off::KS_SCRATCH_SP,
+    ks_stack = const off::KS_KERNEL_STACK,
+    prmd_csr = const crate::regs::CSR_PRMD,
+    era_csr = const crate::regs::CSR_ERA,
+    estat_csr = const crate::regs::CSR_ESTAT,
+    crmd_csr = const crate::regs::CSR_CRMD,
+    badv_csr = const crate::regs::CSR_BADV,
+    frame_size = const core::mem::size_of::<TrapFrame>(),
+    off_ra = const off::RA,
+    off_tp = const off::TP,
+    off_sp = const off::SP,
+    off_a0 = const off::A0,
+    off_t0 = const off::T0,
+    off_fp = const off::FP,
+    off_s0 = const off::S0,
+    off_era = const off::ERA,
+    off_estat = const off::ESTAT,
+    off_prmd = const off::PRMD,
+    off_crmd = const off::CRMD,
+    off_badv = const off::BADV,
+);
+
+/// The Rust side of every trap: dispatch on the exception code.
+///
+/// Called by [`vela_trap_entry`] with `$a0` = the frame; the returned
+/// pointer (again `$a0`) is the frame the stub restores — normally the same
+/// one, but the stub does not assume it.
+///
+/// The dispatch mirrors the x86-64 crate's split:
+///
+/// * **Interrupts** are not faults — the machine must resume. The timer
+///   line is acknowledged (`CSR.TICLR`, which does not clear itself); any
+///   *other* line is reported and the machine stops, because an
+///   unacknowledged asserted line re-fires the moment `ertn` re-enables
+///   interrupts, and this crate has no registered device handlers to
+///   acknowledge the rest.
+/// * **`syscall` (EC 11)** goes to [`crate::syscall::gate::dispatch`], which
+///   calls the kernel-registered handler and returns through the frame.
+/// * **Page exceptions** and **everything else** are reported (exception
+///   code, `BADV`, `ERA`) and the machine stops: a fault the kernel cannot
+///   fix would re-execute the same instruction forever.
+/// # Safety
+///
+/// The frame must be a live `TrapFrame` built by [`vela_trap_entry`] on the
+/// kernel stack — the stub is this function's only caller. The returned
+/// pointer names the frame the stub restores; it is valid until `ertn`.
+pub unsafe extern "C" fn vela_trap_handler(frame: *mut TrapFrame) -> *mut TrapFrame {
+    // SAFETY: the assembly stub built this frame on the kernel stack and
+    // keeps it alive for the whole call.
+    let frame = unsafe { &mut *frame };
+    let ec = estat_ec(frame.estat);
+
+    if ec == ec::INT {
+        let lines = estat_is(frame.estat);
+        if lines & (1 << line::TIMER) != 0 {
+            // SAFETY: the timer interrupt is this CPU's to acknowledge; the
+            // write clears the pending line so it does not re-fire.
+            unsafe { crate::timer::acknowledge() };
+        } else {
+            report_unhandled_interrupt(lines, frame);
+        }
+    } else if ec == ec::SYS {
+        // SAFETY: the frame is the stub's; the gate reads it and writes the
+        // syscall result back into it.
+        unsafe { crate::syscall::gate::dispatch(frame) };
+    } else if is_page_exception(ec) {
+        report_page_exception(frame);
+    } else {
+        report_trap(frame);
+    }
+    frame
+}
+
+/// Report an interrupt line nobody in this crate claims, then stop.
+fn report_unhandled_interrupt(lines: u16, frame: &TrapFrame) -> ! {
+    serial_report(
+        "\n*** UNHANDLED INTERRUPT ***\n",
+        frame,
+        Some((lines, "lines")),
+    )
+}
+
+/// Report a TLB refill exception, then stop.
+///
+/// VelaOS fills its TLB in software ([`crate::paging`]), but the refill
+/// handler needs the kernel's address-space registry, which lives above
+/// this crate — so a refill that reaches here is a mapping bug and is
+/// reported with the faulting address (`BADV`) rather than retried.
+fn report_page_exception(frame: &TrapFrame) -> ! {
+    serial_report("\n*** PAGE EXCEPTION (TLB REFILL) ***\n", frame, None)
+}
+
+/// Report any other unhandled exception, then stop.
+fn report_trap(frame: &TrapFrame) -> ! {
+    serial_report("\n*** UNHANDLED EXCEPTION ***\n", frame, None)
+}
+
+/// Print the diagnostic and stop the machine.
+///
+/// `extra` is an optional `(value, name)` pair printed after the standard
+/// fields — the asserted interrupt lines, for the interrupt report.
+fn serial_report(header: &str, frame: &TrapFrame, extra: Option<(u16, &str)>) -> ! {
+    crate::serial::puts(header);
+    crate::serial::puts("    ESTAT      = ");
+    crate::serial::puts_hex(frame.estat);
+    crate::serial::puts("\n    EC         = ");
+    crate::serial::puts_dec(u64::from(estat_ec(frame.estat)));
+    crate::serial::puts(" (");
+    crate::serial::puts(kind_name(frame.kind()));
+    crate::serial::puts(")\n    ERA        = ");
+    crate::serial::puts_hex(frame.era);
+    crate::serial::puts("\n    BADV       = ");
+    crate::serial::puts_hex(frame.badv);
+    crate::serial::puts("\n    PRMD       = ");
+    crate::serial::puts_hex(frame.prmd);
+    if let Some((value, name)) = extra {
+        crate::serial::puts("\n    ");
+        crate::serial::puts(name);
+        crate::serial::puts("       = 0x");
+        crate::serial::puts_hex(u64::from(value));
+    }
+    crate::serial::puts("\n");
+    // SAFETY: the machine stops on purpose; there is no handler to return
+    // to and resuming would re-execute the same fault forever.
+    unsafe { crate::qemu_exit::power_off(1) }
+}
+
+/// The `Debug`-free name of a trap kind, for the diagnostic above.
+fn kind_name(kind: TrapKind) -> &'static str {
+    match kind {
+        TrapKind::Interrupt(_) => "interrupt",
+        TrapKind::TlbLoadMiss => "TLB miss on load",
+        TrapKind::TlbStoreMiss => "TLB miss on store",
+        TrapKind::TlbFetchMiss => "TLB miss on fetch",
+        TrapKind::TlbModified => "TLB modified",
+        TrapKind::TlbNoRead => "TLB read-inhibited",
+        TrapKind::TlbNoExec => "TLB execute-inhibited",
+        TrapKind::TlbPrivilege => "TLB privilege error",
+        TrapKind::AddressError { fetch: true } => "address error (fetch)",
+        TrapKind::AddressError { fetch: false } => "address error (data)",
+        TrapKind::Unaligned => "unaligned access",
+        TrapKind::BoundsCheck => "bounds-check error",
+        TrapKind::Syscall => "syscall",
+        TrapKind::Breakpoint => "breakpoint",
+        TrapKind::InstructionNotExist => "instruction not exists",
+        TrapKind::InstructionPrivileged => "instruction privileged error",
+        TrapKind::ExtensionDisabled(_) => "extension disabled",
+        TrapKind::FpException => "floating-point exception",
+        TrapKind::Watchpoint { .. } => "watchpoint",
+        TrapKind::BinaryTranslation(_) => "binary translation",
+        TrapKind::Guest(_) => "guest error",
+        TrapKind::Reserved(_) => "reserved exception code",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +1001,107 @@ mod tests {
         assert_eq!(vec_size(7), 512);
         assert_eq!(exception_entry_offset(3, 7), 3 * 512);
         assert_eq!(interrupt_entry_offset(0, 7), 64 * 512);
+    }
+
+    #[test]
+    fn the_frame_offsets_are_where_the_fields_are() {
+        let frame = TrapFrame::empty();
+        let base = &frame as *const TrapFrame as usize;
+        assert_eq!(&frame.ra as *const u64 as usize - base, off::RA);
+        assert_eq!(&frame.tp as *const u64 as usize - base, off::TP);
+        assert_eq!(&frame.sp as *const u64 as usize - base, off::SP);
+        assert_eq!(&frame.a0 as *const u64 as usize - base, off::A0);
+        assert_eq!(&frame.t0 as *const u64 as usize - base, off::T0);
+        assert_eq!(&frame.fp as *const u64 as usize - base, off::FP);
+        assert_eq!(&frame.s0 as *const u64 as usize - base, off::S0);
+        assert_eq!(&frame.era as *const u64 as usize - base, off::ERA);
+        assert_eq!(&frame.estat as *const u64 as usize - base, off::ESTAT);
+        assert_eq!(&frame.prmd as *const u64 as usize - base, off::PRMD);
+        assert_eq!(&frame.crmd as *const u64 as usize - base, off::CRMD);
+        assert_eq!(&frame.badv as *const u64 as usize - base, off::BADV);
+        // The blocks are contiguous: a0..a7, t0..t8 and s0..s8 each stride
+        // by one word, which is what the stub's `+ 8` offsets count on.
+        for i in 0..8u64 {
+            assert_eq!(
+                off::A0 + (i as usize) * off::A_STRIDE,
+                off::A0 + i as usize * 8
+            );
+        }
+        assert_eq!(off::T0 + 8 * off::T_STRIDE, off::T0 + 64, "t8's slot");
+        assert_eq!(off::S0 + 8 * off::S_STRIDE, off::S0 + 64, "s8's slot");
+        // a7's slot is the stub's final self-referential restore.
+        assert_eq!(off::A0 + 7 * off::A_STRIDE, 80);
+    }
+
+    #[test]
+    fn the_frame_is_the_size_the_stub_pushes() {
+        // The stub carves the frame off the kernel stack with a single
+        // `addi.d` — 12-bit signed immediate — so the size must stay under
+        // 2048 and a multiple of 16 (the stack-alignment contract).
+        let size = core::mem::size_of::<TrapFrame>();
+        assert_eq!(size % 16, 0);
+        assert!(size < 2048);
+        assert_eq!(size, 288);
+    }
+
+    #[test]
+    fn branch_words_match_the_assembler() {
+        // Pinned against `loongarch64-linux-gnu-as`: `b` is 0x50000000 with
+        // a 26-bit offset (in 4-byte units) split as offs[15:0] in bits
+        // 25:10 and offs[25:16] in bits 9:0.
+        assert_eq!(branch_word(0x1000, 0x1004), 0x5000_0400, "b .+4");
+        assert_eq!(branch_word(0x1000, 0x1000), 0x5000_0000, "b .");
+        assert_eq!(branch_word(4, 20), 0x5000_1000, "b .+16");
+        assert_eq!(branch_word(4, 64), 0x5000_3c00, "b .+60");
+        assert_eq!(branch_word(4, 0), 0x53ff_ffff, "b .-4 (all-ones offset)");
+        // A backward branch of -20 words was assembled as 0x5bffec00 for
+        // `beq`; the same split applies to `b`.
+        assert_eq!(branch_word(0, 80), 0x5000_5000, "slot 0 to slot 20");
+    }
+
+    #[test]
+    fn branch_words_reach_across_the_whole_layout() {
+        // Every slot's branch must land on the same entry: decode each
+        // word back and check the target. The delta below sits inside
+        // `b`'s ±128 MiB reach (2²⁵ words) and has non-zero halves in
+        // *both* immediate fields (offs[15:0] = 0xd15a, offs[25:16] =
+        // 0x48), so a field-split mistake cannot cancel out.
+        let base = 0x9000_0000_1000_0000;
+        let entry = base + 0x123_4568;
+        let decode = |word: u32| -> i64 {
+            let low = ((word >> 10) & 0xFFFF) as i64;
+            let high = ((word & 0x3FF) as i64) << 16;
+            // The 26-bit immediate is signed: extend bit 25.
+            (((low | high) << 38) >> 38) << 2
+        };
+        let mut slot = base;
+        for ec in 0..=25u8 {
+            let word = branch_word(slot, entry);
+            assert_eq!(word & 0xFC00_0000, 0x5000_0000, "b opcode");
+            assert_eq!(decode(word), entry as i64 - slot as i64, "slot for EC {ec}");
+            slot += vec_size(VS_LINUX);
+        }
+        for line in 0..=14u16 {
+            let slot = base + interrupt_entry_offset(line, VS_LINUX);
+            let word = branch_word(slot, entry);
+            assert_eq!(
+                decode(word),
+                entry as i64 - slot as i64,
+                "slot for line {line}"
+            );
+        }
+        // And a backward branch decodes with the sign restored.
+        let word = branch_word(entry, base);
+        assert_eq!(decode(word), base as i64 - entry as i64, "backward branch");
+    }
+
+    #[test]
+    fn the_ks_scratch_is_the_architectural_ks_block() {
+        // KS0..KS7 are CSRs 0x30..0x37; the stub parks sp in KS4 and the
+        // kernel stack top in KS5, and none of them collide with the
+        // architectural CSRs below 0x30 (TMID at 0x40 above them).
+        assert_eq!(off::KS_SCRATCH_T0, 0x30);
+        assert_eq!(off::KS_SCRATCH_SP, 0x34);
+        assert_eq!(off::KS_KERNEL_STACK, 0x35);
     }
 }

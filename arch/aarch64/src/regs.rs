@@ -77,14 +77,14 @@ pub const MPIDR_RES1: u64 = 1 << 31;
 ///
 /// # Why the name is matched rather than assembled
 ///
-/// A system register's name is part of the *instruction*: `mrs x0, cntfrq_el1`
+/// A system register's name is part of the *instruction*: `mrs x0, cntfrq_el0`
 /// encodes the register in the instruction, not in a register. An inline
 /// assembly block therefore cannot take the name as an operand — it has to
 /// be a literal in the instruction text.
 ///
 /// The macro expands the name into the instruction, and the function below
 /// matches the names the kernel uses so that a caller can still say
-/// `read_sysreg("cntfrq_el1")` and get a *compile error* when the name is
+/// `read_sysreg(names::CNTFRQ_EL0)` and get a *compile error* when the name is
 /// misspelled, rather than a runtime zero.
 #[cfg(target_arch = "aarch64")]
 macro_rules! sys_read {
@@ -127,8 +127,12 @@ macro_rules! sys_write {
 /// Every name here is matched, so a typo is a compile error rather than a
 /// silent zero.
 pub mod names {
-    /// The physical counter's frequency.
-    pub const CNTFRQ_EL1: &str = "cntfrq_el1";
+    /// The counters' frequency.
+    ///
+    /// The register is at EL0, not EL1: there is no `CNTFRQ_EL1`, and a
+    /// program that read that name would get a *zero* frequency and every
+    /// delay built on it would be infinitely long.
+    pub const CNTFRQ_EL0: &str = "cntfrq_el0";
     /// The physical counter.
     pub const CNTPCT_EL0: &str = "cntpct_el0";
     /// The virtual counter.
@@ -162,7 +166,7 @@ pub unsafe fn read_sysreg(name: &str) -> u64 {
     #[cfg(target_arch = "aarch64")]
     {
         match name {
-            names::CNTFRQ_EL1 => sys_read!("cntfrq_el1"),
+            names::CNTFRQ_EL0 => sys_read!("cntfrq_el0"),
             names::CNTPCT_EL0 => sys_read!("cntpct_el0"),
             names::CNTVCT_EL0 => sys_read!("cntvct_el0"),
             names::CNTV_CTL_EL0 => sys_read!("cntv_ctl_el0"),

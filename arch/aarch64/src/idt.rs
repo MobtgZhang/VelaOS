@@ -5,7 +5,7 @@
 //! AArch64 has one vector table, at `VBAR_EL1`, with sixteen entries: four
 //! groups (current EL with SP0, current EL with SPx, lower EL with SP0,
 //! lower EL with SPx), each with a synchronous, an IRQ, an FIQ and an
-//! SError entry. The table is 2 KiB when the vector spacing is 0x200, and
+//! SError entry. Each slot is 0x200 bytes, so the whole table is 8 KiB, and
 //! the entry for a particular exception is at a fixed offset within it.
 //!
 //! # The syndrome register
