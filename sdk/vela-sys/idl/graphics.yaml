@@ -36,6 +36,14 @@
 library: graphics.library
 prefix: GRAPHICS
 functions:
+  - name: WritePixels
+    lvo: -112
+    offset: WRITEPIXELS
+    stub: write_pixels
+    syscall: G_WRITE_PIXELS
+    number: 77
+    kernel: GRAPHICS_WRITE_PIXELS
+    status: implemented
   - name: AllocPen
     lvo: -104
     offset: ALLOCPEN

@@ -412,6 +412,14 @@ pub const MATRIX: &[ApiEntry] = &[
         notes: "Logs the alert with its decoded name; the `AT_DeadEnd` type bit \
                 ends the calling task.",
     },
+    ApiEntry {
+        library: "exec.library",
+        name: "ReadMonotonic",
+        syscall: Some(55),
+        status: Status::Implemented,
+        verified_by: None,
+        notes: "Returns the microseconds since the machine started.",
+    },
     // --- dos.library -----------------------------------------------------
     ApiEntry {
         library: "dos.library",
@@ -613,6 +621,14 @@ pub const MATRIX: &[ApiEntry] = &[
         status: Status::Implemented,
         verified_by: None,
         notes: "The raster's geometry.",
+    },
+    ApiEntry {
+        library: "graphics.library",
+        name: "WritePixels",
+        syscall: Some(77),
+        status: Status::Implemented,
+        verified_by: None,
+        notes: "Writes a rectangle of pixels into the calling task's window.",
     },
     // --- layers.library --------------------------------------------------
     ApiEntry {

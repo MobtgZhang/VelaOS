@@ -263,6 +263,19 @@ pub const FIND_SEMAPHORE: u64 = 53;
 /// longer findable by name. That is what AROS's `RemSemaphore` does — it
 /// unlists the semaphore and leaves it to its owner.
 pub const REMOVE_SEMAPHORE: u64 = 54;
+/// `exec.library`: read the monotonic clock.
+///
+/// Returns the microseconds since the machine started, which is what
+/// AmigaOS's `ReadMonotonic` returns and what a program needs to time
+/// something without a wall clock.
+///
+/// The number is 55: the semaphore calls own 45–54, and 33–41 belong to
+/// `net.library`, so 55 is the first free slot in Exec's range. An earlier
+/// draft put this call at 52 and two tasks both believed they owned it —
+/// the dispatcher installs one number once, so the second claim silently
+/// replaced the first, and the program that called `ReadMonotonic` reached
+/// `AddSemaphore` instead.
+pub const READ_MONOTONIC: u64 = 55;
 
 /// `net.library`: create a socket.
 ///
@@ -330,6 +343,17 @@ pub const GRAPHICS_MOVE: u64 = 74;
 pub const GRAPHICS_SET_PALETTE: u64 = 75;
 /// `graphics.library`: the raster's geometry.
 pub const GRAPHICS_RASTER_INFO: u64 = 76;
+/// `graphics.library`: write a rectangle of pixels.
+///
+/// Arguments: `window`, `x`, `y`, `width`, `height`, `pixels` (a user
+/// pointer to `width * height` colours, each `0x00RRGGBB`). Returns the
+/// number of pixels written.
+///
+/// This is the modern equivalent of AmigaOS's `WritePixels`: a program with
+/// real artwork — an icon, a picture — needs to put a rectangle of
+/// per-pixel colours into a rastport, and doing it one `WritePixel` at a
+/// time is a syscall per pixel.
+pub const GRAPHICS_WRITE_PIXELS: u64 = 77;
 
 /// `layers.library`: create a layer.
 pub const LAYERS_CREATE: u64 = 128;
@@ -514,9 +538,9 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 45;
+pub const EXEC_COUNT: u64 = 46;
 /// The number of syscalls in the `graphics.library` group.
-pub const GRAPHICS_COUNT: u64 = 13;
+pub const GRAPHICS_COUNT: u64 = 14;
 /// The number of syscalls in the `layers.library` group.
 pub const LAYERS_COUNT: u64 = 10;
 /// The number of syscalls in the `intuition.library` group.
@@ -554,7 +578,7 @@ pub fn is_defined(number: u64) -> bool {
 /// SDK's published surface against it. It is public for that check — a
 /// matrix entry that names a number the kernel does not define is a
 /// documentation bug that would otherwise only show up as a failed call.
-pub const DEFINED: [(u64, SyscallGroup); 135] = [
+pub const DEFINED: [(u64, SyscallGroup); 137] = [
     (CREATE_MSG_PORT, SyscallGroup::Exec),
     (DELETE_MSG_PORT, SyscallGroup::Exec),
     (PUT_MSG, SyscallGroup::Exec),
@@ -589,6 +613,7 @@ pub const DEFINED: [(u64, SyscallGroup); 135] = [
     (RELEASE_SEMAPHORE, SyscallGroup::Exec),
     (DELETE_SEMAPHORE, SyscallGroup::Exec),
     (ALERT, SyscallGroup::Exec),
+    (READ_MONOTONIC, SyscallGroup::Exec),
     (ADD_SEMAPHORE, SyscallGroup::Exec),
     (FIND_SEMAPHORE, SyscallGroup::Exec),
     (REMOVE_SEMAPHORE, SyscallGroup::Exec),
@@ -605,6 +630,7 @@ pub const DEFINED: [(u64, SyscallGroup); 135] = [
     (GRAPHICS_MOVE, SyscallGroup::Graphics),
     (GRAPHICS_SET_PALETTE, SyscallGroup::Graphics),
     (GRAPHICS_RASTER_INFO, SyscallGroup::Graphics),
+    (GRAPHICS_WRITE_PIXELS, SyscallGroup::Graphics),
     (LAYERS_CREATE, SyscallGroup::Layers),
     (LAYERS_DESTROY, SyscallGroup::Layers),
     (LAYERS_SET_CLIP, SyscallGroup::Layers),

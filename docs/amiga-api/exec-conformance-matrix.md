@@ -51,5 +51,6 @@ indistinguishable from a working call.
 | `FindSemaphore` | 53 | `verified` | `exec_named_semaphores_are_found_and_unlisted` | Finds a semaphore by name; an unknown name answers `0`, never an error. |
 | `RemoveSemaphore` | 54 | `verified` | `exec_named_semaphores_are_found_and_unlisted` | Takes a semaphore out of the public list; the semaphore itself lives on and stays usable by id. |
 | `Alert` | 51 | `verified` | `exec_alert_is_accepted_and_a_dead_alert_ends_the_task` | Logs the alert with its decoded name; the `AT_DeadEnd` type bit ends the calling task. |
+| `ReadMonotonic` | 55 | `implemented` | — | Returns the microseconds since the machine started. |
 
-**Summary:** 26 of 33 entries are `verified`.
+**Summary:** 26 of 34 entries are `verified`.

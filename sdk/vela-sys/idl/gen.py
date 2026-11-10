@@ -18,6 +18,7 @@ LIBRARIES = [
         ("RemoveSemaphore", -336, "REMOVESEMAPHORE", "remove_semaphore", "REMOVE_SEMAPHORE", 54),
         ("FindSemaphore", -328, "FINDSEMAPHORE", "find_semaphore", "FIND_SEMAPHORE", 53),
         ("AddSemaphore", -320, "ADDSEMAPHORE", "add_semaphore", "ADD_SEMAPHORE", 52),
+        ("ReadMonotonic", -344, "READMONOTONIC", "read_monotonic", "READ_MONOTONIC", 55),
         ("ConfirmGrant", -312, "CONFIRMGRANT", "confirm_grant", "CONFIRM_GRANT", 47),
         ("Alert", -304, "ALERT", "alert", "ALERT", 51),
         ("DeleteSemaphore", -296, "DELETESEMAPHORE", "delete_semaphore", "DELETE_SEMAPHORE", 50),
@@ -70,6 +71,7 @@ LIBRARIES = [
         ("WritePixel", -32, "WRITEPIXEL", "write_pixel", "G_WRITE_PIXEL", 73),
         ("Move", -24, "MOVE", "move_to", "G_MOVE", 74),
         ("SetPalette", -16, "SETPALETTE", "set_palette", "G_SET_PALETTE", 75),
+        ("WritePixels", -112, "WRITEPIXELS", "write_pixels", "G_WRITE_PIXELS", 77),
         ("RasterInfo", -8, "RASTERINFO", "raster_info", "G_RASTER_INFO", 76),
     ]),
     ("intuition", "intuition.library", "INTUITION", [

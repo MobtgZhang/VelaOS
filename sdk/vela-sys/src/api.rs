@@ -486,6 +486,18 @@ pub fn remove_semaphore(name: &str) -> Result<Semaphore> {
     check(packed).map(Semaphore)
 }
 
+/// Read the monotonic clock.
+///
+/// Returns the microseconds since the machine started. This is AmigaOS's
+/// `ReadMonotonic`: a free-running clock that does not depend on the wall
+/// clock, and the one a program times something with.
+pub fn read_monotonic() -> Result<u64> {
+    // SAFETY: no pointers among the arguments.
+    let packed =
+        unsafe { library_base::exec::base().call(offset::EXEC_READMONOTONIC, [0, 0, 0, 0, 0, 0]) };
+    check(packed)
+}
+
 /// Raise a signal in another task's set.
 ///
 /// Returns that task's new signal set.
@@ -1598,6 +1610,50 @@ pub mod graphics {
                     y as i32 as u64,
                     0,
                     0,
+                ],
+            )
+        };
+        check(packed).map(|_| ())
+    }
+
+    /// Write a rectangle of pixels into a window.
+    ///
+    /// The pixels are `0x00RRGGBB` colours, row by row, and the rectangle
+    /// starts at `(x, y)`. This is the modern equivalent of AmigaOS's
+    /// `WritePixels`: a program with real artwork needs to put a rectangle
+    /// of per-pixel colours into a rastport, and one `WritePixel` per pixel
+    /// is a syscall per pixel.
+    ///
+    /// # Errors
+    ///
+    /// [`super::errors::NO_OBJECT`] when the window is not the caller's, and
+    /// [`super::errors::BAD_POINTER`] when the pixel array is not readable.
+    pub fn write_pixels(
+        window: super::Window,
+        x: i16,
+        y: i16,
+        width: u16,
+        height: u16,
+        pixels: &[u32],
+    ) -> Result<()> {
+        let count = width as usize * height as usize;
+        if pixels.len() < count {
+            return Err(crate::Error {
+                code: super::errors::RANGE,
+            });
+        }
+        // SAFETY: the pointer names the call own slice, which outlives the
+        // call, and the kernel copies the pixels out before it draws.
+        let packed = unsafe {
+            library_base::graphics::base().call(
+                offset::GRAPHICS_WRITEPIXELS,
+                [
+                    window.raw(),
+                    x as i32 as u64,
+                    y as i32 as u64,
+                    width as u64,
+                    height as u64,
+                    pixels.as_ptr() as u64,
                 ],
             )
         };

@@ -36,6 +36,14 @@
 library: exec.library
 prefix: EXEC
 functions:
+  - name: ReadMonotonic
+    lvo: -344
+    offset: READMONOTONIC
+    stub: read_monotonic
+    syscall: READ_MONOTONIC
+    number: 55
+    kernel: READ_MONOTONIC
+    status: implemented
   - name: RemoveSemaphore
     lvo: -336
     offset: REMOVESEMAPHORE

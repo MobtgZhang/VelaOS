@@ -115,6 +115,8 @@ pub const ADD_SEMAPHORE: u64 = 52;
 pub const FIND_SEMAPHORE: u64 = 53;
 /// `exec.library`: take a semaphore out of the public list.
 pub const REMOVE_SEMAPHORE: u64 = 54;
+/// `exec.library`: read the monotonic clock, in microseconds.
+pub const READ_MONOTONIC: u64 = 55;
 
 /// The size of a program page, in bytes.
 ///
@@ -149,6 +151,8 @@ pub const G_MOVE: u64 = 74;
 pub const G_SET_PALETTE: u64 = 75;
 /// `graphics.library`: a window raster's geometry.
 pub const G_RASTER_INFO: u64 = 76;
+/// `graphics.library`: write a rectangle of pixels.
+pub const G_WRITE_PIXELS: u64 = 77;
 
 /// `layers.library`: create a layer.
 pub const L_CREATE: u64 = 128;

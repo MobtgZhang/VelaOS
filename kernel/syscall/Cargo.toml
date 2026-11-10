@@ -22,6 +22,7 @@ vela-kernel-vfs.workspace = true
 vela-kernel-workbench.workspace = true
 vela-kernel-net.workspace = true
 vela-kernel-socket.workspace = true
+vela-kernel-timer.workspace = true
 vela-renderer2d.workspace = true
 vela-font.workspace = true
 spin.workspace = true

@@ -31,5 +31,6 @@ indistinguishable from a working call.
 | `Move` | 74 | `implemented` | — | Sets the drawing position and plots it. |
 | `SetPalette` | 75 | `implemented` | — | Installs a whole palette. |
 | `RasterInfo` | 76 | `implemented` | — | The raster's geometry. |
+| `WritePixels` | 77 | `implemented` | — | Writes a rectangle of pixels into the calling task's window. |
 
-**Summary:** 6 of 13 entries are `verified`.
+**Summary:** 6 of 14 entries are `verified`.

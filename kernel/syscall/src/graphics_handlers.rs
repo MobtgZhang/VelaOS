@@ -321,6 +321,62 @@ fn read_rect(ptr: u64) -> Option<UserRect> {
 }
 
 /// Paint into a window's layer, and only into a window the task owns.
+/// `WritePixels` — write a rectangle of pixels into the calling task's window.
+///
+/// Arguments: `window`, `x`, `y`, `width`, `height`, `pixels` (a user
+/// pointer to `width * height` colours, each `0x00RRGGBB`).
+///
+/// The pixels are copied out of user space *before* anything is drawn: a
+/// pointer that faults half-way through a rectangle would otherwise leave
+/// half an icon on the screen.
+pub fn write_pixels(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let window = crate::ids::WindowId(args.get(0) as u32);
+    let x = args.get(1) as i32;
+    let y = args.get(2) as i32;
+    let width = args.get(3) as u32;
+    let height = args.get(4) as u32;
+    let pixels_ptr = args.get(5);
+
+    // A rectangle of a size that would overflow the copy is refused
+    // before anything is allocated or read.
+    let count = match (width as usize).checked_mul(height as usize) {
+        Some(count) => count,
+        None => return SyscallResult::err(errors::RANGE),
+    };
+    // The copy itself is bounded: a program cannot ask for a gigabyte of
+    // pixels in one call.
+    const MAX_PIXELS: usize = 1 << 20;
+    if count > MAX_PIXELS {
+        return SyscallResult::err(errors::TOO_LARGE);
+    }
+    let mut pixels = alloc::vec![0u32; count];
+    // SAFETY: the pointer is a user pointer; the copy helper validates it
+    // against the user half and refuses a kernel address.
+    if let Err(e) = unsafe {
+        crate::copy::copy_from_user(
+            pixels.as_mut_ptr() as *mut u8,
+            pixels_ptr,
+            count * core::mem::size_of::<u32>(),
+        )
+    } {
+        return SyscallResult::err(e);
+    }
+    match paint_window(ctx, window, Color::from(0), |l| {
+        for row in 0..height as i32 {
+            for column in 0..width as i32 {
+                let at = (row as usize) * (width as usize) + column as usize;
+                let Some(pixel) = pixels.get(at) else {
+                    continue;
+                };
+                l.put(x + column, y + row, pack(*pixel));
+            }
+        }
+    }) {
+        Ok(()) => SyscallResult::ok(count as u64),
+        Err(e) => SyscallResult::err(e),
+    }
+}
+
 fn paint_window(
     ctx: &SyscallContext<'_>,
     window: crate::ids::WindowId,

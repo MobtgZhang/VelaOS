@@ -1032,6 +1032,19 @@ pub mod exec_handlers {
         }
     }
 
+    /// `ReadMonotonic` — the microseconds since the machine started.
+    ///
+    /// No arguments. Returns the count.
+    ///
+    /// This is AmigaOS's `ReadMonotonic`: a free-running clock that does not
+    /// depend on the wall clock, which is what a program times something
+    /// with. The kernel has no real-time clock yet, so this is the time
+    /// since boot — and the desktop's clock shows it.
+    pub fn read_monotonic(_args: SyscallArgs, _ctx: &SyscallContext<'_>) -> SyscallResult {
+        let micros = vela_kernel_timer::monotonic_ns() / 1_000;
+        SyscallResult::ok(micros)
+    }
+
     /// `Alert` — raise an alert.
     ///
     /// Arguments: `alert` (an `AN_*`/`AG_*` number). Returns zero.
@@ -1123,6 +1136,7 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::RELEASE_SEMAPHORE, exec_handlers::release_semaphore);
     table.install(numbers::DELETE_SEMAPHORE, exec_handlers::delete_semaphore);
     table.install(numbers::ALERT, exec_handlers::alert);
+    table.install(numbers::READ_MONOTONIC, exec_handlers::read_monotonic);
     table.install(numbers::ADD_SEMAPHORE, exec_handlers::add_semaphore);
     table.install(numbers::FIND_SEMAPHORE, exec_handlers::find_semaphore);
     table.install(numbers::REMOVE_SEMAPHORE, exec_handlers::remove_semaphore);
@@ -1217,6 +1231,10 @@ pub fn builtin_table() -> DispatchTable {
     table.install(
         numbers::GRAPHICS_SET_PALETTE,
         crate::graphics_handlers::set_palette,
+    );
+    table.install(
+        numbers::GRAPHICS_WRITE_PIXELS,
+        crate::graphics_handlers::write_pixels,
     );
     table.install(
         numbers::GRAPHICS_RASTER_INFO,
