@@ -69,6 +69,11 @@ pub mod errors {
     pub const RANGE: i32 = -19;
     /// The caller is not the owner.
     pub const NOT_OWNER: i32 = -24;
+    /// The filesystem refuses the operation: it is mounted read-only.
+    ///
+    /// A volume that can only be read says so rather than accepting a
+    /// write and losing it.
+    pub const READ_ONLY: i32 = -22;
 }
 
 /// The access mode a file is opened with.

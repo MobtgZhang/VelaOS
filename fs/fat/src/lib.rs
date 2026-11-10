@@ -49,6 +49,11 @@ pub mod errors {
 }
 
 /// A block device, addressed by block index.
+#[cfg(test)]
+pub mod tests_support;
+
+pub mod vfs;
+
 pub trait BlockDevice {
     /// Read one block into `buf`, which must be `block_size()` bytes.
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), i32>;
@@ -228,6 +233,15 @@ impl<B: BlockDevice> FatFs<B> {
     }
 
     /// The FAT variant.
+    /// The volume's size in bytes.
+    ///
+    /// The size is the number of data sectors times the sector size: the
+    /// clusters the filesystem can address, and nothing else. It is what a
+    /// program asking "how big is this disk" is told.
+    pub const fn total_bytes(&self) -> u64 {
+        (self.total_sectors as u64 - self.data_sector as u64) * self.sector_size as u64
+    }
+
     pub const fn variant(&self) -> FatVariant {
         self.variant
     }
@@ -518,6 +532,14 @@ impl<'a, B: BlockDevice> File<'a, B> {
         self.entry.file_size as u64
     }
 
+    /// The attributes of the directory entry that named this file.
+    ///
+    /// The attribute byte is what says whether the entry is a directory, so
+    /// a caller that has opened a path needs it to answer "what did I open".
+    pub const fn attributes(&self) -> u8 {
+        self.entry.attributes
+    }
+
     /// True when the file is empty.
     pub const fn is_empty(&self) -> bool {
         self.entry.file_size == 0
@@ -613,96 +635,7 @@ fn entry_name_matches(entry: &[u8], fat_name: &[u8; 11]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A fake block device backed by a byte vector.
-    #[derive(Debug)]
-    struct FakeBlock {
-        data: Vec<u8>,
-        block_size: u64,
-    }
-
-    impl FakeBlock {
-        fn new(block_size: u64, capacity: usize) -> Self {
-            Self {
-                data: vec![0u8; capacity],
-                block_size,
-            }
-        }
-
-        fn write_blocks(&mut self, block: u64, bytes: &[u8]) {
-            let start = (block * self.block_size) as usize;
-            self.data[start..start + bytes.len()].copy_from_slice(bytes);
-        }
-    }
-
-    impl BlockDevice for FakeBlock {
-        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), i32> {
-            let start = (block * self.block_size) as usize;
-            let end = start + buf.len();
-            if end > self.data.len() {
-                return Err(errors::IO_ERROR);
-            }
-            buf.copy_from_slice(&self.data[start..end]);
-            Ok(())
-        }
-        fn block_size(&self) -> u64 {
-            self.block_size
-        }
-    }
-
-    /// Build a minimal FAT12 boot sector + a root directory with one file.
-    fn make_fat12_volume() -> FakeBlock {
-        let bs = 512;
-        let mut dev = FakeBlock::new(bs, (bs as usize) * 34); // 34 sectors: 33 addressable + data at block 33
-                                                              // Boot sector
-        let mut boot = [0u8; 512];
-        boot[0..3].copy_from_slice(b"EBR"); // jump
-        boot[11..13].copy_from_slice(&(bs as u16).to_le_bytes()); // sector size
-        boot[13] = 1; // sectors per cluster
-        boot[14..16].copy_from_slice(&1u16.to_le_bytes()); // reserved sectors
-        boot[16] = 2; // two FATs
-        boot[17..19].copy_from_slice(&(224u16).to_le_bytes()); // root dir entries
-        boot[19..21].copy_from_slice(&(2880u16).to_le_bytes()); // total sectors 16
-        boot[21] = 0xF0; // media
-        boot[22..24].copy_from_slice(&(9u16).to_le_bytes()); // fat size 16
-        boot[24..26].copy_from_slice(&(18u16).to_le_bytes()); // sectors per track
-        boot[26..28].copy_from_slice(&(2u16).to_le_bytes()); // heads
-        boot[510] = 0x55;
-        boot[511] = 0xAA;
-        dev.write_blocks(0, &boot);
-
-        // FAT 1: reserve clusters 0 and 1, mark cluster 2 as EOC (0xFFF).
-        let fat_start = 1;
-        let mut fat = [0u8; 512 * 9];
-        fat[0] = 0xF0;
-        fat[1] = 0xFF;
-        fat[2] = 0xFF;
-        fat[3] = 0xFF; // cluster 2 entry low byte
-        fat[4] = 0x0F; // cluster 2 entry high nibble -> 0xFFF
-        dev.write_blocks(fat_start, &fat);
-        // FAT 2 copy
-        dev.write_blocks(fat_start + 9, &fat);
-
-        // Root directory starts at sector 1 + 2*9 = 19.
-        // Write one directory entry for "HELLO   TXT" at root dir offset 0.
-        let mut root = [0u8; 512];
-        let mut name = [b' '; 11];
-        name[0..5].copy_from_slice(b"HELLO");
-        name[8..11].copy_from_slice(b"TXT");
-        root[0..11].copy_from_slice(&name);
-        root[11] = 0x20; // archive attribute
-        root[26..28].copy_from_slice(&(2u16).to_le_bytes()); // first cluster = 2
-        root[28..32].copy_from_slice(&(5u32).to_le_bytes()); // file size = 5
-        dev.write_blocks(19, &root);
-
-        // Data region: root_dir_sectors = ceil(224*32/512) = 14, so data starts
-        // at 1 + 18 + 14 = 33. Cluster 2 -> sector 33.
-        let mut data = [0u8; 512];
-        data[0..5].copy_from_slice(b"hello");
-        dev.write_blocks(33, &data);
-
-        dev
-    }
+    use crate::tests_support::*;
 
     #[test]
     fn mount_reads_boot_sector_and_detects_fat12() {
