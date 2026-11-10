@@ -1,0 +1,10 @@
+The icon artwork in `assets/` is AROS's own.
+
+The icons are the "Mason" icon set from the AROS repository
+(https://github.com/aros-development-team/AROS, `images/IconSets/Mason`),
+converted by `tools/icontool/convert.py` into the compact form this crate
+reads. The artwork is distributed under the AROS project's own licence; see
+the AROS repository's LICENSE file for the terms, and
+https://www.aros.org/ for the project.
+
+The rest of VelaOS is under the project's own licence.

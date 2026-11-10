@@ -64,11 +64,14 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use vela_icons::assets;
 use vela_sys::abi::{
     buttons, gadget_kind, idcmp, mouse_codes, request_codes, window_flags, IntuiMessage, Message,
     OpenWindowArgs, Rectangle,
 };
 use vela_sys::api::{self, Gadget, Pen, Port, Screen, Window};
+
+mod math;
 
 /// The screen's geometry, as VelaOS's QEMU display is configured.
 const SCREEN_W: i16 = 1280;
@@ -97,18 +100,52 @@ const MENUBAR_H: i16 = 20;
 /// would land half a pixel into a font cell and look permanently out of
 /// alignment, which is the sort of detail that makes a desktop feel
 /// unfinished.
-const ICON_ORIGIN_X: i16 = 24;
-const ICON_ORIGIN_Y: i16 = MENUBAR_Y + MENUBAR_H + 24;
-const ICON_PITCH_X: i16 = 96;
-const ICON_PITCH_Y: i16 = 88;
-
-/// The width of an icon's label area, in pixels.
+/// The volume column's left edge.
+///
+/// AROS's Wanderer puts the volumes down the *left* of the backdrop, one
+/// above the other, each with its name under it.
+const VOLUME_X: i16 = 16;
+/// The volume column's top edge.
+const VOLUME_Y: i16 = MENUBAR_Y + MENUBAR_H + 12;
+/// The distance between two volumes.
+const VOLUME_PITCH_Y: i16 = 72;
+/// The artwork's size: AROS's icons are 46 by 46.
+const ICON_SIZE: i16 = 46;
+/// The height of the name under an icon.
+const LABEL_H: i16 = 14;
+/// How far a glyph's body sits *above* the `y` a text call is given.
+///
+/// The renderer's `y` is the text's baseline, not its top: a 16 px Source
+/// Sans glyph reaches about twelve pixels above the line it sits on. Every
+/// text call that means "just under this piece of furniture" therefore adds
+/// this much, or the label's body climbs back up into the furniture it was
+/// meant to sit under — which is exactly what a label overlapping its icon
+/// reads as.
+const TEXT_ASCENT: i16 = 12;
+/// The width of a volume's name area, in pixels.
 const ICON_W: u16 = 88;
-/// The height of an icon's label area.
-const ICON_H: u16 = 24;
-
-/// The height of the icon graphic above its label.
-const ICON_ART_H: u16 = 32;
+/// The clock's size, in the top right corner.
+const CLOCK_SIZE: i16 = 46;
+/// The clock's left edge.
+const CLOCK_X: i16 = SCREEN_W - CLOCK_SIZE - 16;
+/// The clock's top edge.
+const CLOCK_Y: i16 = MENUBAR_Y + MENUBAR_H + 8;
+/// The launch bar's height, along the bottom of the screen.
+///
+/// Icon artwork plus a label under it: 4 px of padding, the 46 px artwork,
+/// and a label whose body clears both — a text call's `y` is the baseline,
+/// so the bar must be tall enough for the glyph's body as well as its line.
+const BAR_H: i16 = 70;
+/// The launch bar's top edge.
+const BAR_Y: i16 = SCREEN_H - BAR_H;
+/// The launch icons' top edge.
+const BAR_ICON_Y: i16 = BAR_Y + 4;
+/// The first launch icon's left edge.
+const BAR_ICON_X0: i16 = 14;
+/// The distance between two launch icons.
+const BAR_ICON_PITCH: i16 = 52;
+/// How many bands the backdrop's gradient is drawn in.
+const GRADIENT_BANDS: usize = 12;
 
 /// The signal mask for the desktop's port.
 ///
@@ -117,14 +154,6 @@ const ICON_ART_H: u16 = 32;
 /// anybody, which is the difference between a working desktop and a black
 /// screen.
 const SIGB: u32 = 0x4000;
-
-/// How many icons fit across the grid.
-///
-/// Four, because the grid's origin and pitch put four comfortably inside a
-/// 1280-pixel screen with a margin, and because a grid that could hold one more
-/// column would be a grid whose last column is a single icon — which reads as
-/// a mistake even when it is arithmetic.
-const ICONS_PER_ROW: usize = 4;
 
 /// The height of one row in a dropped-down menu.
 const MENU_ITEM_H: i16 = 20;
@@ -153,6 +182,12 @@ pub enum Icon {
     RamDisk,
     /// The `SYS:` volume.
     System,
+    /// The system volume, under the name AROS gives it.
+    Workbench,
+    /// The `Utilities` drawer.
+    Utilities,
+    /// The `Startup` drawer.
+    Startup,
     /// The text editor.
     Edit,
     /// The shell.
@@ -167,13 +202,50 @@ impl Icon {
     /// The order is the *grid* order — left to right, then down — because that
     /// is what a user reading the desktop sees, and an icon list ordered by
     /// insertion would scramble the grid the moment a name changed.
-    pub const ALL: [Icon; 5] = [
+    pub const ALL: [Icon; 8] = [
         Icon::RamDisk,
         Icon::System,
+        Icon::Workbench,
+        Icon::Utilities,
+        Icon::Startup,
         Icon::Edit,
         Icon::Shell,
         Icon::GuiTest,
     ];
+
+    /// The volumes, in the order AROS's backdrop lists them.
+    ///
+    /// AROS's Wanderer shows the volumes down the left of the backdrop and
+    /// the programs in the launch bar along the bottom; the two are different
+    /// objects in AROS and they are different here.
+    pub const VOLUMES: [Icon; 5] = [
+        Icon::RamDisk,
+        Icon::Workbench,
+        Icon::System,
+        Icon::Utilities,
+        Icon::Startup,
+    ];
+
+    /// The programs in the launch bar.
+    pub const PROGRAMS: [Icon; 3] = [Icon::Shell, Icon::Edit, Icon::GuiTest];
+
+    /// The icon's artwork: AROS's own.
+    ///
+    /// These are the "Mason" icons from the AROS repository — the same
+    /// artwork AROS's own desktop draws — so the desktop looks like AROS
+    /// rather than like an approximation of it.
+    pub const fn art(self) -> &'static [u8] {
+        match self {
+            Icon::RamDisk => assets::RAM,
+            Icon::System => assets::SYSTEM,
+            Icon::Workbench => assets::DISK,
+            Icon::Utilities => assets::UTILITIES,
+            Icon::Startup => assets::STARTUP,
+            Icon::Edit => assets::MEMACS,
+            Icon::Shell => assets::SHELL,
+            Icon::GuiTest => assets::MORE,
+        }
+    }
 
     /// The icon's displayed name.
     ///
@@ -183,11 +255,16 @@ impl Icon {
     /// types into the shell.
     pub const fn name(self) -> &'static str {
         match self {
-            Icon::RamDisk => "RAM:",
-            Icon::System => "SYS:",
-            Icon::Edit => "Edit",
+            // The volumes are named the way AROS names them: "RAM DISK" and
+            // "Workbench", with the AmigaDOS names in the launch target.
+            Icon::RamDisk => "RAM DISK",
+            Icon::System => "System",
+            Icon::Workbench => "Workbench",
+            Icon::Utilities => "Utilities",
+            Icon::Startup => "Startup",
+            Icon::Edit => "Memacs",
             Icon::Shell => "Shell",
-            Icon::GuiTest => "guitest",
+            Icon::GuiTest => "More",
         }
     }
 
@@ -196,10 +273,22 @@ impl Icon {
         match self {
             Icon::RamDisk => "RAM:",
             Icon::System => "SYS:",
+            Icon::Workbench => "SYS:",
+            Icon::Utilities => "SYS:Utilities",
+            Icon::Startup => "SYS:Startup",
             Icon::Edit => "Edit",
             Icon::Shell => "Shell",
             Icon::GuiTest => "guitest",
         }
+    }
+
+    /// True when the icon is one of the volumes, which AROS draws down the
+    /// left of the backdrop.
+    pub const fn is_volume(self) -> bool {
+        matches!(
+            self,
+            Icon::RamDisk | Icon::System | Icon::Workbench | Icon::Utilities | Icon::Startup
+        )
     }
 }
 
@@ -322,6 +411,81 @@ enum Drag {
     Move { grab_dx: i32, grab_dy: i32 },
 }
 
+/// The pens the desktop draws with.
+///
+/// They are allocated once, when the desktop opens. A pen is an entry in
+/// the palette, and allocating one per drawing call would fill the palette
+/// with the same colour over and over — and the backdrop's gradient needs
+/// a dozen of them.
+struct Pens {
+    /// The backdrop's gradient, from the top band down.
+    backdrop: [Pen; GRADIENT_BANDS],
+    /// The screen title bar's background.
+    titlebar: Pen,
+    /// The screen title bar's text.
+    titlebar_text: Pen,
+    /// The menu bar's background.
+    menubar: Pen,
+    /// The menu bar's text.
+    menubar_text: Pen,
+    /// The name under an icon.
+    label: Pen,
+    /// The clock's face.
+    clock_face: Pen,
+    /// The clock's rim and its hour and minute hands.
+    clock_ink: Pen,
+    /// The clock's second hand.
+    clock_second: Pen,
+    /// The clock's digital time, under the face.
+    clock_text: Pen,
+}
+
+impl Pens {
+    /// Allocate the desktop's pens.
+    ///
+    /// A pen that cannot be allocated is [`Pen::INVALID`], and drawing with
+    /// an invalid pen draws nothing — which is better than drawing in a
+    /// colour nobody chose.
+    fn new() -> Self {
+        use vela_theme_classic::aros as palette;
+        let mut backdrop = [Pen::INVALID; GRADIENT_BANDS];
+        for (band, slot) in backdrop.iter_mut().enumerate() {
+            // The gradient runs from AROS's dark blue at the top to its
+            // light blue at the bottom, in a dozen bands. The step is a
+            // rational number — the band's index over the number of
+            // intervals — because the target has no floating point.
+            let step = band as i32;
+            let steps = (GRADIENT_BANDS - 1) as i32;
+            let top = palette::BACKDROP_TOP;
+            let bottom = palette::BACKDROP_BOTTOM;
+            // Each channel is interpolated over the whole gradient, so
+            // the mix divides by the number of intervals at the end.
+            let mix = |a: u8, b: u8| -> u8 {
+                let numerator = a as i32 * (steps - step) + b as i32 * step;
+                (numerator / steps).clamp(0, 255) as u8
+            };
+            let color = rgb(vela_renderer2d::Color::rgb(
+                mix(top.r, bottom.r),
+                mix(top.g, bottom.g),
+                mix(top.b, bottom.b),
+            ));
+            *slot = api::graphics::alloc_pen(0, color);
+        }
+        Self {
+            backdrop,
+            titlebar: api::graphics::alloc_pen(0, rgb(palette::TITLEBAR_BG)),
+            titlebar_text: api::graphics::alloc_pen(0, rgb(palette::TITLEBAR_FG)),
+            menubar: api::graphics::alloc_pen(0, rgb(palette::MENUBAR_BG)),
+            menubar_text: api::graphics::alloc_pen(0, rgb(palette::MENUBAR_FG)),
+            label: api::graphics::alloc_pen(0, rgb(palette::LABEL_FG)),
+            clock_face: api::graphics::alloc_pen(0, rgb(palette::CLOCK_FACE)),
+            clock_ink: api::graphics::alloc_pen(0, rgb(palette::CLOCK_INK)),
+            clock_second: api::graphics::alloc_pen(0, rgb(palette::CLOCK_SECOND)),
+            clock_text: api::graphics::alloc_pen(0, rgb(palette::CLOCK_TEXT)),
+        }
+    }
+}
+
 /// The desktop's own state.
 ///
 /// Everything the event loop needs, and nothing it does not. In particular
@@ -335,6 +499,8 @@ pub struct Desktop {
     screen: Screen,
     /// The window the desktop draws into: full-screen, at the back.
     backdrop: Window,
+    /// The pens the desktop draws with.
+    pens: Pens,
     /// The icons, in the order they are laid out.
     icons: Vec<Icon>,
     /// The handle of each icon's gadget, parallel to [`Self::icons`].
@@ -395,7 +561,9 @@ impl Desktop {
         let backdrop = api::open_window(screen, "Workbench", &args, port)?;
         api::send_window_to_back(backdrop)?;
 
+        let pens = Pens::new();
         let mut desktop = Desktop {
+            pens,
             port,
             screen,
             backdrop,
@@ -485,10 +653,13 @@ impl Desktop {
         Ok(())
     }
 
-    /// Add the icon grid's gadgets.
+    /// Add the desktop's icon gadgets.
+    ///
+    /// The volumes are down the left of the backdrop and the programs in
+    /// the launch bar along the bottom, which is where AROS puts them.
     fn build_icons(&mut self) {
         for icon in Icon::ALL.iter() {
-            let bounds = self.icon_bounds(self.icons.len());
+            let bounds = self.icon_bounds(*icon);
             // `unwrap` is right here and nowhere else: the backdrop is not
             // interactive as far as the kernel is concerned — it is a window
             // this task owns, which is all `AddGadget` checks — and a failure
@@ -503,15 +674,22 @@ impl Desktop {
     }
 
     /// An icon's rectangle, in the desktop window's coordinates.
-    fn icon_bounds(&self, index: usize) -> Rectangle {
-        let column = (index % ICONS_PER_ROW) as i16;
-        let row = (index / ICONS_PER_ROW) as i16;
-        Rectangle::new(
-            ICON_ORIGIN_X + column * ICON_PITCH_X,
-            ICON_ORIGIN_Y + row * ICON_PITCH_Y,
-            ICON_W,
-            ICON_H,
-        )
+    fn icon_bounds(&self, icon: Icon) -> Rectangle {
+        if icon.is_volume() {
+            let index = Icon::VOLUMES
+                .iter()
+                .position(|candidate| *candidate == icon)
+                .unwrap_or(0) as i16;
+            let y = VOLUME_Y + index * VOLUME_PITCH_Y;
+            Rectangle::new(VOLUME_X, y, ICON_W, (ICON_SIZE + LABEL_H) as u16)
+        } else {
+            let index = Icon::PROGRAMS
+                .iter()
+                .position(|candidate| *candidate == icon)
+                .unwrap_or(0) as i16;
+            let x = BAR_ICON_X0 + index * BAR_ICON_PITCH;
+            Rectangle::new(x, BAR_ICON_Y, ICON_W, (ICON_SIZE + LABEL_H) as u16)
+        }
     }
 
     /// Which icon a gadget handle names, if any.
@@ -532,39 +710,96 @@ impl Desktop {
 
     /// Paint the whole desktop.
     ///
+    /// The order is the AROS order: the backdrop first, then the screen's
+    /// furniture on top of it, then the things that sit on the backdrop —
+    /// the volumes down the left, the clock in the corner, the launch bar
+    /// along the bottom — and finally the dropped-down menu, which is over
+    /// everything else.
+    ///
     /// Repainting everything rather than invalidating regions is the right
     /// trade at this scale: the desktop is a few hundred drawing calls, and a
     /// partial repaint would need its own invalidation bookkeeping — which is
     /// exactly the kind of state that is wrong in one place and looks like a
     /// graphics bug everywhere else.
     fn paint(&self) {
-        use api::colors as c;
+        self.paint_backdrop();
+        self.paint_titlebar();
+        self.paint_menubar();
+        self.paint_volumes();
+        self.paint_clock();
+        self.paint_launch_bar();
+        // The dropped-down menu, over everything else.
+        self.paint_open_menu();
 
-        // The background. One filled rectangle, so a later repaint cannot
-        // leave a stray line behind where a window used to be.
-        if let Some(pen) = pen(c::DESKTOP) {
-            let _ = api::graphics::fill_rect(self.backdrop, pen, &self.full());
-        }
+        // Make the painting visible. Everything above drew into layers, and
+        // layers are not the screen: until somebody composites, the display
+        // shows whatever was there before — which is a boot console, and a
+        // desktop that never gets past it looks like a black screen with
+        // boot text in the corner. `Composite` copies the dirty layers to
+        // the framebuffer and redraws nothing, which is why it is the call
+        // here rather than `Refresh`: a refresh would repaint the system's
+        // furniture over the picture this method just drew.
+        let _ = api::composite_screen();
+    }
 
-        // The screen's title bar, in its own colour so it reads as furniture
-        // rather than as part of the wallpaper.
-        if let Some(pen) = pen(c::TITLE) {
+    /// Paint the backdrop: AROS's blue, in bands.
+    ///
+    /// The gradient runs from the dark blue at the top of the screen to the
+    /// light blue at the bottom, the way AROS's Wanderer draws its backdrop.
+    /// It is drawn in bands rather than per pixel because the desktop has a
+    /// dozen pens to spend and a thousand pixels a band.
+    fn paint_backdrop(&self) {
+        let band_height = (SCREEN_H as i32) / GRADIENT_BANDS as i32 + 1;
+        for (index, pen) in self.pens.backdrop.iter().enumerate() {
+            if !pen.is_valid() {
+                continue;
+            }
+            let y = index as i32 * band_height;
+            let height = band_height.min(SCREEN_H as i32 - y);
+            if height <= 0 {
+                break;
+            }
             let _ = api::graphics::fill_rect(
                 self.backdrop,
-                pen,
+                *pen,
+                &Rectangle::new(0, y as i16, SCREEN_W as u16, height as u16),
+            );
+        }
+    }
+
+    /// Paint the screen's title bar.
+    ///
+    /// AROS's title bar carries the system's name and its memory figures,
+    /// because that is what a user looks at to find out what the machine is
+    /// doing. This one carries the same information about this machine.
+    fn paint_titlebar(&self) {
+        if self.pens.titlebar.is_valid() {
+            let _ = api::graphics::fill_rect(
+                self.backdrop,
+                self.pens.titlebar,
                 &Rectangle::new(0, 0, SCREEN_W as u16, TITLEBAR_H as u16),
             );
         }
-        if let Some(pen) = pen(c::WHITE) {
-            let _ = api::graphics::text(self.backdrop, pen, 8, 2, "VelaOS Workbench");
+        if self.pens.titlebar_text.is_valid() {
+            let _ = api::graphics::text(
+                self.backdrop,
+                self.pens.titlebar_text,
+                8,
+                TITLEBAR_H - 5,
+                "VelaOS 0.1.0   1,280x800 graphics mem",
+            );
         }
+    }
 
-        // The menu bar's strip, in the title colour's lighter cousin so the
-        // two bars are distinguishable.
-        if let Some(pen) = pen(c::GADGET) {
+    /// Paint the menu bar.
+    ///
+    /// AROS's menu bar is light grey with dark text — the Zune look — and
+    /// not the dark bar with light text a desktop usually reaches for.
+    fn paint_menubar(&self) {
+        if self.pens.menubar.is_valid() {
             let _ = api::graphics::fill_rect(
                 self.backdrop,
-                pen,
+                self.pens.menubar,
                 &Rectangle::new(0, MENUBAR_Y, SCREEN_W as u16, MENUBAR_H as u16),
             );
         }
@@ -580,7 +815,11 @@ impl Desktop {
                 Some(geometry) => geometry,
                 None => continue,
             };
-            let color = if index == 0 { c::HIGHLIGHT } else { c::WHITE };
+            let color = if index == 0 {
+                api::colors::HIGHLIGHT
+            } else {
+                self.pens.menubar_text.raw() as u32
+            };
             // `if let` rather than `unwrap`: a palette with no white in it must
             // produce a desktop with no menu text, not a panic. The two are
             // different bugs and only one of them is recoverable.
@@ -589,68 +828,228 @@ impl Desktop {
                     self.backdrop,
                     pen,
                     geometry.x + FONT_CELL_W,
-                    MENUBAR_Y + 4,
+                    // The baseline sits the glyph's descent below the bar's
+                    // middle, so the title's body is centred in the bar
+                    // rather than hanging from its top edge.
+                    MENUBAR_Y + MENUBAR_H - 5,
                     menu.title,
                 );
             }
         }
-
-        // The icon grid.
-        for index in 0..self.icons.len() {
-            self.paint_icon(index);
-        }
-
-        // The dropped-down menu, over everything else.
-        self.paint_open_menu();
-
-        // Make the painting visible. Everything above drew into layers, and
-        // layers are not the screen: until somebody composites, the display
-        // shows whatever was there before — which is a boot console, and a
-        // desktop that never gets past it looks like a black screen with
-        // boot text in the corner. `Composite` copies the dirty layers to
-        // the framebuffer and redraws nothing, which is why it is the call
-        // here rather than `Refresh`: a refresh would repaint the system's
-        // furniture over the picture this method just drew.
-        let _ = api::composite_screen();
     }
 
-    /// Paint one icon: a frame, a glyph block, and its name.
-    fn paint_icon(&self, index: usize) {
-        use api::colors as c;
-        let Some(icon) = self.icons.get(index).copied() else {
-            return;
-        };
-        let b = self.icon_bounds(index);
-        // The icon's body is the label area plus the art above it, so the
-        // selection frame a click would draw encloses the whole icon rather
-        // than only the text under it.
-        let body = Rectangle::new(
-            b.min_x,
-            b.min_y - ICON_ART_H as i16,
-            b.max_x,
-            ICON_H + ICON_ART_H,
-        );
+    /// Paint the volumes, down the left of the backdrop.
+    ///
+    /// AROS's Wanderer shows the volumes as a column of drive icons with
+    /// their names under them, and this is that column: AROS's own artwork,
+    /// in AROS's arrangement.
+    fn paint_volumes(&self) {
+        for (index, icon) in Icon::VOLUMES.iter().enumerate() {
+            let y = VOLUME_Y + index as i16 * VOLUME_PITCH_Y;
+            self.paint_icon_art(*icon, VOLUME_X, y);
+            if self.pens.label.is_valid() {
+                let _ = api::graphics::text(
+                    self.backdrop,
+                    self.pens.label,
+                    VOLUME_X,
+                    // The baseline, not the top: the glyph's body must clear
+                    // the artwork above it.
+                    y + ICON_SIZE + 2 + TEXT_ASCENT,
+                    icon.name(),
+                );
+            }
+        }
+    }
 
-        if let Some(pen) = pen(c::GADGET) {
-            let _ = api::graphics::rect(self.backdrop, pen, &body);
+    /// Paint the launch bar along the bottom of the screen.
+    ///
+    /// AROS's BoingIconBar is the row of program icons along the bottom of
+    /// the desktop. This one carries AROS's own icon set; the programs VelaOS
+    /// can actually launch are the ones that are clickable.
+    fn paint_launch_bar(&self) {
+        // The bar's icons, in AROS's order. The entry is the artwork's bytes
+        // and the label under it; the artwork is a function rather than a
+        // slice so the table can live in a `const` without evaluating every
+        // asset up front.
+        type BarIcon = (fn() -> &'static [u8], &'static str);
+        const BAR: [BarIcon; 13] = [
+            (|| assets::SHELL, "Shell"),
+            (|| assets::CLOCK, "Clock"),
+            (|| assets::MORE, "More"),
+            (|| assets::HDTOOLBOX, "HDToolBox"),
+            (|| assets::ICONEDIT, "IconEdit"),
+            (|| assets::CALCULATOR, "Calculator"),
+            (|| assets::COMMODITIES, "Commodities"),
+            (|| assets::MEMACS, "Memacs"),
+            (|| assets::PRINTFILES, "PrintFiles"),
+            (|| assets::LACER, "Lacer"),
+            (|| assets::SCREENDUMP, "Screendump"),
+            (|| assets::WIMP, "WiMP"),
+            (|| assets::DIRECTORYOPUS, "DirectoryOpus"),
+        ];
+        for (index, (art, label)) in BAR.iter().enumerate() {
+            let x = BAR_ICON_X0 + index as i16 * BAR_ICON_PITCH;
+            self.paint_art(art(), x, BAR_ICON_Y);
+            if self.pens.label.is_valid() {
+                let _ = api::graphics::text(
+                    self.backdrop,
+                    self.pens.label,
+                    x,
+                    BAR_ICON_Y + ICON_SIZE + 2 + TEXT_ASCENT,
+                    label,
+                );
+            }
         }
-        if let Some(pen) = pen(c::SHADOW) {
-            // A two-tone block for the icon's "artwork". A real icon is a
-            // bitmap; this is one rectangle, because inventing artwork is
-            // outside what v0.1.0 is for and a solid block is honest about
-            // being a placeholder rather than pretending to be a picture.
-            let art = Rectangle::new(body.min_x + 12, body.min_y + 6, ICON_W - 24, ICON_ART_H - 8);
-            let _ = api::graphics::fill_rect(self.backdrop, pen, &art);
-        }
-        if let Some(pen) = pen(c::WHITE) {
-            let _ = api::graphics::text(
+    }
+
+    /// Paint the clock, in the top right corner.
+    ///
+    /// AROS's desktop carries a clock: an analogue face with the time under
+    /// it. This one shows the time since the machine started, because the
+    /// kernel has no real-time clock yet — and a clock that shows a
+    /// plausible-looking wrong time is worse than one that shows what it
+    /// knows.
+    fn paint_clock(&self) {
+        let centre_x = CLOCK_X as i32 + CLOCK_SIZE as i32 / 2;
+        let centre_y = CLOCK_Y as i32 + CLOCK_SIZE as i32 / 2;
+        let radius = CLOCK_SIZE as i32 / 2 - 1;
+
+        // The face: a disc of light grey with a dark rim.
+        for row in -radius..=radius {
+            // The half-width of the disc at this row, from the circle
+            // equation. The integer square root is used because the target
+            // has no floating-point maths library.
+            let square = (radius * radius).saturating_sub(row * row) as u32;
+            let half = math::isqrt(square) as i32;
+            let _ = api::graphics::fill_rect(
                 self.backdrop,
-                pen,
-                b.min_x,
-                b.min_y + FONT_CELL_H,
-                icon.name(),
+                self.pens.clock_face,
+                &Rectangle::new(
+                    (centre_x - half) as i16,
+                    (centre_y + row) as i16,
+                    (half * 2) as u16,
+                    1,
+                ),
             );
         }
+        if self.pens.clock_ink.is_valid() {
+            // The rim.
+            let _ = api::graphics::line(
+                self.backdrop,
+                self.pens.clock_ink,
+                (centre_x - radius) as i16,
+                centre_y as i16,
+                (centre_x + radius) as i16,
+                centre_y as i16,
+            );
+            let _ = api::graphics::line(
+                self.backdrop,
+                self.pens.clock_ink,
+                centre_x as i16,
+                (centre_y - radius) as i16,
+                centre_x as i16,
+                (centre_y + radius) as i16,
+            );
+        }
+
+        // The hands, from the time since the machine started.
+        let micros = api::read_monotonic().unwrap_or(0);
+        let seconds = (micros / 1_000_000) as u32;
+        let minute_of_hour = (seconds / 60) % 60;
+        let hour = (seconds / 3600) % 24;
+        let second = seconds % 60;
+        // The hand's tip, for a given length and angle.
+        //
+        // Twelve o'clock is up and the angle runs clockwise, so the tip is
+        // `length` units along the direction `(sin, -cos)`. The sine and
+        // cosine are the integer ones: the target has no floating-point
+        // maths library, and a clock hand a fraction of a pixel off is a
+        // clock hand nobody can tell apart from the right one.
+        let hand = |length: i32, angle_deci: i32| -> (i16, i16) {
+            let sine = math::sin_deci(angle_deci);
+            let cosine = math::cos_deci(angle_deci);
+            let dx = (length * sine) / 65536;
+            let dy = -(length * cosine) / 65536;
+            ((centre_x + dx) as i16, (centre_y + dy) as i16)
+        };
+        // The angles are in tenths of a degree, so the hour hand's slow
+        // creep — half a degree per minute — is not lost to rounding.
+        let hour_hand = hand(
+            radius / 2,
+            (hour as i32 % 12) * 300 + minute_of_hour as i32 * 5,
+        );
+        let minute_hand = hand((radius * 3) / 4, minute_of_hour as i32 * 60);
+        let second_hand = hand((radius * 4) / 5, second as i32 * 60);
+        if self.pens.clock_ink.is_valid() {
+            let _ = api::graphics::line(
+                self.backdrop,
+                self.pens.clock_ink,
+                centre_x as i16,
+                centre_y as i16,
+                hour_hand.0,
+                hour_hand.1,
+            );
+            let _ = api::graphics::line(
+                self.backdrop,
+                self.pens.clock_ink,
+                centre_x as i16,
+                centre_y as i16,
+                minute_hand.0,
+                minute_hand.1,
+            );
+        }
+        if self.pens.clock_second.is_valid() {
+            let _ = api::graphics::line(
+                self.backdrop,
+                self.pens.clock_second,
+                centre_x as i16,
+                centre_y as i16,
+                second_hand.0,
+                second_hand.1,
+            );
+        }
+
+        // The digital time under the face, the way AROS's clock shows it.
+        if self.pens.clock_text.is_valid() {
+            let _ = api::graphics::text(
+                self.backdrop,
+                self.pens.clock_text,
+                CLOCK_X,
+                CLOCK_Y + CLOCK_SIZE + 2 + TEXT_ASCENT,
+                &format_clock(hour, minute_of_hour, second),
+            );
+        }
+    }
+
+    /// Paint one icon's artwork.
+    ///
+    /// The artwork is AROS's own, and it is drawn through the graphics
+    /// driver's bulk pixel write, so an icon costs one call rather than two
+    /// thousand.
+    fn paint_art(&self, raw: &[u8], x: i16, y: i16) {
+        let Some(icon) = vela_icons::Icon::decode(raw) else {
+            return;
+        };
+        // The pixels are collected into a row-major buffer of the icon's own
+        // size, and handed to the driver in one call.
+        let width = icon.width();
+        let height = icon.height();
+        let mut pixels = alloc::vec![0u32; (width * height) as usize];
+        for row in 0..height {
+            for column in 0..width {
+                let at = (row * width + column) as usize;
+                if let Some(color) = icon.color_at(column, row) {
+                    pixels[at] = rgb(color);
+                }
+            }
+        }
+        let _ =
+            api::graphics::write_pixels(self.backdrop, x, y, width as u16, height as u16, &pixels);
+    }
+
+    /// Paint one of the desktop's own icons.
+    fn paint_icon_art(&self, icon: Icon, x: i16, y: i16) {
+        self.paint_art(icon.art(), x, y);
     }
 
     /// Paint the dropped-down menu, if one is open.
@@ -678,7 +1077,9 @@ impl Desktop {
                     self.backdrop,
                     pen,
                     geometry.x + MENU_PANEL_PAD,
-                    MENUBAR_Y + MENUBAR_H + offset as i16 * MENU_ITEM_H + 2,
+                    // Baseline arithmetic again: the item's body is centred
+                    // in its row rather than hanging from the row's top.
+                    MENUBAR_Y + MENUBAR_H + offset as i16 * MENU_ITEM_H + MENU_ITEM_H - 5,
                     item.label,
                 );
             }
@@ -707,11 +1108,6 @@ impl Desktop {
             (text_width + MENU_PANEL_PAD * 2) as u16,
             (menu.items.len() as i16 * MENU_ITEM_H + MENU_PANEL_PAD * 2) as u16,
         )
-    }
-
-    /// The whole screen, as a rectangle.
-    fn full(&self) -> Rectangle {
-        Rectangle::new(DESKTOP_X, DESKTOP_Y, SCREEN_W as u16, SCREEN_H as u16)
     }
 
     /// Handle one event.
@@ -858,7 +1254,7 @@ impl Desktop {
         }
         self.icons.clear();
         for icon in Icon::ALL.iter().rev() {
-            let bounds = self.icon_bounds(self.icons.len());
+            let bounds = self.icon_bounds(*icon);
             let gadget = api::add_gadget(self.backdrop, gadget_kind::BUTTON, &bounds, icon.name())
                 .expect("the desktop's own window always accepts a gadget");
             self.icon_gadgets.push(gadget);
@@ -1178,15 +1574,23 @@ const MENU_GAP: i16 = 16;
 /// have to guess anyway.
 const FONT_CELL_W: i16 = 8;
 
-/// The font's cell height.
-const FONT_CELL_H: i16 = 16;
-
 /// Allocate a pen of a given colour, if the palette allows.
 ///
 /// `None` on failure rather than a panic: a pen the palette cannot supply is
 /// a rendering problem, not a reason to stop the desktop. Returning `None`
 /// means the caller simply does not draw that element, which is a visibly
 /// incomplete desktop rather than a black one.
+/// The clock's digital time, as AROS's clock shows it.
+fn format_clock(hour: u32, minute: u32, second: u32) -> alloc::string::String {
+    use alloc::format;
+    format!("{:02}:{:02}:{:02}", hour, minute, second)
+}
+
+/// Pack a colour the way a pen's palette entry holds it.
+fn rgb(color: vela_renderer2d::Color) -> u32 {
+    ((color.r as u32) << 16) | ((color.g as u32) << 8) | (color.b as u32)
+}
+
 fn pen(color: u32) -> Option<Pen> {
     let pen = api::graphics::alloc_pen(0, color);
     pen.is_valid().then_some(pen)

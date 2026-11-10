@@ -1,0 +1,10 @@
+[package]
+name = "vela-icons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The desktop's AROS icon artwork"
+
+[dependencies]
+vela-renderer2d.workspace = true

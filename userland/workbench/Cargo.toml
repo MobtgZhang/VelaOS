@@ -16,6 +16,9 @@ path = "src/main.rs"
 
 [dependencies]
 vela-sys.workspace = true
+vela-icons.workspace = true
+vela-renderer2d.workspace = true
+vela-theme-classic.workspace = true
 
 # The desktop's own tests drive it through the *real* syscall boundary, so
 # they need the kernel crates the boundary is made of: the ABI's message

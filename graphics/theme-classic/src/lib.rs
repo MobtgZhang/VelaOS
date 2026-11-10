@@ -128,3 +128,36 @@ mod tests {
         assert_ne!(TITLEBAR_ACTIVE_BG, TITLEBAR_BG);
     }
 }
+
+/// The AROS desktop's colours.
+///
+/// AROS's Wanderer draws its backdrop in blue, its screen title bar and its
+/// menu bar in light grey, and the names of the things on the backdrop in
+/// white. These are the colours of that desktop, transcribed so the desktop
+/// looks like AROS rather than like a different desktop with blue in it.
+pub mod aros {
+    use vela_renderer2d::Color;
+
+    /// The backdrop's colour at the top of the screen.
+    pub const BACKDROP_TOP: Color = Color::rgb(0x1B, 0x3B, 0x6F);
+    /// The backdrop's colour at the bottom of the screen.
+    pub const BACKDROP_BOTTOM: Color = Color::rgb(0x4E, 0x8F, 0xD0);
+    /// The screen title bar's background.
+    pub const TITLEBAR_BG: Color = Color::rgb(0xC8, 0xC8, 0xC8);
+    /// The screen title bar's text.
+    pub const TITLEBAR_FG: Color = Color::rgb(0x10, 0x10, 0x10);
+    /// The menu bar's background.
+    pub const MENUBAR_BG: Color = Color::rgb(0xE4, 0xE4, 0xE4);
+    /// The menu bar's text.
+    pub const MENUBAR_FG: Color = Color::rgb(0x10, 0x10, 0x10);
+    /// The name under an icon on the backdrop.
+    pub const LABEL_FG: Color = Color::rgb(0xFF, 0xFF, 0xFF);
+    /// The clock's face.
+    pub const CLOCK_FACE: Color = Color::rgb(0xF0, 0xF0, 0xF0);
+    /// The clock's rim and its hour and minute hands.
+    pub const CLOCK_INK: Color = Color::rgb(0x20, 0x20, 0x20);
+    /// The clock's second hand.
+    pub const CLOCK_SECOND: Color = Color::rgb(0xC0, 0x30, 0x30);
+    /// The clock's digital time.
+    pub const CLOCK_TEXT: Color = Color::rgb(0x10, 0x10, 0x10);
+}

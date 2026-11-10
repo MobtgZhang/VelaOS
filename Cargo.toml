@@ -59,6 +59,7 @@ members = [
   "amiga/abi-guest32",
   # graphics
   "graphics/renderer2d",
+  "graphics/icons",
   "graphics/font",
   "graphics/theme-classic",
   # fs
@@ -121,6 +122,7 @@ vela-kernel-socket = { path = "kernel/socket" }
 vela-abi-native64 = { path = "amiga/abi-native64" }
 vela-abi-guest32 = { path = "amiga/abi-guest32" }
 vela-renderer2d = { path = "graphics/renderer2d" }
+vela-icons = { path = "graphics/icons" }
 vela-font = { path = "graphics/font" }
 vela-theme-classic = { path = "graphics/theme-classic" }
 vela-ramfs = { path = "fs/ramfs" }
