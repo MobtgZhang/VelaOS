@@ -190,6 +190,78 @@ fn exec_shared_semaphores_admit_several_holders() {
 }
 
 #[test]
+fn exec_named_semaphores_are_found_and_unlisted() {
+    let k = harness::kernel();
+    let t = harness::task(&k);
+    let other = harness::task(&k);
+
+    // A named semaphore joins the public list.
+    let added = ok(
+        harness::call(&k, t, numbers::ADD_SEMAPHORE, args(cstring("Conductor"), 0)),
+        "AddSemaphore",
+    );
+    assert_ne!(added.value, 0, "a named semaphore has an id");
+
+    // Another task finds it by name — the public list is system-wide.
+    let found = ok(
+        harness::call(
+            &k,
+            other,
+            numbers::FIND_SEMAPHORE,
+            args(cstring("Conductor"), 0),
+        ),
+        "FindSemaphore",
+    );
+    assert_eq!(found.value, added.value, "the named semaphore is found");
+
+    // A name nobody carries answers zero rather than an error.
+    let missing = ok(
+        harness::call(
+            &k,
+            other,
+            numbers::FIND_SEMAPHORE,
+            args(cstring("Nobody"), 0),
+        ),
+        "FindSemaphore",
+    );
+    assert_eq!(missing.value, 0, "an unknown name answers zero");
+
+    // A name already in use is refused: the public list holds one
+    // semaphore per name.
+    let again = harness::call(&k, t, numbers::ADD_SEMAPHORE, args(cstring("Conductor"), 0));
+    assert_eq!(again.error, errors::NAME_TAKEN);
+
+    // Taking it out of the public list leaves the semaphore alive: it is
+    // still usable by id, and no longer findable by name.
+    let removed = ok(
+        harness::call(
+            &k,
+            t,
+            numbers::REMOVE_SEMAPHORE,
+            args(cstring("Conductor"), 0),
+        ),
+        "RemoveSemaphore",
+    );
+    assert_eq!(
+        removed.value, added.value,
+        "the unlisted semaphore is named"
+    );
+    let gone = ok(
+        harness::call(
+            &k,
+            other,
+            numbers::FIND_SEMAPHORE,
+            args(cstring("Conductor"), 0),
+        ),
+        "FindSemaphore",
+    );
+    assert_eq!(gone.value, 0, "the name no longer resolves");
+
+    // And the semaphore itself still works.
+    assert_eq!(obtain(&k, t, added.value), 1, "the semaphore lives on");
+}
+
+#[test]
 fn exec_find_task_finds_a_named_task() {
     let k = harness::kernel();
     let t = harness::task(&k);

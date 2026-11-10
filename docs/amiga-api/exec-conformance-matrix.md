@@ -47,6 +47,9 @@ indistinguishable from a working call.
 | `AttemptSemaphore` | 48 | `verified` | `exec_attempt_semaphore_reports_failure_without_blocking` | Never blocks: `0` says the lock was held, which is an answer rather than an error. |
 | `ReleaseSemaphore` | 49 | `verified` | `exec_semaphore_lifecycle_is_verified` | Releases one nesting level and grants the queue onward; a release the caller does not own is `NOT_OWNER`. |
 | `DeleteSemaphore` | 50 | `verified` | `exec_semaphore_lifecycle_is_verified` | Wakes the waiters so their next attempt reports `NO_OBJECT` rather than sleeping forever. |
+| `AddSemaphore` | 52 | `verified` | `exec_named_semaphores_are_found_and_unlisted` | Creates a semaphore and lists it in the system's public semaphore list; a name already in use is `NAME_TAKEN`. |
+| `FindSemaphore` | 53 | `verified` | `exec_named_semaphores_are_found_and_unlisted` | Finds a semaphore by name; an unknown name answers `0`, never an error. |
+| `RemoveSemaphore` | 54 | `verified` | `exec_named_semaphores_are_found_and_unlisted` | Takes a semaphore out of the public list; the semaphore itself lives on and stays usable by id. |
 | `Alert` | 51 | `verified` | `exec_alert_is_accepted_and_a_dead_alert_ends_the_task` | Logs the alert with its decoded name; the `AT_DeadEnd` type bit ends the calling task. |
 
-**Summary:** 23 of 30 entries are `verified`.
+**Summary:** 26 of 33 entries are `verified`.

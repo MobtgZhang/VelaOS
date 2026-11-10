@@ -378,6 +378,33 @@ pub const MATRIX: &[ApiEntry] = &[
     },
     ApiEntry {
         library: "exec.library",
+        name: "AddSemaphore",
+        syscall: Some(52),
+        status: Status::Verified,
+        verified_by: Some("exec_named_semaphores_are_found_and_unlisted"),
+        notes: "Creates a semaphore and lists it in the system's public \
+                semaphore list; a name already in use is `NAME_TAKEN`.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "FindSemaphore",
+        syscall: Some(53),
+        status: Status::Verified,
+        verified_by: Some("exec_named_semaphores_are_found_and_unlisted"),
+        notes: "Finds a semaphore by name; an unknown name answers `0`, never \
+                an error.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "RemoveSemaphore",
+        syscall: Some(54),
+        status: Status::Verified,
+        verified_by: Some("exec_named_semaphores_are_found_and_unlisted"),
+        notes: "Takes a semaphore out of the public list; the semaphore itself \
+                lives on and stays usable by id.",
+    },
+    ApiEntry {
+        library: "exec.library",
         name: "Alert",
         syscall: Some(51),
         status: Status::Verified,

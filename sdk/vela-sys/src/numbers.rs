@@ -109,6 +109,12 @@ pub const RELEASE_SEMAPHORE: u64 = 49;
 pub const DELETE_SEMAPHORE: u64 = 50;
 /// `exec.library`: raise an alert.
 pub const ALERT: u64 = 51;
+/// `exec.library`: create a semaphore and list it under a name.
+pub const ADD_SEMAPHORE: u64 = 52;
+/// `exec.library`: find a semaphore by name.
+pub const FIND_SEMAPHORE: u64 = 53;
+/// `exec.library`: take a semaphore out of the public list.
+pub const REMOVE_SEMAPHORE: u64 = 54;
 
 /// The size of a program page, in bytes.
 ///
@@ -335,6 +341,8 @@ pub mod errors {
     pub const NO_OBJECT: i32 = -2;
     /// The object was already open.
     pub const OBJECT_IN_USE: i32 = -3;
+    /// The name was already taken.
+    pub const NAME_TAKEN: i32 = -4;
     /// The name was invalid.
     pub const INVALID_NAME: i32 = -5;
     /// The object was not found.

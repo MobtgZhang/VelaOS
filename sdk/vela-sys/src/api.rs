@@ -426,6 +426,66 @@ pub fn set_except(mask: u32) -> Result<u32> {
     check(packed).map(|v| v as u32)
 }
 
+/// Create a semaphore and list it under a name.
+///
+/// This is AROS's `AddSemaphore`: the semaphore joins the system's public
+/// semaphore list, where every task can find it by name with
+/// [`find_semaphore`]. The `priority` argument orders the wait queue on
+/// AmigaOS; the grants here are made in arrival order.
+///
+/// # Errors
+///
+/// [`errors::NAME_TAKEN`] when the name is already in use, and
+/// [`errors::INVALID_NAME`] when it is empty.
+pub fn add_semaphore(name: &str, priority: i8) -> Result<Semaphore> {
+    let bytes = c_string(name);
+    let name_ptr = bytes.as_ptr() as u64;
+    // SAFETY: the pointer names a NUL-terminated buffer that outlives the
+    // call, and the kernel copies the string out rather than retaining it.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_ADDSEMAPHORE,
+            [name_ptr, priority as u8 as u64, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(Semaphore)
+}
+
+/// Find a semaphore by name.
+///
+/// Returns the semaphore, or [`Semaphore::NULL`] when no semaphore carries
+/// that name — the AmigaOS `FindSemaphore` returned `NULL` there, and a
+/// program probing for one expects to be told "not here".
+pub fn find_semaphore(name: &str) -> Result<Semaphore> {
+    let bytes = c_string(name);
+    let name_ptr = bytes.as_ptr() as u64;
+    // SAFETY: the pointer names a NUL-terminated buffer that outlives the
+    // call, and the kernel copies the string out rather than retaining it.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_FINDSEMAPHORE, [name_ptr, 0, 0, 0, 0, 0])
+    };
+    check(packed).map(Semaphore)
+}
+
+/// Take a semaphore out of the public list.
+///
+/// The semaphore itself lives on: it is still usable by id, and is no
+/// longer findable by name. That is what AROS's `RemSemaphore` does — it
+/// unlists the semaphore and leaves it to its owner.
+///
+/// Returns the semaphore that was unlisted, or [`Semaphore::NULL`] when no
+/// semaphore carried that name.
+pub fn remove_semaphore(name: &str) -> Result<Semaphore> {
+    let bytes = c_string(name);
+    let name_ptr = bytes.as_ptr() as u64;
+    // SAFETY: the pointer names a NUL-terminated buffer that outlives the
+    // call, and the kernel copies the string out rather than retaining it.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_REMOVESEMAPHORE, [name_ptr, 0, 0, 0, 0, 0])
+    };
+    check(packed).map(Semaphore)
+}
+
 /// Raise a signal in another task's set.
 ///
 /// Returns that task's new signal set.

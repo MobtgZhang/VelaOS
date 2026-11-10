@@ -484,6 +484,28 @@ impl Exec {
         Ok(())
     }
 
+    /// `AddSemaphore` — create a semaphore and list it under a name.
+    ///
+    /// AROS's `AddSemaphore` initialises the semaphore and enqueues it in
+    /// the system's public semaphore list, where every task can find it by
+    /// name. The same happens here.
+    pub fn add_semaphore(&self, name: &str, priority: i8) -> Result<SemaphoreId, i32> {
+        self.semaphores.add_named(name, priority)
+    }
+
+    /// `FindSemaphore` — the semaphore listed under this name.
+    pub fn find_semaphore(&self, name: &str) -> Option<SemaphoreId> {
+        self.semaphores.find_by_name(name)
+    }
+
+    /// `RemSemaphore` — take a semaphore out of the public list.
+    ///
+    /// The semaphore itself lives on: it is still usable by id, and is no
+    /// longer findable by name.
+    pub fn remove_semaphore(&self, name: &str) -> Option<SemaphoreId> {
+        self.semaphores.remove_by_name(name)
+    }
+
     /// Delete a semaphore, waking its waiters so they fail rather than hang.
     pub fn delete_semaphore(&self, id: SemaphoreId) -> Result<(), i32> {
         let wake = self.semaphores.delete(id)?;

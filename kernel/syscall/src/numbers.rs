@@ -239,6 +239,30 @@ pub const DELETE_SEMAPHORE: u64 = 50;
 /// bit). The alert is logged with its decoded name; a dead alert halts the
 /// calling task, which is what `AT_DeadEnd` means on AmigaOS.
 pub const ALERT: u64 = 51;
+/// `exec.library`: create a semaphore and list it under a name.
+///
+/// Arguments: `name_ptr` (a user pointer to a NUL-terminated name),
+/// `priority`. Returns the semaphore's id.
+///
+/// This is AROS's `AddSemaphore`: the semaphore joins the system's public
+/// list, where `FindSemaphore` can find it by name. A name already in use
+/// is `NAME_TAKEN`.
+pub const ADD_SEMAPHORE: u64 = 52;
+/// `exec.library`: find a semaphore by name.
+///
+/// Arguments: `name_ptr`. Returns the semaphore's id, or zero when no
+/// semaphore carries that name — the AmigaOS `FindSemaphore` returned
+/// `NULL` there.
+pub const FIND_SEMAPHORE: u64 = 53;
+/// `exec.library`: take a semaphore out of the public list.
+///
+/// Arguments: `name_ptr`. Returns the semaphore's id, or zero when no
+/// semaphore carries that name.
+///
+/// The semaphore itself lives on: it is still usable by id, and is no
+/// longer findable by name. That is what AROS's `RemSemaphore` does — it
+/// unlists the semaphore and leaves it to its owner.
+pub const REMOVE_SEMAPHORE: u64 = 54;
 
 /// `net.library`: create a socket.
 ///
@@ -490,7 +514,7 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 42;
+pub const EXEC_COUNT: u64 = 45;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.
@@ -530,7 +554,7 @@ pub fn is_defined(number: u64) -> bool {
 /// SDK's published surface against it. It is public for that check — a
 /// matrix entry that names a number the kernel does not define is a
 /// documentation bug that would otherwise only show up as a failed call.
-pub const DEFINED: [(u64, SyscallGroup); 132] = [
+pub const DEFINED: [(u64, SyscallGroup); 135] = [
     (CREATE_MSG_PORT, SyscallGroup::Exec),
     (DELETE_MSG_PORT, SyscallGroup::Exec),
     (PUT_MSG, SyscallGroup::Exec),
@@ -565,6 +589,9 @@ pub const DEFINED: [(u64, SyscallGroup); 132] = [
     (RELEASE_SEMAPHORE, SyscallGroup::Exec),
     (DELETE_SEMAPHORE, SyscallGroup::Exec),
     (ALERT, SyscallGroup::Exec),
+    (ADD_SEMAPHORE, SyscallGroup::Exec),
+    (FIND_SEMAPHORE, SyscallGroup::Exec),
+    (REMOVE_SEMAPHORE, SyscallGroup::Exec),
     (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
     (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
     (GRAPHICS_SET_PEN, SyscallGroup::Graphics),
@@ -840,6 +867,8 @@ pub mod errors {
     pub const NO_OBJECT: i32 = -2;
     /// The object was already open.
     pub const OBJECT_IN_USE: i32 = -3;
+    /// The name was already taken.
+    pub const NAME_TAKEN: i32 = -4;
     /// The name was invalid.
     pub const INVALID_NAME: i32 = -5;
     /// The object was not found.

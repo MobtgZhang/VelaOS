@@ -89,7 +89,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
     }
 
     // The remaining Intuition, DOS and utility numbers.
-    let tail: [(u64, u64); 46] = [
+    let tail: [(u64, u64); 49] = [
         (sdk::ALLOC_MEM, kernel::ALLOC_MEM),
         (sdk::FREE_MEM, kernel::FREE_MEM),
         (sdk::ALLOC_VEC, kernel::ALLOC_VEC),
@@ -111,6 +111,9 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::RELEASE_SEMAPHORE, kernel::RELEASE_SEMAPHORE),
         (sdk::DELETE_SEMAPHORE, kernel::DELETE_SEMAPHORE),
         (sdk::ALERT, kernel::ALERT),
+        (sdk::ADD_SEMAPHORE, kernel::ADD_SEMAPHORE),
+        (sdk::FIND_SEMAPHORE, kernel::FIND_SEMAPHORE),
+        (sdk::REMOVE_SEMAPHORE, kernel::REMOVE_SEMAPHORE),
         (sdk::I_SET_ATTRS, kernel::INTUITION_SET_ATTRS),
         (sdk::I_ADD_GADGET, kernel::INTUITION_ADD_GADGET),
         (sdk::I_REMOVE_GADGET, kernel::INTUITION_REMOVE_GADGET),

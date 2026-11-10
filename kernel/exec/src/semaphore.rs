@@ -28,6 +28,7 @@
 //! holds an opaque id, and every access is validated against that id — the
 //! same trade-off the message ports made.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use spin::Mutex;
@@ -75,6 +76,12 @@ struct Semaphore {
     owner: Option<TaskId>,
     /// The queue of tasks waiting for a grant, in arrival order.
     waiters: Vec<Waiter>,
+    /// The name it is listed under in the public semaphore list.
+    ///
+    /// A named semaphore is one AROS's `AddSemaphore` put in the system's
+    /// public list, where `FindSemaphore` can find it by name. A semaphore
+    /// with no name is private to the tasks that hold its id.
+    name: Option<String>,
 }
 
 impl Semaphore {
@@ -84,6 +91,7 @@ impl Semaphore {
             nest_count: 0,
             owner: None,
             waiters: Vec::new(),
+            name: None,
         }
     }
 
@@ -157,8 +165,69 @@ impl SemaphoreTable {
     /// made; VelaOS grants in arrival order, which is the behaviour when
     /// every semaphore is created at the same priority, so the value is
     /// recorded in the API for ABI shape but does not reorder the queue.
-    pub fn init(&self, _priority: i8) -> SemaphoreId {
+    pub fn init(&self, priority: i8) -> SemaphoreId {
+        self.create(None, priority)
+    }
+
+    /// `AddSemaphore` — create a semaphore and list it under a name.
+    ///
+    /// AROS's `AddSemaphore` initialises the semaphore and enqueues it in the
+    /// system's *public* semaphore list, where `FindSemaphore` looks it up
+    /// by name. The same happens here: the semaphore is created, given the
+    /// name, and becomes findable by every task.
+    ///
+    /// A name that is already taken is refused: the public list holds one
+    /// semaphore per name, and two semaphores answering to one name would
+    /// make `FindSemaphore` a coin toss.
+    pub fn add_named(&self, name: &str, priority: i8) -> Result<SemaphoreId, i32> {
+        if name.is_empty() {
+            return Err(errors::INVALID_NAME);
+        }
         let mut inner = self.inner.lock();
+        if inner.find_by_name(name).is_some() {
+            return Err(errors::NAME_TAKEN);
+        }
+        Ok(Self::create_locked(
+            &mut inner,
+            Some(String::from(name)),
+            priority,
+        ))
+    }
+
+    /// `FindSemaphore` — the semaphore listed under this name.
+    ///
+    /// The match is exact, as AmigaOS's `FindName` is: the case-insensitive
+    /// search has its own name there, and a silent case-folding here would
+    /// make two differently-spelled names collide.
+    pub fn find_by_name(&self, name: &str) -> Option<SemaphoreId> {
+        let inner = self.inner.lock();
+        inner.find_by_name(name)
+    }
+
+    /// `RemSemaphore` — take a semaphore out of the public list.
+    ///
+    /// AROS removes the semaphore from the public list and leaves the
+    /// semaphore itself alone — it belongs to the caller, who still holds it.
+    /// Here the table owns the semaphore, so unlisting it clears the name:
+    /// the semaphore lives on, still usable by id, but no longer findable by
+    /// name.
+    pub fn remove_by_name(&self, name: &str) -> Option<SemaphoreId> {
+        let mut inner = self.inner.lock();
+        let id = inner.find_by_name(name)?;
+        if let Some(semaphore) = inner.entries[id.0 as usize - 1].as_mut() {
+            semaphore.name = None;
+        }
+        Some(id)
+    }
+
+    /// Create a semaphore, with or without a name.
+    fn create(&self, name: Option<String>, priority: i8) -> SemaphoreId {
+        let mut inner = self.inner.lock();
+        Self::create_locked(&mut inner, name, priority)
+    }
+
+    /// Create a semaphore in an already-locked table.
+    fn create_locked(inner: &mut Inner, name: Option<String>, _priority: i8) -> SemaphoreId {
         let id = match inner.free.pop() {
             Some(id) => id,
             None => {
@@ -167,7 +236,9 @@ impl SemaphoreTable {
                 id
             }
         };
-        inner.entries[id.0 as usize - 1] = Some(Semaphore::new());
+        let mut semaphore = Semaphore::new();
+        semaphore.name = name;
+        inner.entries[id.0 as usize - 1] = Some(semaphore);
         id
     }
 
@@ -340,6 +411,19 @@ impl Inner {
         self.entries
             .get(id.0 as usize - 1)
             .and_then(|slot| slot.as_ref())
+    }
+
+    /// The semaphore listed under `name`, if there is one.
+    fn find_by_name(&self, name: &str) -> Option<SemaphoreId> {
+        self.entries
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| {
+                slot.as_ref()
+                    .and_then(|semaphore| semaphore.name.as_deref())
+                    == Some(name)
+            })
+            .map(|(index, _)| SemaphoreId(index as u32 + 1))
     }
 }
 

@@ -36,6 +36,30 @@
 library: exec.library
 prefix: EXEC
 functions:
+  - name: RemoveSemaphore
+    lvo: -336
+    offset: REMOVESEMAPHORE
+    stub: remove_semaphore
+    syscall: REMOVE_SEMAPHORE
+    number: 54
+    kernel: REMOVE_SEMAPHORE
+    status: implemented
+  - name: FindSemaphore
+    lvo: -328
+    offset: FINDSEMAPHORE
+    stub: find_semaphore
+    syscall: FIND_SEMAPHORE
+    number: 53
+    kernel: FIND_SEMAPHORE
+    status: implemented
+  - name: AddSemaphore
+    lvo: -320
+    offset: ADDSEMAPHORE
+    stub: add_semaphore
+    syscall: ADD_SEMAPHORE
+    number: 52
+    kernel: ADD_SEMAPHORE
+    status: implemented
   - name: ConfirmGrant
     lvo: -312
     offset: CONFIRMGRANT

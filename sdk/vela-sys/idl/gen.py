@@ -15,6 +15,9 @@ SDK's own `numbers.rs`.
 # (module, library, prefix, [(function, lvo, suffix, stub, syscall, number)])
 LIBRARIES = [
     ("exec", "exec.library", "EXEC", [
+        ("RemoveSemaphore", -336, "REMOVESEMAPHORE", "remove_semaphore", "REMOVE_SEMAPHORE", 54),
+        ("FindSemaphore", -328, "FINDSEMAPHORE", "find_semaphore", "FIND_SEMAPHORE", 53),
+        ("AddSemaphore", -320, "ADDSEMAPHORE", "add_semaphore", "ADD_SEMAPHORE", 52),
         ("ConfirmGrant", -312, "CONFIRMGRANT", "confirm_grant", "CONFIRM_GRANT", 47),
         ("Alert", -304, "ALERT", "alert", "ALERT", 51),
         ("DeleteSemaphore", -296, "DELETESEMAPHORE", "delete_semaphore", "DELETE_SEMAPHORE", 50),

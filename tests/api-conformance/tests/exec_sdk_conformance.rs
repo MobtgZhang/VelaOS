@@ -139,6 +139,34 @@ fn sdk_shared_semaphore_admits_two_holders() {
 }
 
 #[test]
+fn sdk_named_semaphore_is_found_by_name() {
+    let _guard = ready();
+
+    let semaphore = api::add_semaphore("Conductor", 0).expect("AddSemaphore");
+    assert!(!semaphore.is_null());
+
+    // The public list is system-wide: the same name resolves to the same
+    // semaphore.
+    let found = api::find_semaphore("Conductor").expect("FindSemaphore");
+    assert_eq!(found, semaphore, "the named semaphore is found");
+
+    // An unknown name answers null rather than an error.
+    let missing = api::find_semaphore("Nobody").expect("FindSemaphore");
+    assert!(missing.is_null());
+
+    // Unlisting it leaves the semaphore alive but no longer findable.
+    let removed = api::remove_semaphore("Conductor").expect("RemoveSemaphore");
+    assert_eq!(removed, semaphore);
+    assert!(api::find_semaphore("Conductor")
+        .expect("FindSemaphore")
+        .is_null());
+
+    // And it still works by id.
+    assert!(api::obtain_semaphore(semaphore, false).expect("ObtainSemaphore"));
+    api::delete_semaphore(semaphore).expect("DeleteSemaphore");
+}
+
+#[test]
 fn sdk_alert_is_accepted() {
     let _guard = ready();
 

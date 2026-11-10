@@ -71,6 +71,8 @@ pub mod errors {
     pub const NAME_TAKEN: i32 = -4;
     /// The object was not found.
     pub const NOT_FOUND: i32 = -6;
+    /// The name was invalid.
+    pub const INVALID_NAME: i32 = -5;
     /// The port has no message available.
     pub const NO_MESSAGE: i32 = -1;
     /// A memory allocation failed.

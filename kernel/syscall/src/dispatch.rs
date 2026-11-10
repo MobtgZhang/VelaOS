@@ -974,6 +974,64 @@ pub mod exec_handlers {
         }
     }
 
+    /// `AddSemaphore` — create a semaphore and list it under a name.
+    ///
+    /// Arguments: `name_ptr` (a user pointer to a NUL-terminated name),
+    /// `priority`. Returns the semaphore's id.
+    ///
+    /// This is AROS's `AddSemaphore`: the semaphore joins the system's
+    /// public list, where `FindSemaphore` finds it by name. A name already
+    /// in use is `NAME_TAKEN` — the public list holds one semaphore per
+    /// name, and two semaphores answering to one name would make the
+    /// lookup a coin toss.
+    pub fn add_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let name_ptr = args.get(0);
+        let priority = args.get(1) as u8 as i8;
+        let name = match copy_string_alloc(name_ptr) {
+            Ok(name) => name,
+            Err(e) => return SyscallResult::err(e),
+        };
+        match ctx.exec.add_semaphore(&name, priority) {
+            Ok(semaphore) => SyscallResult::ok(semaphore.0 as u64),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `FindSemaphore` — find a semaphore by name.
+    ///
+    /// Arguments: `name_ptr`. Returns the semaphore's id, or zero when no
+    /// semaphore carries that name.
+    pub fn find_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let name_ptr = args.get(0);
+        let name = match copy_string_alloc(name_ptr) {
+            Ok(name) => name,
+            Err(e) => return SyscallResult::err(e),
+        };
+        match ctx.exec.find_semaphore(&name) {
+            Some(semaphore) => SyscallResult::ok(semaphore.0 as u64),
+            None => SyscallResult::ok(0),
+        }
+    }
+
+    /// `RemSemaphore` — take a semaphore out of the public list.
+    ///
+    /// Arguments: `name_ptr`. Returns the semaphore's id, or zero when no
+    /// semaphore carries that name.
+    ///
+    /// The semaphore itself lives on: it is still usable by id, and is no
+    /// longer findable by name — which is what AROS's `RemSemaphore` does.
+    pub fn remove_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let name_ptr = args.get(0);
+        let name = match copy_string_alloc(name_ptr) {
+            Ok(name) => name,
+            Err(e) => return SyscallResult::err(e),
+        };
+        match ctx.exec.remove_semaphore(&name) {
+            Some(semaphore) => SyscallResult::ok(semaphore.0 as u64),
+            None => SyscallResult::ok(0),
+        }
+    }
+
     /// `Alert` — raise an alert.
     ///
     /// Arguments: `alert` (an `AN_*`/`AG_*` number). Returns zero.
@@ -1065,6 +1123,9 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::RELEASE_SEMAPHORE, exec_handlers::release_semaphore);
     table.install(numbers::DELETE_SEMAPHORE, exec_handlers::delete_semaphore);
     table.install(numbers::ALERT, exec_handlers::alert);
+    table.install(numbers::ADD_SEMAPHORE, exec_handlers::add_semaphore);
+    table.install(numbers::FIND_SEMAPHORE, exec_handlers::find_semaphore);
+    table.install(numbers::REMOVE_SEMAPHORE, exec_handlers::remove_semaphore);
 
     // The `utility.library` group:
 
