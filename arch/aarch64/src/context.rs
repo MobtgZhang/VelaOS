@@ -109,11 +109,18 @@ impl Context {
     /// The stack pointer is `stack_top` minus the 16 bytes the ABI wants
     /// reserved at the top of a frame, so the first call the task makes has
     /// room to spill a register.
+    ///
+    /// The entry point and the argument are *staged* in `x19` and `x20`:
+    /// the switch resumes a task by jumping to its link register, and a
+    /// task that has never run has its link register pointing at the
+    /// trampoline, which reads the two out of those callee-saved registers.
     pub fn for_entry(stack_top: u64, entry: u64, arg: u64) -> Self {
         let aligned = stack_top & !0xF;
         Self {
             sp: aligned - 16,
-            x: [0; 10],
+            // x19 = the entry point, x20 = the argument: what the
+            // trampoline reads out when the task is first resumed.
+            x: [entry, arg, 0, 0, 0, 0, 0, 0, 0, 0],
             fp: 0,
             // The link register of a fresh task points at the trampoline:
             // the switch resumes a task by jumping to its link register, and
@@ -144,31 +151,35 @@ core::arch::global_asm!(
 vela_ctx_switch:
     // $x0 = the outgoing context, $x1 = the incoming one.
     //
-    // The stack pointer moves first: everything else is stored relative to
-    // it.
+    // Everything is saved into the outgoing context's memory, never onto
+    // the stack: the region above $sp belongs to the caller's frame and
+    // must not be touched.
     mov     $x2, $sp
-    // The offsets are the ones the Rust layout declares: the callee-saved
-    // registers sit at 8, 24, 40, 56 and 72, the frame and link registers
-    // at 88, and the stack pointer at 0.
-    stp     $x19, $x20, [$x2, #8]
-    stp     $x21, $x22, [$x2, #24]
-    stp     $x23, $x24, [$x2, #40]
-    stp     $x25, $x26, [$x2, #56]
-    stp     $x27, $x28, [$x2, #72]
-    stp     $x29, $x30, [$x2, #88]
+    stp     $x19, $x20, [$x0, #8]
+    stp     $x21, $x22, [$x0, #24]
+    stp     $x23, $x24, [$x0, #40]
+    stp     $x25, $x26, [$x0, #56]
+    stp     $x27, $x28, [$x0, #72]
+    stp     $x29, $x30, [$x0, #88]
+    // The stack pointer of the moment of the switch: the task resumes
+    // exactly here when it is switched back to.
     str     $x2, [$x0, #0]
 
-    // Load the incoming context.
+    // Load the incoming context. The registers come out of the *context
+    // structure* — the same place the save wrote them — and only the stack
+    // pointer comes from the saved slot.
     ldr     $x2, [$x1, #0]
     mov     $sp, $x2
-    ldp     $x19, $x20, [$x2, #8]
-    ldp     $x21, $x22, [$x2, #24]
-    ldp     $x23, $x24, [$x2, #40]
-    ldp     $x25, $x26, [$x2, #56]
-    ldp     $x27, $x28, [$x2, #72]
-    ldp     $x29, $x30, [$x2, #88]
+    ldp     $x19, $x20, [$x1, #8]
+    ldp     $x21, $x22, [$x1, #24]
+    ldp     $x23, $x24, [$x1, #40]
+    ldp     $x25, $x26, [$x1, #56]
+    ldp     $x27, $x28, [$x1, #72]
+    ldp     $x29, $x30, [$x1, #88]
 
-    // Return to the caller: `ret` is `br x30`.
+    // Return into the incoming task: `ret` is `br x30`, and the restored
+    // link register is either the switch's return address (a task that has
+    // run before) or the trampoline's (a fresh one).
     ret
     .size vela_ctx_switch, . - vela_ctx_switch
     "#
@@ -180,13 +191,11 @@ core::arch::global_asm!(
     .globl vela_task_entry_trampoline
     .type vela_task_entry_trampoline, %function
 vela_task_entry_trampoline:
-    // A fresh task arrives here with $x1 = the incoming context pointer —
-    // the switch's second argument — and the context's entry and argument
-    // are read out of it.
-    ldr     $x3, [$x1, #104]     // the entry point
-    ldr     $x4, [$x1, #112]     // the argument
-    mov     $x0, $x4             // entry(arg)
-    br      $x3
+    // A fresh task arrives here from `vela_ctx_switch`'s `ret` into the
+    // restored link register, with `Context::for_entry` having staged the
+    // entry point in $x19 and the argument in $x20.
+    mov     $x0, $x20             // entry(arg)
+    br      $x19
     // The task contract forbids returning; if it does, the undefined
     // instruction turns the mistake into a visible trap rather than a
     // silent fall-through.
@@ -223,8 +232,10 @@ pub unsafe fn switch_to(current: *mut Context, next: *const Context) {
 ///
 /// # Safety
 ///
-/// Entered by a [`switch_to`] into a context built by
-/// [`Context::for_entry`].
+/// Not for direct calls: the trampoline reads the entry point and argument
+/// out of the *staged* `x19`/`x20`, which only a [`switch_to`] into a
+/// [`Context::for_entry`] context sets up. It exists so the symbol is
+/// reachable and nameable from Rust.
 #[inline]
 pub unsafe fn task_entry_trampoline() -> ! {
     #[cfg(target_arch = "aarch64")]
@@ -256,7 +267,6 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::format;
     use std::vec::Vec;
 
     #[test]
@@ -283,26 +293,29 @@ mod tests {
         assert_eq!(&context.arg as *const u64 as usize - base, OFFSET_ARG);
     }
 
-    /// The assembly and the structure must agree about where the entry
-    /// point and the argument live.
+    /// The assembly and the structure must agree about how a fresh task
+    /// starts.
     ///
-    /// The assembly's offsets are literals — `global_asm!` cannot take a
-    /// Rust constant — so nothing but a check keeps them in step with the
-    /// layout. This is that check.
+    /// The assembly's register choices are literals — `global_asm!` cannot
+    /// take a Rust constant — so nothing but a check keeps the trampoline's
+    /// staging contract (`x19` = entry, `x20` = argument) in step with
+    /// [`Context::for_entry`]. This is that check.
     #[test]
-    fn the_assembly_reads_the_entry_and_the_argument_where_the_struct_puts_them() {
+    fn the_trampoline_reads_the_staged_registers_for_entry_stages() {
         let source = include_str!("context.rs");
         let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
-        let entry = format!("#{}", OFFSET_ENTRY);
-        let argument = format!("#{}", OFFSET_ARG);
         assert!(
-            flat.contains(&format!("ldr $x3, [$x1, {}]", entry)),
-            "the trampoline must read the entry point at the offset the struct declares"
+            flat.contains("mov $x0, $x20"),
+            "the trampoline must pass the staged argument in x20"
         );
         assert!(
-            flat.contains(&format!("ldr $x4, [$x1, {}]", argument)),
-            "the trampoline must read the argument at the offset the struct declares"
+            flat.contains("br $x19"),
+            "the trampoline must jump to the staged entry point in x19"
         );
+        // And the Rust side must stage the same two registers.
+        let context = Context::for_entry(0x8000_0000, 0x4000_0123, 0x456);
+        assert_eq!(context.x[0], 0x4000_0123, "x19 carries the entry point");
+        assert_eq!(context.x[1], 0x456, "x20 carries the argument");
     }
 
     #[test]

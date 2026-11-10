@@ -15,9 +15,10 @@
 //!   user, EL1 = kernel) carried in `PSTATE.M`; there are no descriptor
 //!   tables to install. The `gdt` module here exists only to document that.
 //! * **A fixed 16-slot vector table, not a programmable IDT.** `VBAR_EL1`
-//!   names one 2048-byte table whose sixteen 128-byte slots are fixed by the
-//!   architecture (synchronous/IRQ/FIQ/SError × current-EL-SP0/
-//!   current-EL-SPx/lower-EL-A64/lower-EL-A32). See [`idt`].
+//!   names one 8 KiB table — sixteen 0x200-byte slots at a 2048-byte-aligned
+//!   base — whose layout is fixed by the architecture (synchronous/IRQ/FIQ/
+//!   SError × current-EL-SP0/current-EL-SPx/lower-EL-A64/lower-EL-A32). See
+//!   [`idt`].
 //! * **Two translation bases, not one CR3.** User addresses walk `TTBR0_EL1`
 //!   and kernel addresses walk `TTBR1_EL1`, with per-ASID tags in the
 //!   TTBRs' bits 63:48. See [`paging`] and [`addrspace`].
@@ -202,19 +203,21 @@ impl CpuArch for Aarch64Cpu {
 
     fn busy_wait_cycles() -> u64 {
         // Poll the physical counter (`CNTPCT_EL0`); its frequency comes from
-        // `CNTFRQ_EL1`, typically 62.5 MHz or 100 MHz on QEMU's `virt` model.
+        // `CNTFRQ_EL0`, typically 62.5 MHz or 100 MHz on QEMU's `virt` model.
         // A one-millisecond budget, like the LoongArch64 and x86-64 HALs.
         let frequency = timer::frequency();
         if frequency == 0 {
             return 0;
         }
         let budget = frequency / 1000;
+        // The difference is taken against the start, not the target: a
+        // wrapped comparison stays correct when the counter or the addition
+        // wraps, where a `now < target` comparison would spin forever.
         let start = timer::now_ticks();
-        let target = start.wrapping_add(budget);
-        while timer::now_ticks() < target {
+        while timer::now_ticks().wrapping_sub(start) < budget {
             core::hint::spin_loop();
         }
-        target
+        timer::now_ticks()
     }
 }
 

@@ -6,7 +6,7 @@
 //! programming model, and the x86-64 crate in this project installs one.
 //!
 //! AArch64 has no such table. Privilege is described by the current
-//! exception level, which lives in `CurrentEL_EL1`, and the saved state in
+//! exception level, which lives in `CurrentEL`, and the saved state in
 //! `SPSR_EL1`. There are no segment selectors and no far calls: the
 //! instruction set has no need of them.
 //!
