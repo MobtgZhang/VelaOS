@@ -12,9 +12,11 @@ ARCH ?= x86-64
 PROFILE ?= release
 TIMEOUT ?= 60
 
-# The four architectures CI compile-checks. Only x86-64 has a working UEFI
-# target and drivers in v0.1.0; the rest exist so a change that breaks a port
-# is caught before the port is finished.
+# The four architectures CI compile-checks. x86-64 has the working UEFI
+# target and the drivers; the other three carry real architecture layers
+# (paging, context switch, syscall gate, interrupt controller, timer and
+# console) that are compiled for their own targets, so a change that breaks
+# a port is caught here rather than on the machine that has to boot it.
 
 .PHONY: help run build image check test test-boot test-gui fmt clippy clean
 
@@ -63,6 +65,12 @@ check: fmt-check clippy
 		echo "==> cargo check -p vela-hal-common --target $$target"; \
 		$(CARGO) check -p vela-hal-common --target $$target || exit 1; \
 	done
+	@echo "==> cargo check -p vela-arch-aarch64 --target aarch64-unknown-none"
+	$(CARGO) check -p vela-arch-aarch64 --target aarch64-unknown-none || exit 1
+	@echo "==> cargo check -p vela-arch-riscv64 --target riscv64gc-unknown-none-elf"
+	$(CARGO) check -p vela-arch-riscv64 --target riscv64gc-unknown-none-elf || exit 1
+	@echo "==> cargo check -p vela-arch-loongarch64 --target loongarch64-unknown-none"
+	$(CARGO) check -p vela-arch-loongarch64 --target loongarch64-unknown-none || exit 1
 	@echo "==> cargo check -p vela-uefi-loader --features uefi --target x86_64-unknown-uefi"
 	$(CARGO) check -p vela-uefi-loader --features uefi --target x86_64-unknown-uefi || exit 1
 

@@ -11,3 +11,12 @@ vela-arch-common.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 vela-arch-x86_64.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+vela-arch-aarch64.workspace = true
+
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+vela-arch-riscv64.workspace = true
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+vela-arch-loongarch64.workspace = true

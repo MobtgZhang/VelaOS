@@ -27,7 +27,58 @@ pub use vela_arch_x86_64::{
 #[cfg(target_arch = "x86_64")]
 pub use vela_arch_x86_64::{AddressSpace, FrameSource, PhysOfVirt};
 
-#[cfg(not(target_arch = "x86_64"))]
+// The other three architectures carry their own layers: paging, the context
+// switch, the syscall gate, the interrupt controller, the timer and the
+// console, each written for that instruction set. The facade re-exports the
+// same module names for all of them, so the code above the facade never has
+// to know which one it is running on.
+#[cfg(target_arch = "aarch64")]
+pub use vela_arch_aarch64::{
+    addrspace, apic, context, current_cpu_id, gdt, idt, paging, pci, ps2, qemu_exit, regs, serial,
+    smp, syscall, userspace,
+};
+
+#[cfg(target_arch = "aarch64")]
+pub use vela_arch_aarch64::{AddressSpace, FrameSource, PhysOfVirt};
+
+#[cfg(target_arch = "riscv64")]
+pub use vela_arch_riscv64::{
+    addrspace, apic, context, current_cpu_id, gdt, idt, paging, pci, ps2, qemu_exit, regs, serial,
+    smp, syscall, userspace,
+};
+
+#[cfg(target_arch = "riscv64")]
+pub use vela_arch_riscv64::{AddressSpace, FrameSource, PhysOfVirt};
+
+#[cfg(target_arch = "loongarch64")]
+pub use vela_arch_loongarch64::{
+    addrspace, apic, context, current_cpu_id, gdt, idt, paging, pci, ps2, qemu_exit, regs, serial,
+    smp, syscall, userspace,
+};
+
+#[cfg(target_arch = "loongarch64")]
+pub use vela_arch_loongarch64::{AddressSpace, FrameSource, PhysOfVirt};
+
+/// True when this build has a real architecture layer behind the facade.
+///
+/// The placeholder modules below are what an architecture without a layer
+/// compiles against. A build that has one — every architecture the project
+/// supports — reports `true`, so a caller can tell the difference between
+/// "this architecture has no layer yet" and "this architecture's layer is
+/// present".
+pub const HAS_ARCHITECTURE_LAYER: bool = cfg!(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+));
+
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
 pub mod addrspace {
     //! A placeholder page-table type for compile-check targets.
     //!
@@ -149,7 +200,12 @@ pub mod addrspace {
     pub unsafe fn activate(_space: &AddressSpace) {}
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
 pub mod context {
     //! A placeholder context type for compile-check targets.
     #[derive(Debug, Clone, Copy)]
@@ -204,21 +260,36 @@ pub mod context {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
 pub mod serial {
     pub fn puts(_s: &str) {}
     pub fn puts_hex(_v: u64) {}
     pub fn puts_dec(_v: u64) {}
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
 pub mod qemu_exit {
     pub fn power_off(_code: u32) -> ! {
         loop {}
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
 pub mod regs {
     pub const ON_BARE_METAL: bool = false;
 }

@@ -91,6 +91,9 @@ vela-boot-protocol = { path = "boot/boot-protocol" }
 vela-elf-loader = { path = "boot/elf-loader" }
 vela-arch-common = { path = "arch/common" }
 vela-arch-x86_64 = { path = "arch/x86_64" }
+vela-arch-aarch64 = { path = "arch/aarch64" }
+vela-arch-riscv64 = { path = "arch/riscv64" }
+vela-arch-loongarch64 = { path = "arch/loongarch64" }
 vela-arch = { path = "arch/facade" }
 vela-kernel-core = { path = "kernel/core" }
 vela-kernel-memory = { path = "kernel/memory" }
