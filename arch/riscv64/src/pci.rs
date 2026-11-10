@@ -50,7 +50,10 @@ pub const FUNCTIONS_PER_DEVICE: u64 = 8;
 /// device (a bus's 32 devices × 1 KiB per function... the per-device stride
 /// is `FUNCTIONS_PER_DEVICE << 12`), 4 KiB per function.
 pub const fn ecam_offset(bus: u64, device: u64, function: u64, offset: u64) -> u64 {
-    ECAM_BASE | (bus << 20) | (device << 15) | (function << 12) | offset
+    // The fields are added, not or-ed: they live inside the window, and a
+    // base whose own bits overlap the bus field would swallow the bus
+    // number.
+    ECAM_BASE + (bus << 20) + (device << 15) + (function << 12) + offset
 }
 
 /// Read a dword from configuration space.

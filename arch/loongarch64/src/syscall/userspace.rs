@@ -9,13 +9,13 @@
 //! x86-64 enters ring 3 by executing `iretq`, which pops a five-word frame
 //! the kernel had to lay out byte-exactly on a stack. LoongArch64's `ertn`
 //! reads everything from CSRs: it copies `PRMD.PPLV` → `CRMD.PLV`,
-//! `PRMD.PIE` → `CRMD.IE`, and jumps to `ERA`. The "context" for a user
-//! transition is therefore just two CSR writes and a stack-pointer swap —
-//! no memory frame at all, and nothing for a hostile user stack to corrupt
-//! on the way in. [`enter_user`] takes the entry point and stack top as
-//! plain arguments for that reason; [`user_context`] exists only to keep
-//! the x86-shaped surface (`context` value passed to `enter_user`) available
-//! to callers that want it.
+//! `PRMD.PIE` → `CRMD.IE`, and jumps to `ERA`. There is therefore no
+//! memory frame at all: the transition is three CSR writes and a
+//! stack-pointer swap, so nothing is left on the user stack for a hostile
+//! program to tamper with after the switch.
+//!
+//! [`user_context`] carries the entry point and the stack as two plain
+//! values, and [`enter_user`] takes them as arguments for that reason.
 //!
 //! # What the kernel must have arranged first
 //!
