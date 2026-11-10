@@ -71,7 +71,6 @@
 //! `PRMD.PIE` → `CRMD.IE` and jumps to `ERA`. See [`crate::userspace`] for
 //! how VelaOS builds `PRMD` before entering ring 3.
 
-/// The architectural exception codes (`ESTAT.EC`, bits 21:16).
 /// The register state a trap saves.
 ///
 /// The LoongArch trap entry saves the general registers, the return address

@@ -54,6 +54,30 @@ pub struct Context {
     pub arg: u64,
 }
 
+/// The link register a fresh task starts with: the entry trampoline.
+///
+/// The switch resumes a task by jumping to its link register, so a task
+/// that has never run must have one pointing at the trampoline.
+///
+/// Off the architecture (host tests) there is no trampoline to point at;
+/// the value is zero, and [`switch_to`] is compiled out anyway.
+#[cfg(target_arch = "aarch64")]
+fn fresh_lr() -> u64 {
+    // The address is taken at run time: casting a pointer to an integer is
+    // not allowed in constant evaluation, and a constant is not needed —
+    // the value only ever reaches a context that is being built.
+    // The address is taken through a function *pointer*: casting a function
+    // item straight to an integer is what the lint warns about, and the
+    // pointer is the thing that actually has an address.
+    let trampoline: unsafe extern "C" fn() -> ! = vela_task_entry_trampoline;
+    trampoline as usize as u64
+}
+/// Hosted counterpart of [`fresh_lr`]; see its documentation.
+#[cfg(not(target_arch = "aarch64"))]
+fn fresh_lr() -> u64 {
+    0
+}
+
 /// The offset of `sp` in the context.
 pub const OFFSET_SP: usize = 0;
 /// The offset of the `x19`–`x28` array.
@@ -91,7 +115,10 @@ impl Context {
             sp: aligned - 16,
             x: [0; 10],
             fp: 0,
-            lr: 0,
+            // The link register of a fresh task points at the trampoline:
+            // the switch resumes a task by jumping to its link register, and
+            // a task that has never run has nothing to resume into.
+            lr: fresh_lr(),
             entry,
             arg,
         }
@@ -120,23 +147,26 @@ vela_ctx_switch:
     // The stack pointer moves first: everything else is stored relative to
     // it.
     mov     $x2, $sp
-    stp     $x19, $x20, [$x2, #0]
-    stp     $x21, $x22, [$x2, #16]
-    stp     $x23, $x24, [$x2, #32]
-    stp     $x25, $x26, [$x2, #48]
-    stp     $x27, $x28, [$x2, #64]
-    stp     $x29, $x30, [$x2, #80]
+    // The offsets are the ones the Rust layout declares: the callee-saved
+    // registers sit at 8, 24, 40, 56 and 72, the frame and link registers
+    // at 88, and the stack pointer at 0.
+    stp     $x19, $x20, [$x2, #8]
+    stp     $x21, $x22, [$x2, #24]
+    stp     $x23, $x24, [$x2, #40]
+    stp     $x25, $x26, [$x2, #56]
+    stp     $x27, $x28, [$x2, #72]
+    stp     $x29, $x30, [$x2, #88]
     str     $x2, [$x0, #0]
 
     // Load the incoming context.
     ldr     $x2, [$x1, #0]
     mov     $sp, $x2
-    ldp     $x19, $x20, [$x2, #0]
-    ldp     $x21, $x22, [$x2, #16]
-    ldp     $x23, $x24, [$x2, #32]
-    ldp     $x25, $x26, [$x2, #48]
-    ldp     $x27, $x28, [$x2, #64]
-    ldp     $x29, $x30, [$x2, #80]
+    ldp     $x19, $x20, [$x2, #8]
+    ldp     $x21, $x22, [$x2, #24]
+    ldp     $x23, $x24, [$x2, #40]
+    ldp     $x25, $x26, [$x2, #56]
+    ldp     $x27, $x28, [$x2, #72]
+    ldp     $x29, $x30, [$x2, #88]
 
     // Return to the caller: `ret` is `br x30`.
     ret
@@ -150,10 +180,11 @@ core::arch::global_asm!(
     .globl vela_task_entry_trampoline
     .type vela_task_entry_trampoline, %function
 vela_task_entry_trampoline:
-    // A fresh task arrives here with $x0 = the context pointer, and the
-    // context's entry and argument staged in $x1 and $x2 by the switch.
-    ldr     $x3, [$x0, #104]     // the entry point
-    ldr     $x4, [$x0, #112]     // the argument
+    // A fresh task arrives here with $x1 = the incoming context pointer —
+    // the switch's second argument — and the context's entry and argument
+    // are read out of it.
+    ldr     $x3, [$x1, #104]     // the entry point
+    ldr     $x4, [$x1, #112]     // the argument
     mov     $x0, $x4             // entry(arg)
     br      $x3
     // The task contract forbids returning; if it does, the undefined
@@ -225,6 +256,8 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
+    use std::vec::Vec;
 
     #[test]
     fn the_layout_matches_the_assembly() {
@@ -248,6 +281,28 @@ mod tests {
         assert_eq!(&context.lr as *const u64 as usize - base, OFFSET_LR);
         assert_eq!(&context.entry as *const u64 as usize - base, OFFSET_ENTRY);
         assert_eq!(&context.arg as *const u64 as usize - base, OFFSET_ARG);
+    }
+
+    /// The assembly and the structure must agree about where the entry
+    /// point and the argument live.
+    ///
+    /// The assembly's offsets are literals — `global_asm!` cannot take a
+    /// Rust constant — so nothing but a check keeps them in step with the
+    /// layout. This is that check.
+    #[test]
+    fn the_assembly_reads_the_entry_and_the_argument_where_the_struct_puts_them() {
+        let source = include_str!("context.rs");
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let entry = format!("#{}", OFFSET_ENTRY);
+        let argument = format!("#{}", OFFSET_ARG);
+        assert!(
+            flat.contains(&format!("ldr $x3, [$x1, {}]", entry)),
+            "the trampoline must read the entry point at the offset the struct declares"
+        );
+        assert!(
+            flat.contains(&format!("ldr $x4, [$x1, {}]", argument)),
+            "the trampoline must read the argument at the offset the struct declares"
+        );
     }
 
     #[test]

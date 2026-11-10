@@ -25,6 +25,26 @@
 //! not let an `asm!` block clobber a value it is holding. A `global_asm!`
 //! block is outside the compiler's view of the register file, which is
 //! exactly what a context switch needs.
+//!
+//! # What the switch does and does not save
+//!
+//! The switch stores the callee-saved set *into the context structures*
+//! (the outgoing context's `sp`/`tp`/`ra`/`fp`/`s0`–`s8` fields, loaded back
+//! from the incoming one), so it never depends on where either task's stack
+//! happens to be. Caller-saved registers — `a0`–`a7`, `t0`–`t8` — are
+//! deliberately *not* saved: a switch is shaped like a call, and the
+//! compiler assumes a call destroys its caller-saved registers anyway. For
+//! a resumed task the incoming `a0`/`a1` end up holding the context
+//! pointers, which is as dead as any other caller-saved value.
+//!
+//! # How a fresh task starts
+//!
+//! A fresh task's context has `ra` set to [`fresh_ra`] — the
+//! `vela_task_entry_trampoline` label — and its `entry`/`arg` fields
+//! filled in. The switch loads that `ra` and jumps to it with `$a1` still
+//! holding the context pointer, so the trampoline reads the real entry
+//! point and argument out of the context and calls `entry(arg)` on the
+//! task's own stack.
 
 /// The register numbers the switch touches.
 pub mod reg {
@@ -81,6 +101,32 @@ pub const OFFSET_ENTRY: usize = 32 + 9 * 8;
 /// The offset of the argument.
 pub const OFFSET_ARG: usize = 40 + 9 * 8;
 
+/// The return address a fresh task starts with: the task-entry trampoline.
+///
+/// `vela_ctx_switch` jumps to a resumed task's saved `ra`, so a fresh
+/// task's context is built with `ra` pointing at
+/// [`vela_task_entry_trampoline`], which picks the real entry point and
+/// argument out of the same context.
+///
+/// Off the architecture (host tests) there is no trampoline to point at;
+/// the value is zero, and [`switch_to`] is compiled out anyway.
+#[cfg(target_arch = "loongarch64")]
+fn fresh_ra() -> u64 {
+    // The address is taken at run time: casting a pointer to an integer is
+    // not allowed in constant evaluation, and a constant is not needed —
+    // the value only ever reaches a context that is being built.
+    // The address is taken through a function *pointer*: casting a function
+    // item straight to an integer is what the lint warns about, and the
+    // pointer is the thing that actually has an address.
+    let trampoline: unsafe extern "C" fn() -> ! = vela_task_entry_trampoline;
+    trampoline as usize as u64
+}
+/// Hosted counterpart of [`fresh_ra`]; see its documentation.
+#[cfg(not(target_arch = "loongarch64"))]
+fn fresh_ra() -> u64 {
+    0
+}
+
 impl Context {
     /// A context with nothing saved in it.
     pub const fn new() -> Self {
@@ -105,7 +151,7 @@ impl Context {
         Self {
             sp: aligned - 16,
             tp: 0,
-            ra: 0,
+            ra: fresh_ra(),
             fp: 0,
             s: [0; 9],
             entry,
@@ -131,30 +177,44 @@ core::arch::global_asm!(
     .globl vela_ctx_switch
     .type vela_ctx_switch, @function
 vela_ctx_switch:
-    # $a0 = the outgoing context, $a1 = the incoming one.
-    #
-    # Save the callee-saved set plus the three fixed-role registers. The
-    # stack pointer moves first, because everything else is stored relative
-    # to it.
-    stp    $ra, $tp, 0x10($sp)
-    stp    $fp, $s0, 0x20($sp)
-    stp    $s1, $s2, 0x30($sp)
-    stp    $s3, $s4, 0x40($sp)
-    stp    $s5, $s6, 0x50($sp)
-    stp    $s7, $s8, 0x60($sp)
-    stp    $sp, $zero, 0x00($a0)
+    # $a0 = the outgoing context, $a1 = the incoming one. The callee-saved
+    # set is saved into (loaded from) the context structures, so the switch
+    # never depends on where either task's stack happens to be.
+    st.d   $sp, $a0, 0x00
+    st.d   $tp, $a0, 0x08
+    st.d   $ra, $a0, 0x10
+    st.d   $fp, $a0, 0x18
+    st.d   $s0, $a0, 0x20
+    st.d   $s1, $a0, 0x28
+    st.d   $s2, $a0, 0x30
+    st.d   $s3, $a0, 0x38
+    st.d   $s4, $a0, 0x40
+    st.d   $s5, $a0, 0x48
+    st.d   $s6, $a0, 0x50
+    st.d   $s7, $a0, 0x58
+    st.d   $s8, $a0, 0x60
 
-    # Load the incoming context.
-    ld.d   $sp, 0x00($a1)
-    ldp.d  $ra, $tp, 0x10($sp)
-    ldp.d  $fp, $s0, 0x20($sp)
-    ldp.d  $s1, $s2, 0x30($sp)
-    ldp.d  $s3, $s4, 0x40($sp)
-    ldp.d  $s5, $s6, 0x50($sp)
-    ldp.d  $s7, $s8, 0x60($sp)
+    # Load the incoming context. $ra picks up either the resumed task's
+    # saved return address or, for a fresh task, the trampoline — and $a1
+    # still holds the context pointer, which is what the trampoline reads
+    # its entry point and argument from.
+    ld.d   $sp, $a1, 0x00
+    ld.d   $tp, $a1, 0x08
+    ld.d   $ra, $a1, 0x10
+    ld.d   $fp, $a1, 0x18
+    ld.d   $s0, $a1, 0x20
+    ld.d   $s1, $a1, 0x28
+    ld.d   $s2, $a1, 0x30
+    ld.d   $s3, $a1, 0x38
+    ld.d   $s4, $a1, 0x40
+    ld.d   $s5, $a1, 0x48
+    ld.d   $s6, $a1, 0x50
+    ld.d   $s7, $a1, 0x58
+    ld.d   $s8, $a1, 0x60
 
-    # Return to the caller. `jirl $zero, $ra, 0` jumps to `ra` and links
-    # into $zero, which is how the architecture spells a return.
+    # Return to the caller — which, for a fresh task, is the trampoline.
+    # `jirl $zero, $ra, 0` jumps to `ra` and links into $zero, which is how
+    # the architecture spells a return.
     jirl   $zero, $ra, 0
     .size vela_ctx_switch, . - vela_ctx_switch
     "#
@@ -166,12 +226,12 @@ core::arch::global_asm!(
     .globl vela_task_entry_trampoline
     .type vela_task_entry_trampoline, @function
 vela_task_entry_trampoline:
-    # A fresh task arrives here with $a0 = the context pointer and the
-    # context's entry and argument staged in $a0/$a1 by the switch.
-    ld.d   $t0, 0x58($a0)      # the entry point
-    ld.d   $a1, 0x60($a0)      # the argument
-    move   $a0, $a1            # entry(arg)
-    jirl   $zero, $t0, 0
+    # A fresh task arrives here from vela_ctx_switch with $a1 = its context
+    # pointer and $sp already the task's own stack. The context's `entry`
+    # and `arg` fields are the two values a first entry needs.
+    ld.d   $a0, $a1, 0x70      # the argument
+    ld.d   $t0, $a1, 0x68      # the entry point
+    jirl   $zero, $t0, 0       # entry(arg)
     # The task contract forbids returning; if it does, the breakpoint turns
     # the mistake into a visible trap rather than a silent fall-through.
     break   0
@@ -241,6 +301,8 @@ extern crate std;
 mod tests {
     use super::*;
     use core::mem::size_of;
+    use std::format;
+    use std::vec::Vec;
 
     #[test]
     fn the_layout_matches_the_assembly() {
@@ -272,6 +334,30 @@ mod tests {
         assert_eq!(size_of::<Context>() % 16, 0);
     }
 
+    /// The assembly and the structure must agree about where the entry
+    /// point and the argument live.
+    ///
+    /// The assembly's offsets are literals — `global_asm!` cannot take a
+    /// Rust constant — so nothing but a check keeps them in step with the
+    /// layout. This is that check: it reads the module's own source and
+    /// looks for the trampoline reading the two values at the offsets the
+    /// structure declares.
+    #[test]
+    fn the_assembly_reads_the_entry_and_the_argument_where_the_struct_puts_them() {
+        let source = include_str!("context.rs");
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let entry = format!("0x{:02X}", OFFSET_ENTRY);
+        let argument = format!("0x{:02X}", OFFSET_ARG);
+        assert!(
+            flat.contains(&format!("ld.d $t0, $a1, {}", entry)),
+            "the trampoline must read the entry point at the offset the struct declares"
+        );
+        assert!(
+            flat.contains(&format!("ld.d $a0, $a1, {}", argument)),
+            "the trampoline must read the argument at the offset the struct declares"
+        );
+    }
+
     #[test]
     fn a_fresh_context_starts_at_the_entry_point() {
         let context = Context::for_entry(0x8000_0000, 0x4000_0000, 0x1234);
@@ -280,6 +366,21 @@ mod tests {
         assert_eq!(context.stack_pointer(), 0x8000_0000 - 16);
         // The stack must stay 16-byte aligned: the ABI requires it.
         assert_eq!(context.stack_pointer() % 16, 0);
+        // And the return address is the trampoline, which is what makes the
+        // first `switch_to` into this context start the task at all.
+        assert_eq!(context.ra, fresh_ra());
+    }
+
+    #[test]
+    fn the_switch_touches_exactly_the_callee_saved_set() {
+        // r21 is reserved by the ABI and r4-r20 are caller-saved; the
+        // context carries ra (r1), tp (r2), fp (r22) and s0-s8 (r23-r31).
+        assert_eq!(reg::RA, 1);
+        assert_eq!(reg::TP, 2);
+        assert_eq!(reg::SP, 3);
+        assert_eq!(reg::FP, 22);
+        assert_eq!(reg::FP + 1, reg::S0);
+        assert_eq!(reg::S8, 31);
     }
 
     #[test]
