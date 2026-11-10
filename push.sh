@@ -80,10 +80,13 @@ Inspect 'git log --oneline' before doing anything else."
 fi
 say "The four feature commits are in place."
 
-if [ -n "$(git status --porcelain)" ]; then
+# Only *tracked* files matter here. The reports under `reports/` are the
+# project's own analysis documents and are deliberately not committed, so
+# they must not stop the push.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   say ""
   say "The working tree is not clean:"
-  git status --short | sed 's/^/  /'
+  git status --short --untracked-files=no | sed 's/^/  /'
   fail "Commit or stash the changes above before pushing."
 fi
 say "The working tree is clean."
