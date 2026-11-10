@@ -56,7 +56,7 @@ use alloc::vec::Vec;
 
 use alloc::string::ToString;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 use vela_arch::addrspace::{activate, AddressSpace, IdentityPhys};
 use vela_arch::smp::{bring_up_aps, TRAMPOLINE_PAGES};
@@ -291,8 +291,70 @@ fn install_builtin_devices() {
 }
 
 /// Advance the timer clocks once per APIC tick.
+///
+/// The tick is also the display's heartbeat: the pointer is pumped every
+/// tick, and the present tick composites and draws every
+/// [`PRESENT_EVERY_TICKS`] ticks. Both run in interrupt context, and both
+/// are built to skip rather than wait — see `pump_mouse` and
+/// `Intuition::present_tick`.
 fn timer_tick_hook(_tick: u64) {
     advance_tick();
+    // The pointer, every tick: a packet the hardware delivered is decoded
+    // within one 4 ms tick of arriving, which is what keeps the cursor
+    // feeling attached to the mouse.
+    if let Some(event) = vela_kernel_console::keyboard::pump_mouse() {
+        // SAFETY: the pointer, when present, is the leaked window manager —
+        // the same reference `enable_present_tick` stored, valid for the
+        // kernel's life.
+        let screen = PRESENT_SCREEN.load(Ordering::Acquire);
+        if !screen.is_null() {
+            unsafe { (*screen).pointer_move(event.x, event.y) };
+        }
+    }
+    // The present, every fourth tick: 250 Hz / 4 is 62.5 Hz, comfortably
+    // inside the 60–144 FPS band the desktop is meant to hold. The phase
+    // counter starts at zero, so the first tick after boot presents
+    // immediately rather than after a full period's wait.
+    let phase = PRESENT_PHASE.fetch_add(1, Ordering::Relaxed);
+    if !phase.is_multiple_of(PRESENT_EVERY_TICKS) {
+        return;
+    }
+    // SAFETY: as above — the leaked window manager, stored once at boot.
+    let screen = PRESENT_SCREEN.load(Ordering::Acquire);
+    if !screen.is_null() {
+        unsafe { (*screen).present_tick() };
+    }
+}
+
+/// The window manager whose display the present tick refreshes.
+///
+/// Null until boot has created it; a tick that lands before then finds the
+/// null and does nothing, which is also why the store is a plain atomic
+/// rather than something to wait on.
+static PRESENT_SCREEN: AtomicPtr<vela_kernel_intuition::Intuition> =
+    AtomicPtr::new(core::ptr::null_mut());
+
+/// How many timer ticks one present is worth.
+///
+/// The APIC timer runs at 250 Hz, so every fourth tick is 62.5 Hz — inside
+/// the 60–144 FPS band, at a cost the idle desktop barely notices because
+/// the composite it runs is damage-based: nothing dirty, nothing copied.
+const PRESENT_EVERY_TICKS: u32 = 4;
+
+/// The tick phase, counting toward the next present.
+static PRESENT_PHASE: AtomicU32 = AtomicU32::new(0);
+
+/// Point the present tick at the leaked window manager.
+///
+/// Called once from boot, after the manager exists. The reference is leaked,
+/// so the pointer is valid for the rest of the kernel's life and never
+/// changed again.
+fn enable_present_tick(intuition: &'static vela_kernel_intuition::Intuition) {
+    PRESENT_SCREEN.store(
+        intuition as *const vela_kernel_intuition::Intuition
+            as *mut vela_kernel_intuition::Intuition,
+        Ordering::Release,
+    );
 }
 
 /// True once the kernel has finished booting.
@@ -906,11 +968,19 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
             framebuffer.stride_bytes,
         );
     }
+    // The PS/2 mouse only reports once something has told it to; the
+    // firmware never does. From here on the timer tick's drain has packets
+    // to drain, and the pointer on the desktop is the user's.
+    vela_kernel_console::keyboard::enable_mouse();
     let graphics: &'static vela_kernel_graphics::Graphics =
         Box::leak(Box::new(vela_kernel_graphics::Graphics::new()));
     let intuition: &'static vela_kernel_intuition::Intuition = Box::leak(Box::new(
         vela_kernel_intuition::Intuition::new(screen_width, screen_height),
     ));
+    // The display's heartbeat: from here on the timer tick presents the
+    // screen and moves the pointer. The manager is leaked, so the tick's
+    // pointer is valid for the kernel's life.
+    enable_present_tick(intuition);
     // The icon and Workbench services. Both are kernel-owned registries of
     // opaque handles, so a user program never sees a kernel pointer.
     let icon: &'static vela_kernel_icon::IconService =

@@ -143,7 +143,13 @@ const BAR_ICON_Y: i16 = BAR_Y + 4;
 /// The first launch icon's left edge.
 const BAR_ICON_X0: i16 = 14;
 /// The distance between two launch icons.
-const BAR_ICON_PITCH: i16 = 52;
+///
+/// One icon's width: the icons are 46 px of artwork inside an 88 px cell,
+/// and the labels underneath are centred in the same cell, so a pitch of
+/// anything less runs one label into its neighbour's — `DirectoryOpus`
+/// alone is twelve characters, which at the font's eight-pixel cell is
+/// ninety-six pixels and needs every bit of the cell.
+const BAR_ICON_PITCH: i16 = 88;
 /// How many bands the backdrop's gradient is drawn in.
 const GRADIENT_BANDS: usize = 12;
 
@@ -721,6 +727,14 @@ impl Desktop {
     /// partial repaint would need its own invalidation bookkeeping — which is
     /// exactly the kind of state that is wrong in one place and looks like a
     /// graphics bug everywhere else.
+    ///
+    /// There is no composite here, and that is deliberate: the display is
+    /// presented by the kernel's timer tick, sixty-odd times a second,
+    /// which copies the dirty layers to the framebuffer and redraws nothing
+    /// else. Painting draws into layers; the tick is what makes it visible.
+    /// A composite of this desktop's own on every paint would copy the same
+    /// pixels the tick is about to copy, a few hundred times over for a
+    /// desktop that repaints only when something changes.
     fn paint(&self) {
         self.paint_backdrop();
         self.paint_titlebar();
@@ -730,16 +744,6 @@ impl Desktop {
         self.paint_launch_bar();
         // The dropped-down menu, over everything else.
         self.paint_open_menu();
-
-        // Make the painting visible. Everything above drew into layers, and
-        // layers are not the screen: until somebody composites, the display
-        // shows whatever was there before — which is a boot console, and a
-        // desktop that never gets past it looks like a black screen with
-        // boot text in the corner. `Composite` copies the dirty layers to
-        // the framebuffer and redraws nothing, which is why it is the call
-        // here rather than `Refresh`: a refresh would repaint the system's
-        // furniture over the picture this method just drew.
-        let _ = api::composite_screen();
     }
 
     /// Paint the backdrop: AROS's blue, in bands.
@@ -891,10 +895,17 @@ impl Desktop {
             let x = BAR_ICON_X0 + index as i16 * BAR_ICON_PITCH;
             self.paint_art(art(), x, BAR_ICON_Y);
             if self.pens.label.is_valid() {
+                // The label is centred in the icon's cell, the way AROS's
+                // bar centres its labels, rather than hanging off the
+                // artwork's left corner — a cell's worth of short labels
+                // all starting at the same edge reads as one column of
+                // text, not as names under icons.
+                let width = label.len() as i16 * FONT_CELL_W;
+                let offset = (BAR_ICON_PITCH - width).max(0) / 2;
                 let _ = api::graphics::text(
                     self.backdrop,
                     self.pens.label,
-                    x,
+                    x + offset,
                     BAR_ICON_Y + ICON_SIZE + 2 + TEXT_ASCENT,
                     label,
                 );
