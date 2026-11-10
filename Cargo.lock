@@ -397,7 +397,10 @@ dependencies = [
 name = "vela-arch"
 version = "0.1.0"
 dependencies = [
+ "vela-arch-aarch64",
  "vela-arch-common",
+ "vela-arch-loongarch64",
+ "vela-arch-riscv64",
  "vela-arch-x86_64",
 ]
 
@@ -405,6 +408,7 @@ dependencies = [
 name = "vela-arch-aarch64"
 version = "0.1.0"
 dependencies = [
+ "spin",
  "vela-arch-common",
 ]
 
@@ -416,6 +420,7 @@ version = "0.1.0"
 name = "vela-arch-loongarch64"
 version = "0.1.0"
 dependencies = [
+ "spin",
  "vela-arch-common",
 ]
 
@@ -423,6 +428,7 @@ dependencies = [
 name = "vela-arch-riscv64"
 version = "0.1.0"
 dependencies = [
+ "spin",
  "vela-arch-common",
 ]
 
@@ -532,6 +538,9 @@ dependencies = [
 [[package]]
 name = "vela-fs-fat"
 version = "0.1.0"
+dependencies = [
+ "vela-kernel-vfs",
+]
 
 [[package]]
 name = "vela-guitest"
