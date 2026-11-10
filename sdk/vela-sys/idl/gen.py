@@ -15,6 +15,14 @@ SDK's own `numbers.rs`.
 # (module, library, prefix, [(function, lvo, suffix, stub, syscall, number)])
 LIBRARIES = [
     ("exec", "exec.library", "EXEC", [
+        ("ConfirmGrant", -312, "CONFIRMGRANT", "confirm_grant", "CONFIRM_GRANT", 47),
+        ("Alert", -304, "ALERT", "alert", "ALERT", 51),
+        ("DeleteSemaphore", -296, "DELETESEMAPHORE", "delete_semaphore", "DELETE_SEMAPHORE", 50),
+        ("ReleaseSemaphore", -288, "RELEASESEMAPHORE", "release_semaphore", "RELEASE_SEMAPHORE", 49),
+        ("AttemptSemaphore", -280, "ATTEMPTSEMAPHORE", "attempt_semaphore", "ATTEMPT_SEMAPHORE", 48),
+        ("ObtainSemaphore", -272, "OBTAINSEMAPHORE", "obtain_semaphore", "OBTAIN_SEMAPHORE", 46),
+        ("InitSemaphore", -264, "INITSEMAPHORE", "create_semaphore", "CREATE_SEMAPHORE", 45),
+        ("SetTaskName", -256, "SETTASKNAME", "set_task_name", "SET_TASK_NAME", 44),
         ("AllocMem", -240, "ALLOCMEM", "alloc_mem", "ALLOC_MEM", 22),
         ("AllocVec", -232, "ALLOVEC", "alloc_vec", "ALLOC_VEC", 24),
         ("FreeMem", -224, "FREEMEM", "free_mem", "FREE_MEM", 23),
@@ -44,7 +52,7 @@ LIBRARIES = [
         ("OpenLibrary", -32, "OPENLIBRARY", "open_library", "OPEN_LIBRARY", 10),
         ("CloseLibrary", -24, "CLOSELIBRARY", "close_library", "CLOSE_LIBRARY", 11),
         ("Yield", -16, "YIELD", "yield_now", "YIELD", 14),
-        ("FindTask", -8, "FINDTASK", "find_task", "GET_TASK_ID", 15),
+        ("FindTask", -8, "FINDTASK", "find_task", "FIND_TASK", 43),
     ]),
     ("graphics", "graphics.library", "GRAPHICS", [
         ("AllocPen", -104, "ALLOCPEN", "alloc_pen", "G_ALLOC_PEN", 64),

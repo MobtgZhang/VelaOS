@@ -305,6 +305,86 @@ pub const MATRIX: &[ApiEntry] = &[
         verified_by: Some("exec_add_port_reports_the_ports_signal_mask"),
         notes: "Returns the port's whole `mp_sig` mask; another task's port is `NOT_OWNER`.",
     },
+    ApiEntry {
+        library: "exec.library",
+        name: "FindTask",
+        syscall: Some(43),
+        status: Status::Verified,
+        verified_by: Some("exec_find_task_finds_a_named_task"),
+        notes: "A null name asks for the calling task; an unknown name answers `0`, \
+                never an error.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "SetTaskName",
+        syscall: Some(44),
+        status: Status::Verified,
+        verified_by: Some("exec_find_task_finds_a_named_task"),
+        notes: "Names the calling task, the way a task sets `tc_Node.ln_Name`.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "InitSemaphore",
+        syscall: Some(45),
+        status: Status::Verified,
+        verified_by: Some("exec_semaphore_lifecycle_is_verified"),
+        notes: "Creates a kernel-owned semaphore and returns its id; the classic \
+                `priority` argument orders the wait queue.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "ObtainSemaphore",
+        syscall: Some(46),
+        status: Status::Verified,
+        verified_by: Some("exec_semaphore_grant_reaches_the_waiter"),
+        notes: "`1` when the lock is taken, `0` when the caller was queued; the \
+                grant arrives as `SIGF_SINGLE`.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "ConfirmGrant",
+        syscall: Some(47),
+        status: Status::Verified,
+        verified_by: Some("exec_semaphore_grant_reaches_the_waiter"),
+        notes: "Consumes the pending grant wait and reports whether the hand-off \
+                named the caller; a grant cannot be confirmed twice.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "AttemptSemaphore",
+        syscall: Some(48),
+        status: Status::Verified,
+        verified_by: Some("exec_attempt_semaphore_reports_failure_without_blocking"),
+        notes: "Never blocks: `0` says the lock was held, which is an answer \
+                rather than an error.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "ReleaseSemaphore",
+        syscall: Some(49),
+        status: Status::Verified,
+        verified_by: Some("exec_semaphore_lifecycle_is_verified"),
+        notes: "Releases one nesting level and grants the queue onward; a release \
+                the caller does not own is `NOT_OWNER`.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "DeleteSemaphore",
+        syscall: Some(50),
+        status: Status::Verified,
+        verified_by: Some("exec_semaphore_lifecycle_is_verified"),
+        notes: "Wakes the waiters so their next attempt reports `NO_OBJECT` \
+                rather than sleeping forever.",
+    },
+    ApiEntry {
+        library: "exec.library",
+        name: "Alert",
+        syscall: Some(51),
+        status: Status::Verified,
+        verified_by: Some("exec_alert_is_accepted_and_a_dead_alert_ends_the_task"),
+        notes: "Logs the alert with its decoded name; the `AT_DeadEnd` type bit \
+                ends the calling task.",
+    },
     // --- dos.library -----------------------------------------------------
     ApiEntry {
         library: "dos.library",

@@ -91,6 +91,24 @@ pub const GET_HOSTNAME: u64 = 32;
 ///
 /// `0` = terminal, `1` = desktop.
 pub const GET_BOOT_CHOICE: u64 = 42;
+/// `exec.library`: find a task by name, or the caller for no name.
+pub const FIND_TASK: u64 = 43;
+/// `exec.library`: name the calling task.
+pub const SET_TASK_NAME: u64 = 44;
+/// `exec.library`: create a semaphore.
+pub const CREATE_SEMAPHORE: u64 = 45;
+/// `exec.library`: obtain a semaphore, waiting for it if necessary.
+pub const OBTAIN_SEMAPHORE: u64 = 46;
+/// `exec.library`: confirm a semaphore grant, after being woken.
+pub const CONFIRM_GRANT: u64 = 47;
+/// `exec.library`: attempt a semaphore without blocking.
+pub const ATTEMPT_SEMAPHORE: u64 = 48;
+/// `exec.library`: release one nesting level of a held semaphore.
+pub const RELEASE_SEMAPHORE: u64 = 49;
+/// `exec.library`: delete a semaphore.
+pub const DELETE_SEMAPHORE: u64 = 50;
+/// `exec.library`: raise an alert.
+pub const ALERT: u64 = 51;
 
 /// The size of a program page, in bytes.
 ///

@@ -39,5 +39,14 @@ indistinguishable from a working call.
 | `MapPage` | 18 | `verified` | `exec_map_page_maps_a_page_for_the_caller` | Maps one page into the calling task's own address space. |
 | `Brk` | 19 | `verified` | `exec_brk_grows_and_shrinks_the_break` | Returns the break actually in force; growing maps pages and shrinking releases them. |
 | `AddPort` | 20 | `verified` | `exec_add_port_reports_the_ports_signal_mask` | Returns the port's whole `mp_sig` mask; another task's port is `NOT_OWNER`. |
+| `FindTask` | 43 | `verified` | `exec_find_task_finds_a_named_task` | A null name asks for the calling task; an unknown name answers `0`, never an error. |
+| `SetTaskName` | 44 | `verified` | `exec_find_task_finds_a_named_task` | Names the calling task, the way a task sets `tc_Node.ln_Name`. |
+| `InitSemaphore` | 45 | `verified` | `exec_semaphore_lifecycle_is_verified` | Creates a kernel-owned semaphore and returns its id; the classic `priority` argument orders the wait queue. |
+| `ObtainSemaphore` | 46 | `verified` | `exec_semaphore_grant_reaches_the_waiter` | `1` when the lock is taken, `0` when the caller was queued; the grant arrives as `SIGF_SINGLE`. |
+| `ConfirmGrant` | 47 | `verified` | `exec_semaphore_grant_reaches_the_waiter` | Consumes the pending grant wait and reports whether the hand-off named the caller; a grant cannot be confirmed twice. |
+| `AttemptSemaphore` | 48 | `verified` | `exec_attempt_semaphore_reports_failure_without_blocking` | Never blocks: `0` says the lock was held, which is an answer rather than an error. |
+| `ReleaseSemaphore` | 49 | `verified` | `exec_semaphore_lifecycle_is_verified` | Releases one nesting level and grants the queue onward; a release the caller does not own is `NOT_OWNER`. |
+| `DeleteSemaphore` | 50 | `verified` | `exec_semaphore_lifecycle_is_verified` | Wakes the waiters so their next attempt reports `NO_OBJECT` rather than sleeping forever. |
+| `Alert` | 51 | `verified` | `exec_alert_is_accepted_and_a_dead_alert_ends_the_task` | Logs the alert with its decoded name; the `AT_DeadEnd` type bit ends the calling task. |
 
-**Summary:** 14 of 21 entries are `verified`.
+**Summary:** 23 of 30 entries are `verified`.

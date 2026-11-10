@@ -820,6 +820,243 @@ pub mod status {
     pub const SIGNALED: i32 = -29;
 }
 
+/// The AmigaOS/AROS signal bits.
+///
+/// # The two numbering schemes
+///
+/// AmigaOS numbers its predefined signals *and* gives them masks:
+///
+/// | name | bit | mask |
+/// |---|---|---|
+/// | `SIGB_ABORT` | 0 | `1 << 0` |
+/// | `SIGB_CHILD` | 1 | `1 << 1` |
+/// | `SIGB_BLIT` / `SIGB_SINGLE` | 4 | `1 << 4` |
+/// | `SIGB_INTUITION` | 5 | `1 << 5` |
+/// | `SIGB_NET` | 7 | `1 << 7` |
+/// | `SIGB_DOS` | 8 | `1 << 8` |
+///
+/// AROS's `compiler/include/exec/tasks.h` keeps that table but numbers
+/// `SIGB_SINGLE` as **4** — the same bit as `SIGB_BLIT` — while AmigaOS
+/// numbers it **16**. The two are not interchangeable, and the choice
+/// matters here, so it is spelled out here rather than left to a reader of
+/// either header.
+///
+/// VelaOS follows **AmigaOS's** `16`, because the low sixteen bits of a
+/// task's signal set are the Exec reply space: bit 0 is the "a message is
+/// waiting" bit and bits 1–15 are the fifteen reply slots. A grant raised
+/// at AROS's bit 4 would land on reply slot 3, and a program waiting for a
+/// reply would wake up claiming a semaphore. Bit 16 is the first bit above
+/// the reply space, which is exactly why AmigaOS put it there.
+pub mod signals {
+    /// The signal *numbers*, as AmigaOS numbers them.
+    pub mod bit {
+        /// The abort signal.
+        pub const ABORT: u8 = 0;
+        /// The child-signal bit.
+        pub const CHILD: u8 = 1;
+        /// The blit-finished signal.
+        pub const BLIT: u8 = 4;
+        /// The single signal — the one a semaphore grant uses.
+        pub const SINGLE: u8 = 16;
+        /// The Intuition signal.
+        pub const INTUITION: u8 = 5;
+        /// The network signal.
+        pub const NET: u8 = 7;
+        /// The DOS signal.
+        pub const DOS: u8 = 8;
+    }
+
+    /// The "a message is waiting" bit.
+    ///
+    /// AmigaOS has no global message bit — a port claims a bit of its
+    /// owner's choice in `mp_Sig`. VelaOS needs one for the *fallback*
+    /// case, a port that declares no mask at all, and bit 0 is the bit
+    /// AmigaOS's reply space leaves out.
+    pub const SIGB_MESSAGE: u32 = 1 << 0;
+    /// `SIGF_SINGLE` — the mask a semaphore grant raises.
+    ///
+    /// AROS's `ReleaseSemaphore` grants a waiter with exactly this signal,
+    /// so a task waiting for a grant waits for this bit and no other.
+    pub const SIGF_SINGLE: u32 = 1 << 16;
+    /// The reply slots: bits 1 through 15.
+    ///
+    /// This is the classic `REPLY_MASK` (`0xFFFE`): fifteen reply slots,
+    /// with bit 0 left to the message bit and every bit above 15 left to
+    /// the classic signal space — where `SIGF_SINGLE` lives.
+    pub const REPLY_MASK: u32 = 0x0000_FFFE;
+}
+
+/// The AmigaOS/AROS alert numbers.
+///
+/// These are the constants from AROS's `compiler/include/exec/alerts.h`,
+/// transcribed rather than reinvented: an alert that names a subsystem uses
+/// the same byte so a ported program's `Alert(AN_SemCorrupt)` means the same
+/// thing here.
+///
+/// # The number's layout
+///
+/// An alert number packs four fields:
+///
+/// ```text
+/// 31    30        24 23        16 15         0
+/// +--------+----------+------------+-----------+
+/// |  dead  | subsystem|  AG/AO code|  specific |
+/// +--------+----------+------------+-----------+
+/// ```
+///
+/// * bit 31 is the `AT_DeadEnd` type flag — the alert halts the task;
+/// * bits 30–24 name the subsystem (`AN_ExecLib` → `0x01`);
+/// * bits 23–16 carry either a general error (`AG_*`) or an object class
+///   (`AO_*`, `0x80`);
+/// * bits 15–0 are the specific code within the class.
+pub mod alerts {
+    /// The alert type flags, in the top byte.
+    pub mod at {
+        /// The alert returns: the task may continue.
+        pub const RECOVERY: u32 = 0x0000_0000;
+        /// The alert crashes: the task (or system) halts.
+        pub const DEAD_END: u32 = 0x8000_0000;
+    }
+
+    /// The general errors, in bits 23–16.
+    pub mod ag {
+        /// Out of memory.
+        pub const NO_MEMORY: u32 = 0x0001_0000;
+        /// Could not make a library.
+        pub const MAKE_LIB: u32 = 0x0002_0000;
+        /// Could not open a library.
+        pub const OPEN_LIB: u32 = 0x0003_0000;
+        /// Could not open a device.
+        pub const OPEN_DEV: u32 = 0x0004_0000;
+        /// Could not open a resource.
+        pub const OPEN_RES: u32 = 0x0005_0000;
+        /// An I/O error.
+        pub const IO_ERROR: u32 = 0x0006_0000;
+        /// Could not allocate a signal.
+        pub const NO_SIGNAL: u32 = 0x0007_0000;
+        /// A parameter was invalid.
+        pub const BAD_PARM: u32 = 0x0008_0000;
+        /// Could not close a library.
+        pub const CLOSE_LIB: u32 = 0x0009_0000;
+        /// Could not close a device.
+        pub const CLOSE_DEV: u32 = 0x000A_0000;
+        /// Could not create a process.
+        pub const PROC_CREATE: u32 = 0x000B_0000;
+    }
+
+    /// The objects a general error names, in bits 23–16 with `0x80`.
+    pub mod ao {
+        /// `exec.library`.
+        pub const EXEC_LIB: u32 = 0x0000_8001;
+        /// `graphics.library`.
+        pub const GRAPHICS_LIB: u32 = 0x0000_8002;
+        /// `layers.library`.
+        pub const LAYERS_LIB: u32 = 0x0000_8003;
+        /// `intuition.library`.
+        pub const INTUITION: u32 = 0x0000_8004;
+        /// `dos.library`.
+        pub const DOS_LIB: u32 = 0x0000_8007;
+        /// `icon.library`.
+        pub const ICON_LIB: u32 = 0x0000_8009;
+        /// `utility.library`.
+        pub const UTILITY_LIB: u32 = 0x0000_800C;
+        /// `timer.device`.
+        pub const TIMER_DEV: u32 = 0x0000_8015;
+        /// The bootstrap.
+        pub const BOOT_STRAP: u32 = 0x0000_8030;
+        /// The Workbench.
+        pub const WORKBENCH: u32 = 0x0000_8031;
+    }
+
+    /// The subsystem bytes, in bits 30–24.
+    pub mod an {
+        /// `exec.library`.
+        pub const EXEC_LIB: u32 = 0x0100_0000;
+        /// `graphics.library`.
+        pub const GRAPHICS_LIB: u32 = 0x0200_0000;
+        /// `layers.library`.
+        pub const LAYERS_LIB: u32 = 0x0300_0000;
+        /// `intuition.library`.
+        pub const INTUITION: u32 = 0x0400_0000;
+        /// `dos.library`.
+        pub const DOS_LIB: u32 = 0x0700_0000;
+        /// `icon.library`.
+        pub const ICON_LIB: u32 = 0x0900_0000;
+        /// `utility.library`.
+        pub const UTILITY_LIB: u32 = 0x3400_0000;
+        /// `workbench.library`.
+        pub const WORKBENCH: u32 = 0x8200_0000;
+    }
+
+    /// The `exec.library`-specific alerts.
+    pub mod exec {
+        /// A memory list is corrupt.
+        pub const MEM_CORRUPT: u32 = 0x8100_0005;
+        /// Memory was interrupted mid-free.
+        pub const INTR_MEM: u32 = 0x8100_0006;
+        /// A semaphore is corrupt — the classic `ReleaseSemaphore` misuse.
+        pub const SEM_CORRUPT: u32 = 0x0100_0008;
+        /// Memory was freed twice.
+        pub const FREE_TWICE: u32 = 0x0100_0009;
+        /// An I/O request was reused after close.
+        pub const IO_AFTER_CLOSE: u32 = 0x0100_000D;
+        /// A bad address was passed to `FreeMem`.
+        pub const BAD_FREE_ADDR: u32 = 0x0100_000F;
+        /// A semaphore structure was bogus.
+        pub const BAD_SEMAPHORE: u32 = 0x0100_0010;
+    }
+
+    /// True when the alert carries the `AT_DeadEnd` type flag.
+    pub const fn is_dead(alert: u32) -> bool {
+        alert & at::DEAD_END != 0
+    }
+
+    /// The subsystem byte, without the dead flag.
+    pub const fn subsystem(alert: u32) -> u8 {
+        ((alert >> 24) & 0x7F) as u8
+    }
+
+    /// The class byte: an `AG_*` error, an `AO_*` object, or zero.
+    pub const fn class(alert: u32) -> u8 {
+        ((alert >> 16) & 0xFF) as u8
+    }
+
+    /// The specific code within the class.
+    pub const fn code(alert: u32) -> u16 {
+        alert as u16
+    }
+
+    /// The name of a known alert, for the alert log.
+    ///
+    /// Returns `None` for a number the table does not name — a program may
+    /// synthesize its own alerts, and an unnamed number is not an error.
+    pub const fn name(alert: u32) -> Option<&'static str> {
+        // The match arms are the constants above; a const fn cannot index a
+        // slice, so the pairs are spelled out.
+        match alert {
+            ag::NO_MEMORY => Some("AG_NoMemory"),
+            ag::MAKE_LIB => Some("AG_MakeLib"),
+            ag::OPEN_LIB => Some("AG_OpenLib"),
+            ag::OPEN_DEV => Some("AG_OpenDev"),
+            ag::OPEN_RES => Some("AG_OpenRes"),
+            ag::IO_ERROR => Some("AG_IOError"),
+            ag::NO_SIGNAL => Some("AG_NoSignal"),
+            ag::BAD_PARM => Some("AG_BadParm"),
+            ag::CLOSE_LIB => Some("AG_CloseLib"),
+            ag::CLOSE_DEV => Some("AG_CloseDev"),
+            ag::PROC_CREATE => Some("AG_ProcCreate"),
+            exec::MEM_CORRUPT => Some("AN_MemCorrupt"),
+            exec::INTR_MEM => Some("AN_IntrMem"),
+            exec::SEM_CORRUPT => Some("AN_SemCorrupt"),
+            exec::FREE_TWICE => Some("AN_FreeTwice"),
+            exec::IO_AFTER_CLOSE => Some("AN_IOAfterClose"),
+            exec::BAD_FREE_ADDR => Some("AN_BadFreeAddr"),
+            exec::BAD_SEMAPHORE => Some("AN_BadSemaphore"),
+            _ => None,
+        }
+    }
+}
+
 /// A `BPTR`-shaped file handle as seen by user space.
 ///
 /// On AmigaOS a `BPTR` is a pointer to a file lock structure. VelaOS cannot
@@ -1438,5 +1675,51 @@ mod tests {
         assert_eq!(mouse_codes::MOVE, 1);
         assert_eq!(mouse_codes::LEFT_DOWN, 2);
         assert_eq!(mouse_codes::LEFT_UP, 3);
+    }
+
+    #[test]
+    fn the_alert_constants_are_the_aros_ones() {
+        // Transcribed from AROS's `compiler/include/exec/alerts.h`.
+        assert_eq!(alerts::at::DEAD_END, 0x8000_0000);
+        assert_eq!(alerts::ag::NO_MEMORY, 0x0001_0000);
+        assert_eq!(alerts::exec::SEM_CORRUPT, 0x0100_0008);
+        assert_eq!(alerts::an::EXEC_LIB, 0x0100_0000);
+        assert_eq!(alerts::ao::EXEC_LIB, 0x0000_8001);
+    }
+
+    #[test]
+    fn the_alert_layout_decodes() {
+        // `AN_SemCorrupt` is a recovery alert in the exec subsystem, code 8.
+        let alert = alerts::exec::SEM_CORRUPT;
+        assert!(!alerts::is_dead(alert));
+        assert_eq!(alerts::subsystem(alert), 0x01);
+        assert_eq!(alerts::code(alert), 0x0008);
+        assert_eq!(alerts::name(alert), Some("AN_SemCorrupt"));
+        // `AN_MemCorrupt` is dead: the top bit is the type flag.
+        let alert = alerts::exec::MEM_CORRUPT;
+        assert!(alerts::is_dead(alert));
+        assert_eq!(
+            alerts::subsystem(alert),
+            0x01,
+            "the type bit is not a subsystem bit"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_alert_reports_nothing() {
+        assert_eq!(alerts::name(0x1234_5678), None);
+    }
+
+    #[test]
+    fn the_signal_bits_are_the_amigaos_ones() {
+        // AmigaOS numbers `SIGB_SINGLE` 16 and masks it with `1 << 16`.
+        assert_eq!(signals::bit::SINGLE, 16);
+        assert_eq!(signals::SIGF_SINGLE, 1 << 16);
+        // The message bit is bit 0, which the reply space leaves out.
+        assert_eq!(signals::SIGB_MESSAGE, 1);
+        assert_eq!(signals::REPLY_MASK & signals::SIGB_MESSAGE, 0);
+        // And the grant must not land on a reply slot: a task waiting for a
+        // reply would otherwise wake up claiming a semaphore.
+        assert_eq!(signals::REPLY_MASK & signals::SIGF_SINGLE, 0);
     }
 }

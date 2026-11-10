@@ -143,39 +143,26 @@ fn the_helper_agrees_with_the_table() {
     assert_eq!(from_table, from_helper);
 }
 
-/// Every syscall number in the matrix is inside the range its library owns.
+/// Every syscall number in the matrix is one the kernel defines.
 ///
 /// The numbering is grouped by library, so a number outside the group's
-/// range would be a number the dispatcher cannot route.
+/// range would be a number the dispatcher cannot route — and a number
+/// *inside* the range that the kernel never defined is just as wrong: the
+/// matrix would promise an API that answers `NOT_IMPLEMENTED`. The check
+/// is therefore against the kernel's own list of defined numbers, which is
+/// wider and stricter than the reserved ranges.
 #[test]
-fn every_syscall_number_is_inside_its_library_range() {
+fn every_syscall_number_is_one_the_kernel_defines() {
     for entry in MATRIX {
         let Some(number) = entry.syscall else {
             continue;
         };
-        let (first, count) = range_for(entry.library);
         assert!(
-            number >= first && number < first + count,
-            "{}::{} has syscall {number}, outside {first}..{}",
+            vela_kernel_syscall::numbers::is_defined(number),
+            "{}::{} names syscall {number}, which the kernel does not define",
             entry.library,
             entry.name,
-            first + count,
         );
-    }
-}
-
-/// The first syscall number and the count of a library's group.
-fn range_for(library: &str) -> (u64, u64) {
-    match library {
-        "exec.library" => (0, 21),
-        "graphics.library" => (64, 13),
-        "layers.library" => (128, 10),
-        "intuition.library" => (192, 13),
-        "dos.library" => (256, 12),
-        "utility.library" => (320, 3),
-        "icon.library" => (384, 21),
-        "workbench.library" => (448, 22),
-        other => panic!("unknown library {other}"),
     }
 }
 

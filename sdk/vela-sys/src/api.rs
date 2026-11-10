@@ -53,7 +53,8 @@ pub use crate::numbers::errors;
 /// Re-exported so a program can match on a gadget kind, a window flag or an
 /// IDCMP class without a second `use`.
 pub use crate::abi::{
-    buttons, gadget_kind, idcmp, mouse_codes, node_type, request_codes, sigs, window_flags,
+    alerts, buttons, gadget_kind, idcmp, mouse_codes, node_type, request_codes, signals, sigs,
+    window_flags,
 };
 
 /// The `MODE_*` flags an [`open`] asks for.
@@ -438,6 +439,215 @@ pub fn signal(task: u64, mask: u32) -> Result<u32> {
         library_base::exec::base().call(offset::EXEC_SIGNAL, [task, mask as u64, 0, 0, 0, 0])
     };
     check(packed).map(|v| v as u32)
+}
+
+/// A semaphore handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Semaphore(pub u64);
+
+impl Semaphore {
+    /// The null semaphore.
+    pub const NULL: Semaphore = Semaphore(0);
+
+    /// True when this names no semaphore.
+    pub const fn is_null(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The raw value, for passing back to the kernel.
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Find a task by name, or the calling task.
+///
+/// `None` asks for the calling task, which is the AROS spelling of
+/// `FindTask(NULL)`. A name nobody carries answers with `Ok(0)`: AmigaOS
+/// returned `NULL` there, and a program probing for a task expects to be
+/// told "not here" rather than to receive an error.
+///
+/// # Errors
+///
+/// [`errors::BAD_STRING`] when the name is not NUL-terminated within the
+/// kernel's limit.
+pub fn find_task(name: Option<&str>) -> Result<u64> {
+    let bytes;
+    let name_ptr = match name {
+        Some(name) => {
+            bytes = c_string(name);
+            bytes.as_ptr() as u64
+        }
+        None => 0,
+    };
+    // SAFETY: the pointer names a NUL-terminated buffer that outlives the
+    // call, and the kernel copies the string out rather than retaining it.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_FINDTASK, [name_ptr, 0, 0, 0, 0, 0])
+    };
+    check(packed)
+}
+
+/// Name the calling task.
+///
+/// A task names itself at start-up, exactly as it sets `tc_Node.ln_Name` on
+/// AmigaOS; [`find_task`] is what reads the name back.
+///
+/// # Errors
+///
+/// [`errors::BAD_STRING`] when the name is not NUL-terminated within the
+/// kernel's limit.
+pub fn set_task_name(name: &str) -> Result<()> {
+    let bytes = c_string(name);
+    let name_ptr = bytes.as_ptr() as u64;
+    // SAFETY: the pointer names a NUL-terminated buffer that outlives the
+    // call, and the kernel copies the string out rather than retaining it.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_SETTASKNAME, [name_ptr, 0, 0, 0, 0, 0])
+    };
+    check(packed).map(|_| ())
+}
+
+/// Create a semaphore.
+///
+/// The `priority` argument orders the wait queue on AmigaOS; the grants
+/// here are made in arrival order.
+pub fn create_semaphore(priority: i8) -> Result<Semaphore> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_INITSEMAPHORE,
+            [priority as u8 as u64, 0, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(Semaphore)
+}
+
+/// Obtain a semaphore, once.
+///
+/// Returns `true` when the lock is taken, and `false` when another task
+/// holds it and the caller was queued. A queued caller is woken with
+/// `SIGF_SINGLE` when the lock is granted; it then calls this again, and
+/// the kernel confirms the grant rather than nesting the lock a second
+/// time. [`acquire_semaphore`] does that loop for you.
+///
+/// A shared request takes the lock alongside other shared holders; an
+/// exclusive request waits for every holder to let go.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when the semaphore does not exist.
+pub fn obtain_semaphore(semaphore: Semaphore, shared: bool) -> Result<bool> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_OBTAINSEMAPHORE,
+            [semaphore.raw(), shared as u64, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|v| v != 0)
+}
+
+/// Obtain a semaphore, waiting for it.
+///
+/// This is the blocking form: it returns only once the lock is held. The
+/// wait is on `SIGF_SINGLE`, the bit AROS's `ReleaseSemaphore` raises to
+/// grant the lock.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when the semaphore does not exist.
+pub fn acquire_semaphore(semaphore: Semaphore, shared: bool) -> Result<()> {
+    loop {
+        if obtain_semaphore(semaphore, shared)? {
+            return Ok(());
+        }
+        // The task is queued. The kernel wakes it with the grant signal and
+        // the loop asks again; the answer then confirms the hand-off.
+        wait(crate::abi::sigs::GRANT)?;
+    }
+}
+
+/// Confirm a semaphore grant.
+///
+/// Returns `true` when the hand-off named the caller and `false` when the
+/// wake was not a grant. The confirm call consumes the pending wait, so a
+/// grant cannot be confirmed twice.
+pub fn confirm_grant(semaphore: Semaphore) -> Result<bool> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_CONFIRMGRANT, [semaphore.raw(), 0, 0, 0, 0, 0])
+    };
+    check(packed).map(|v| v != 0)
+}
+
+/// Attempt a semaphore without waiting.
+///
+/// Returns `true` when the lock was taken and `false` when it was held. A
+/// failed attempt is an answer, not an error — which is exactly what
+/// AmigaOS's `AttemptSemaphore` reported.
+pub fn attempt_semaphore(semaphore: Semaphore, shared: bool) -> Result<bool> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_ATTEMPTSEMAPHORE,
+            [semaphore.raw(), shared as u64, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|v| v != 0)
+}
+
+/// Release one nesting level of a held semaphore.
+///
+/// When the nest count reaches zero the lock is granted onward — to every
+/// leading shared waiter, or to the first exclusive waiter — and each
+/// grantee is woken with `SIGF_SINGLE`.
+///
+/// # Errors
+///
+/// [`errors::NO_OBJECT`] when the semaphore does not exist, and
+/// [`errors::NOT_OWNER`] when the caller does not hold it.
+pub fn release_semaphore(semaphore: Semaphore) -> Result<()> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_RELEASESEMAPHORE,
+            [semaphore.raw(), 0, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
+/// Delete a semaphore.
+///
+/// Its waiters are woken so their next attempt reports the semaphore is
+/// gone rather than sleeping on a lock that will never be granted.
+pub fn delete_semaphore(semaphore: Semaphore) -> Result<()> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(
+            offset::EXEC_DELETESEMAPHORE,
+            [semaphore.raw(), 0, 0, 0, 0, 0],
+        )
+    };
+    check(packed).map(|_| ())
+}
+
+/// Raise an alert.
+///
+/// The alert number is one of the `AN_*`/`AG_*` values, and the type bit
+/// `AT_DeadEnd` (the top bit) says the calling task ends with it. The
+/// kernel writes the alert to the console with its decoded name.
+///
+/// # Errors
+///
+/// [`errors::INVALID_VALUE`] when the alert number is not a known one.
+pub fn alert(alert: u32) -> Result<()> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::exec::base().call(offset::EXEC_ALERT, [alert as u64, 0, 0, 0, 0, 0])
+    };
+    check(packed).map(|_| ())
 }
 
 /// Enter the classic critical section.

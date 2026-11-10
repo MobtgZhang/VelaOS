@@ -144,7 +144,14 @@ pub type Slot = unsafe extern "sysv64" fn(u64, u64, u64, u64, u64, u64) -> Packe
 /// A fixed count rather than a variable one, because a program's generated
 /// stub indexes the table without knowing which library it is: a library
 /// added later cannot shift the slots of one already compiled in.
-pub const SLOTS: usize = 32;
+///
+/// Sixty-four slots is the width of the widest library — `exec.library`,
+/// whose surface grew past thirty-two when the semaphores, `FindTask` and
+/// `Alert` arrived — and every library's table is that wide, so the
+/// indexing stays uniform. The cost is a fixed 512 bytes of table per
+/// library in the program's own data, which is nothing next to the space a
+/// window or a font already takes.
+pub const SLOTS: usize = 64;
 
 /// A library's jump table.
 pub type JumpTable = [Slot; SLOTS];

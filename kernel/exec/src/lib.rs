@@ -75,10 +75,12 @@ std::thread_local! {
 pub mod library;
 pub mod memory;
 pub mod port;
+pub mod semaphore;
 pub mod task;
 
 use crate::library::{ModuleKind, ModuleRegistry};
 use crate::port::{errors, MessageStore, PortId};
+use crate::semaphore::{Obtain, SemaphoreId, SemaphoreTable, SIGF_SINGLE};
 use crate::task::{BlockedOn, TaskId, TaskSignals, SIGB_MESSAGE};
 
 /// The classic-domain scheduler lock.
@@ -170,6 +172,8 @@ impl ClassicLock {
 pub struct Exec {
     /// The message ports.
     pub ports: MessageStore,
+    /// The semaphores.
+    pub semaphores: SemaphoreTable,
     /// The module registry: libraries, devices and resources.
     pub modules: ModuleRegistry,
     /// The classic-domain scheduler lock.
@@ -182,6 +186,12 @@ pub struct Exec {
     /// reference out of a `Mutex` guard is impossible, and an owned `Arc` is
     /// what makes the API honest about that.
     tasks: Mutex<Vec<Option<Arc<TaskSignals>>>>,
+    /// The names tasks have given themselves, for `FindTask`.
+    ///
+    /// AmigaOS keeps the name inside the task's list node; here the task
+    /// table owns it, so a name outlives nothing and `FindTask` scans one
+    /// small table rather than two scheduler lists.
+    task_names: Mutex<Vec<(TaskId, alloc::string::String)>>,
     /// The task the CPU is currently running, for kernels with one CPU.
     ///
     /// On bare metal the kernel is single-CPU, so one atomic in the service is
@@ -230,9 +240,11 @@ impl Exec {
     pub const fn new() -> Self {
         Self {
             ports: MessageStore::new(),
+            semaphores: SemaphoreTable::new(),
             modules: ModuleRegistry::new(),
             classic: ClassicLock::new(),
             tasks: Mutex::new(Vec::new()),
+            task_names: Mutex::new(Vec::new()),
             #[cfg(target_os = "none")]
             current: core::sync::atomic::AtomicU32::new(0),
             yield_requested: AtomicBool::new(false),
@@ -333,9 +345,21 @@ impl Exec {
     ///
     /// This is the task-exit path. Ports the task owned are deleted and their
     /// messages returned, so a reply still in flight toward the dead task has
-    /// nowhere to go and says so rather than reaching freed memory.
+    /// nowhere to go and says so rather than reaching freed memory. Semaphores
+    /// the task held are released so a lock cannot be taken forever, and its
+    /// entry in every wait queue is dropped so it can never be *granted* a
+    /// lock it can no longer release.
     pub fn exit_task(&self, task: TaskId) -> Vec<Message> {
         let dropped = self.ports.cleanup_task(task);
+        // The semaphore cleanup returns the waiters granted in the dead
+        // task's place, each of which must be woken with the grant signal.
+        let granted = self.semaphores.cleanup_task(task);
+        for waiter in granted {
+            if let Some(signals) = self.task_signals(waiter.task) {
+                signals.raise(SIGF_SINGLE);
+            }
+        }
+        self.task_names.lock().retain(|(id, _)| *id != task);
         let mut tasks = self.tasks.lock();
         if task.0 >= 1 {
             let index = task.0 as usize - 1;
@@ -344,6 +368,131 @@ impl Exec {
             }
         }
         dropped
+    }
+
+    /// Name the calling task, the way a task names itself on start-up.
+    ///
+    /// `FindTask` is what reads this; AmigaOS spells the write
+    /// `tc_Node.ln_Name` and the read `FindTask(name)`.
+    pub fn set_task_name(&self, task: TaskId, name: &str) -> Result<(), i32> {
+        if !self.task_exists(task) {
+            return Err(errors::NOT_OWNER);
+        }
+        let mut names = self.task_names.lock();
+        match names.iter_mut().find(|(id, _)| *id == task) {
+            Some((_, slot)) => *slot = alloc::string::String::from(name),
+            None => names.push((task, alloc::string::String::from(name))),
+        }
+        Ok(())
+    }
+
+    /// The name a task gave itself, if it gave one.
+    pub fn task_name(&self, task: TaskId) -> Option<alloc::string::String> {
+        self.task_names
+            .lock()
+            .iter()
+            .find(|(id, _)| *id == task)
+            .map(|(_, name)| name.clone())
+    }
+
+    /// `FindTask` — the task with this name, or the current task for `None`.
+    ///
+    /// The AROS form takes `NULL` and answers with the caller; the `Option`
+    /// is that spelling. An unknown name is `None`, not an error: on AmigaOS
+    /// `FindTask` returned `NULL`, and a program that probes for a task is
+    /// *expecting* to be told "not here".
+    pub fn find_task(&self, name: Option<&str>) -> Option<TaskId> {
+        let Some(name) = name else {
+            return Some(self.current_task());
+        };
+        if name.is_empty() {
+            return None;
+        }
+        self.task_names
+            .lock()
+            .iter()
+            .find(|(_, known)| known == name)
+            .map(|(id, _)| *id)
+    }
+
+    /// `InitSemaphore` — create a semaphore and return its id.
+    ///
+    /// The classic call initialises a structure in caller memory; here the
+    /// table is kernel-owned and the `priority` argument is kept for ABI
+    /// shape. See [`SemaphoreTable::init`].
+    pub fn init_semaphore(&self, priority: i8) -> SemaphoreId {
+        self.semaphores.init(priority)
+    }
+
+    /// `ObtainSemaphore` / `ObtainSemaphoreShared`.
+    ///
+    /// [`Obtain::Queued`] means the caller must block until it is woken with
+    /// [`SIGF_SINGLE`] and retry — the grant is the retry's reward.
+    pub fn obtain_semaphore(
+        &self,
+        task: TaskId,
+        id: SemaphoreId,
+        shared: bool,
+    ) -> Result<Obtain, i32> {
+        self.semaphores.obtain(task, id, shared)
+    }
+
+    /// Confirm a grant, on the retry path of a queued `ObtainSemaphore`.
+    ///
+    /// A grant is made *inside* `ReleaseSemaphore` — owner set, queue popped
+    /// — and the granted waiter is woken with `SIGF_SINGLE`. When it resumes,
+    /// it calls this rather than `obtain` again, because a second acquire
+    /// would nest one level deeper than the first request asked for. The
+    /// call consumes the pending wait and reports whether the hand-off
+    /// really named this task.
+    ///
+    /// A task that resumes *without* a pending grant — a spurious wake, or a
+    /// wait satisfied by something else — gets `false` and must decide
+    /// whether to retry the obtain or give up, exactly as `WaitPort` hands
+    /// back `NULL`.
+    pub fn confirm_grant(&self, task: TaskId, id: SemaphoreId) -> Result<bool, i32> {
+        let Some(signals) = self.task_signals(task) else {
+            return Err(errors::NOT_OWNER);
+        };
+        let pending =
+            signals.blocked_on() == BlockedOn::Semaphore(id.0) && signals.has_any(SIGF_SINGLE);
+        if !pending {
+            return Ok(false);
+        }
+        signals.end_wait();
+        Ok(self.semaphores.holds(task, id))
+    }
+
+    /// `AttemptSemaphore` / `AttemptSemaphoreShared` — the non-blocking form.
+    pub fn attempt_semaphore(
+        &self,
+        task: TaskId,
+        id: SemaphoreId,
+        shared: bool,
+    ) -> Result<bool, i32> {
+        self.semaphores.attempt(task, id, shared)
+    }
+
+    /// `ReleaseSemaphore` — give up one nesting level, granting the queue.
+    pub fn release_semaphore(&self, task: TaskId, id: SemaphoreId) -> Result<(), i32> {
+        let granted = self.semaphores.release(task, id)?;
+        for waiter in granted {
+            if let Some(signals) = self.task_signals(waiter.task) {
+                signals.raise(SIGF_SINGLE);
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a semaphore, waking its waiters so they fail rather than hang.
+    pub fn delete_semaphore(&self, id: SemaphoreId) -> Result<(), i32> {
+        let wake = self.semaphores.delete(id)?;
+        for waiter in wake {
+            if let Some(signals) = self.task_signals(waiter.task) {
+                signals.raise(SIGF_SINGLE);
+            }
+        }
+        Ok(())
     }
 
     /// Create a message port owned by `owner`.

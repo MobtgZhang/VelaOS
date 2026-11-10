@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use vela_abi_native64::Message;
 use vela_kernel_exec::port::PortId;
+use vela_kernel_exec::semaphore::{Obtain, SIGF_SINGLE};
 use vela_kernel_exec::task::SIGB_MESSAGE;
 use vela_kernel_exec::task::{TaskId, REPLY_MASK};
 use vela_kernel_syscall::numbers::{self, errors, SyscallArgs};
@@ -324,7 +325,10 @@ fn the_message_bit_and_the_reply_bits_do_not_overlap() {
     // the mask is split at bit 0.
     assert_eq!(SIGB_MESSAGE, 1);
     assert_eq!(SIGB_MESSAGE & REPLY_MASK, 0);
-    assert_eq!(REPLY_MASK.count_ones(), 31);
+    // Fifteen reply slots, as on AmigaOS — and the classic signal space
+    // above them, where a semaphore grant lives.
+    assert_eq!(REPLY_MASK.count_ones(), 15);
+    assert_eq!(REPLY_MASK & vela_abi_native64::signals::SIGF_SINGLE, 0);
 }
 
 #[test]
@@ -406,6 +410,78 @@ fn two_scheduled_tasks_pass_a_message_to_each_other() {
         "expected two receiver runs and one sender run"
     );
     assert_eq!(*seen.lock().unwrap(), vec![0xABCD]);
+}
+
+#[test]
+fn two_scheduled_tasks_hand_a_semaphore_over() {
+    // The semaphore half of the rendezvous: the holder releases, the waiter
+    // is granted the lock, and the grant arrives as the signal AROS's
+    // `ReleaseSemaphore` raises.
+    //
+    // The waiter is spawned first, so it finds the lock taken and blocks;
+    // the holder runs second and releases it. The waiter then runs a third
+    // time, finds the grant waiting for it, and takes the lock.
+    let k = Kernel::new();
+    let exec = k.exec();
+
+    let semaphore = exec.init_semaphore(0);
+    let holder = exec.create_task();
+    let waiter = exec.create_task();
+
+    // The holder takes the lock before anybody else runs.
+    assert_eq!(
+        exec.obtain_semaphore(holder, semaphore, false).unwrap(),
+        Obtain::Obtained,
+    );
+
+    let granted = Arc::new(AtomicU32::new(0));
+    let ran = Arc::new(AtomicU32::new(0));
+
+    {
+        let granted = Arc::clone(&granted);
+        let ran = Arc::clone(&ran);
+        k.spawn("waiter", 0, move |k| {
+            ran.fetch_add(1, Ordering::SeqCst);
+            let task = k.exec().current_task();
+            match k.exec().obtain_semaphore(task, semaphore, false) {
+                Ok(Obtain::Obtained) => {
+                    granted.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(Obtain::Queued) => {
+                    // Block until the grant wakes us — and record *why* we
+                    // wait, so the kernel can tell a grant wake from any
+                    // other wake when we resume.
+                    k.block_current_on(
+                        SIGF_SINGLE,
+                        vela_kernel_exec::task::BlockedOn::Semaphore(semaphore.0),
+                    );
+                }
+                Err(_) => panic!("the semaphore must exist"),
+            }
+        });
+    }
+
+    {
+        let ran = Arc::clone(&ran);
+        k.spawn("holder", 6, move |k| {
+            ran.fetch_add(1, Ordering::SeqCst);
+            // The release grants the queued waiter and wakes it with
+            // `SIGF_SINGLE`.
+            k.exec().release_semaphore(holder, semaphore).unwrap();
+            k.wake(waiter, SIGF_SINGLE);
+        });
+    }
+
+    let steps = k.run_until_idle_with_limit(64);
+    assert!(steps <= 64, "the harness ran away");
+
+    // The waiter ran twice: once to find the lock taken, once with the
+    // grant in hand.
+    assert_eq!(
+        granted.load(Ordering::SeqCst),
+        1,
+        "the waiter must be granted the lock exactly once"
+    );
 }
 
 #[test]

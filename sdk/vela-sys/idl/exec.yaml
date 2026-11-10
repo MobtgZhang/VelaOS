@@ -36,6 +36,70 @@
 library: exec.library
 prefix: EXEC
 functions:
+  - name: ConfirmGrant
+    lvo: -312
+    offset: CONFIRMGRANT
+    stub: confirm_grant
+    syscall: CONFIRM_GRANT
+    number: 47
+    kernel: CONFIRM_GRANT
+    status: implemented
+  - name: Alert
+    lvo: -304
+    offset: ALERT
+    stub: alert
+    syscall: ALERT
+    number: 51
+    kernel: ALERT
+    status: implemented
+  - name: DeleteSemaphore
+    lvo: -296
+    offset: DELETESEMAPHORE
+    stub: delete_semaphore
+    syscall: DELETE_SEMAPHORE
+    number: 50
+    kernel: DELETE_SEMAPHORE
+    status: implemented
+  - name: ReleaseSemaphore
+    lvo: -288
+    offset: RELEASESEMAPHORE
+    stub: release_semaphore
+    syscall: RELEASE_SEMAPHORE
+    number: 49
+    kernel: RELEASE_SEMAPHORE
+    status: implemented
+  - name: AttemptSemaphore
+    lvo: -280
+    offset: ATTEMPTSEMAPHORE
+    stub: attempt_semaphore
+    syscall: ATTEMPT_SEMAPHORE
+    number: 48
+    kernel: ATTEMPT_SEMAPHORE
+    status: implemented
+  - name: ObtainSemaphore
+    lvo: -272
+    offset: OBTAINSEMAPHORE
+    stub: obtain_semaphore
+    syscall: OBTAIN_SEMAPHORE
+    number: 46
+    kernel: OBTAIN_SEMAPHORE
+    status: implemented
+  - name: InitSemaphore
+    lvo: -264
+    offset: INITSEMAPHORE
+    stub: create_semaphore
+    syscall: CREATE_SEMAPHORE
+    number: 45
+    kernel: CREATE_SEMAPHORE
+    status: implemented
+  - name: SetTaskName
+    lvo: -256
+    offset: SETTASKNAME
+    stub: set_task_name
+    syscall: SET_TASK_NAME
+    number: 44
+    kernel: SET_TASK_NAME
+    status: implemented
   - name: GetBootChoice
     lvo: -248
     offset: GETBOOTCHOICE
@@ -280,7 +344,7 @@ functions:
     lvo: -8
     offset: FINDTASK
     stub: find_task
-    syscall: GET_TASK_ID
-    number: 15
-    kernel: GET_TASK_ID
+    syscall: FIND_TASK
+    number: 43
+    kernel: FIND_TASK
     status: implemented

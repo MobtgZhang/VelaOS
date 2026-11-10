@@ -812,6 +812,209 @@ pub mod exec_handlers {
             Err(_) => SyscallResult::err(errors::BAD_POINTER),
         }
     }
+
+    /// `FindTask` — find a task by name.
+    ///
+    /// Arguments: `name_ptr` (a user pointer to a NUL-terminated name, or
+    /// zero for "the calling task"). Returns the task id, or zero when no
+    /// task carries that name.
+    ///
+    /// # Why zero and not an error
+    ///
+    /// AmigaOS's `FindTask` returned `NULL` for a name nobody carries, and a
+    /// program probing for a task expects exactly that answer. An error code
+    /// would be a different answer to the same question, and a program
+    /// ported from AmigaOS would have to learn a new convention to use it.
+    pub fn find_task(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let name_ptr = args.get(0);
+        if name_ptr == 0 {
+            // The AROS spelling: a null name means "the current task", and
+            // it is the quick path — no table walk at all.
+            return SyscallResult::ok(ctx.task.0 as u64);
+        }
+        let name = match copy_string_alloc(name_ptr) {
+            Ok(name) => name,
+            Err(e) => return SyscallResult::err(e),
+        };
+        match ctx.exec.find_task(Some(&name)) {
+            Some(task) => SyscallResult::ok(task.0 as u64),
+            None => SyscallResult::ok(0),
+        }
+    }
+
+    /// `SetTaskName` — name the calling task.
+    ///
+    /// Arguments: `name_ptr`. Returns zero.
+    ///
+    /// A task names itself, exactly as it sets `tc_Node.ln_Name` on AmigaOS,
+    /// and `FindTask` is what reads the name back.
+    pub fn set_task_name(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let name_ptr = args.get(0);
+        let name = match copy_string_alloc(name_ptr) {
+            Ok(name) => name,
+            Err(e) => return SyscallResult::err(e),
+        };
+        match ctx.exec.set_task_name(ctx.task, &name) {
+            Ok(()) => SyscallResult::ok(0),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `InitSemaphore` — create a semaphore.
+    ///
+    /// Arguments: `priority`. Returns the semaphore's id.
+    ///
+    /// The classic call initialised a structure in the caller's memory; the
+    /// table is kernel-owned here, so the call creates the semaphore and
+    /// hands back its id. The `priority` argument orders the wait queue on
+    /// AmigaOS and is kept for the ABI's shape.
+    pub fn create_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let priority = args.get(0) as u8 as i8;
+        let semaphore = ctx.exec.init_semaphore(priority);
+        SyscallResult::ok(semaphore.0 as u64)
+    }
+
+    /// `ObtainSemaphore` — take a semaphore, waiting for it if necessary.
+    ///
+    /// Arguments: `semaphore`, `shared` (non-zero asks for a shared grant).
+    /// Returns `1` when the lock is held, `0` when the caller was queued.
+    ///
+    /// # The retry protocol
+    ///
+    /// A queued caller is woken with `SIGF_SINGLE` and calls again. The
+    /// second call is a *confirmation*, not a second acquire: the hand-off
+    /// already happened inside `ReleaseSemaphore`, so re-acquiring would
+    /// nest one level deeper than the first request asked for. The handler
+    /// therefore checks for a pending grant first and answers from it.
+    ///
+    /// A queued caller that is woken by something else gets `0` again and
+    /// re-queues, which is the same answer `WaitPort` gives when it returns
+    /// `NULL`.
+    pub fn obtain_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let semaphore = vela_kernel_exec::semaphore::SemaphoreId(args.get(0) as u32);
+        let shared = args.get(1) != 0;
+        // A pending grant is the retry path. `confirm_grant` consumes the
+        // wait, so a stale `SIGF_SINGLE` cannot be mistaken for a grant
+        // twice.
+        match ctx.exec.confirm_grant(ctx.task, semaphore) {
+            Ok(true) => return SyscallResult::ok(1),
+            Ok(false) => {}
+            Err(e) => return SyscallResult::err(e),
+        }
+        match ctx.exec.obtain_semaphore(ctx.task, semaphore, shared) {
+            Ok(vela_kernel_exec::semaphore::Obtain::Obtained) => SyscallResult::ok(1),
+            Ok(vela_kernel_exec::semaphore::Obtain::Queued) => {
+                // The caller must sleep until it is granted. The wait is
+                // published *before* the return, so a release that happens
+                // immediately after cannot find no waiter and strand the
+                // grant.
+                if let Some(signals) = ctx.exec.task_signals(ctx.task) {
+                    signals.begin_wait(
+                        vela_kernel_exec::semaphore::SIGF_SINGLE,
+                        vela_kernel_exec::task::BlockedOn::Semaphore(semaphore.0),
+                    );
+                }
+                SyscallResult::ok(0)
+            }
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `ConfirmGrant` — confirm a semaphore grant after being woken.
+    ///
+    /// Arguments: `semaphore`. Returns `1` when the hand-off named the
+    /// caller, `0` when the wake was not a grant.
+    pub fn confirm_grant(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let semaphore = vela_kernel_exec::semaphore::SemaphoreId(args.get(0) as u32);
+        match ctx.exec.confirm_grant(ctx.task, semaphore) {
+            Ok(granted) => SyscallResult::ok(granted as u64),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `AttemptSemaphore` — take a semaphore without waiting.
+    ///
+    /// Arguments: `semaphore`, `shared`. Returns `1` when the lock was taken
+    /// and `0` when it was held — a failed attempt is an answer, not an
+    /// error, which is exactly what AmigaOS's `AttemptSemaphore` reported.
+    pub fn attempt_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let semaphore = vela_kernel_exec::semaphore::SemaphoreId(args.get(0) as u32);
+        let shared = args.get(1) != 0;
+        match ctx.exec.attempt_semaphore(ctx.task, semaphore, shared) {
+            Ok(taken) => SyscallResult::ok(taken as u64),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `ReleaseSemaphore` — give up one nesting level of a held semaphore.
+    ///
+    /// Arguments: `semaphore`. Returns zero.
+    ///
+    /// When the nest count reaches zero the lock is granted onward and the
+    /// grantees are woken with `SIGF_SINGLE`.
+    pub fn release_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let semaphore = vela_kernel_exec::semaphore::SemaphoreId(args.get(0) as u32);
+        match ctx.exec.release_semaphore(ctx.task, semaphore) {
+            Ok(()) => SyscallResult::ok(0),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `DeleteSemaphore` — delete a semaphore.
+    ///
+    /// Arguments: `semaphore`. Returns zero.
+    ///
+    /// The waiters are woken so their next attempt reports `NO_OBJECT`
+    /// rather than sleeping on a lock that will never be granted.
+    pub fn delete_semaphore(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let semaphore = vela_kernel_exec::semaphore::SemaphoreId(args.get(0) as u32);
+        match ctx.exec.delete_semaphore(semaphore) {
+            Ok(()) => SyscallResult::ok(0),
+            Err(e) => SyscallResult::err(e),
+        }
+    }
+
+    /// `Alert` — raise an alert.
+    ///
+    /// Arguments: `alert` (an `AN_*`/`AG_*` number). Returns zero.
+    ///
+    /// # What an alert does here
+    ///
+    /// On AmigaOS an alert is a dialog on the screen, and a dead alert halts
+    /// the machine. There is no screen here yet, so the alert is written to
+    /// the console — where the person at the keyboard, or the boot log,
+    /// will see it — with its decoded name. A dead alert also ends the
+    /// calling task, because that is what `AT_DeadEnd` means: the task
+    /// cannot continue.
+    pub fn alert(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+        let alert = args.get(0) as u32;
+        let name = vela_abi_native64::alerts::name(alert);
+        let text = match name {
+            Some(name) => alloc::format!(
+                "Alert: {} (0x{:08x}, subsystem 0x{:02x}, class 0x{:02x}, code {})\n",
+                name,
+                alert,
+                vela_abi_native64::alerts::subsystem(alert),
+                vela_abi_native64::alerts::class(alert),
+                vela_abi_native64::alerts::code(alert),
+            ),
+            None => alloc::format!(
+                "Alert: 0x{:08x} (subsystem 0x{:02x}, class 0x{:02x}, code {})\n",
+                alert,
+                vela_abi_native64::alerts::subsystem(alert),
+                vela_abi_native64::alerts::class(alert),
+                vela_abi_native64::alerts::code(alert),
+            ),
+        };
+        crate::print_console(&text);
+        if vela_abi_native64::alerts::is_dead(alert) {
+            // A dead alert ends the task. The messages it owned are dropped
+            // and returned, so a reply in flight toward it has nowhere to go
+            // and says so.
+            ctx.exec.exit_task(ctx.task);
+        }
+        SyscallResult::ok(0)
+    }
 }
 
 /// The built-in dispatch table, with every Exec syscall installed.
@@ -853,6 +1056,15 @@ pub fn builtin_table() -> DispatchTable {
     table.install(numbers::CLEAR_SCREEN, exec_handlers::clear_screen);
     table.install(numbers::GET_HOSTNAME, exec_handlers::get_hostname);
     table.install(numbers::GET_BOOT_CHOICE, exec_handlers::get_boot_choice);
+    table.install(numbers::FIND_TASK, exec_handlers::find_task);
+    table.install(numbers::SET_TASK_NAME, exec_handlers::set_task_name);
+    table.install(numbers::CREATE_SEMAPHORE, exec_handlers::create_semaphore);
+    table.install(numbers::OBTAIN_SEMAPHORE, exec_handlers::obtain_semaphore);
+    table.install(numbers::CONFIRM_GRANT, exec_handlers::confirm_grant);
+    table.install(numbers::ATTEMPT_SEMAPHORE, exec_handlers::attempt_semaphore);
+    table.install(numbers::RELEASE_SEMAPHORE, exec_handlers::release_semaphore);
+    table.install(numbers::DELETE_SEMAPHORE, exec_handlers::delete_semaphore);
+    table.install(numbers::ALERT, exec_handlers::alert);
 
     // The `utility.library` group:
 

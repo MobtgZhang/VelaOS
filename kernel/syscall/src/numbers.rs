@@ -184,6 +184,61 @@ pub const GET_HOSTNAME: u64 = 32;
 /// Returns `0` for terminal and `1` for desktop. This is the only boot-time
 /// policy the user space needs, and it is a value rather than an opaque handle.
 pub const GET_BOOT_CHOICE: u64 = 42;
+/// `exec.library`: find a task by name, or the caller for no name.
+///
+/// Arguments: `name_ptr` (a user pointer to a NUL-terminated name, or zero
+/// for the calling task). Returns the task id, or zero when no task carries
+/// that name — the AmigaOS `FindTask` returned `NULL` in that case, and a
+/// caller probing for a task expects to be told "not here" rather than to
+/// receive an error.
+pub const FIND_TASK: u64 = 43;
+/// `exec.library`: name the calling task.
+///
+/// Arguments: `name_ptr`. A task names itself at start-up, exactly as it
+/// sets `tc_Node.ln_Name` on AmigaOS; `FindTask` is what reads it.
+pub const SET_TASK_NAME: u64 = 44;
+/// `exec.library`: create a semaphore.
+///
+/// Arguments: `priority`. Returns the semaphore's id. The classic
+/// `InitSemaphore` initialised a structure in caller memory; the table is
+/// kernel-owned here, so creation replaces initialisation.
+pub const CREATE_SEMAPHORE: u64 = 45;
+/// `exec.library`: obtain a semaphore, blocking if another task holds it.
+///
+/// Arguments: `semaphore`, `shared` (non-zero for a shared request). Returns
+/// `1` when the lock is held, or `0` when the caller was queued and must
+/// block: the grant arrives as `SIGF_SINGLE`, and the retry confirms the
+/// hand-off rather than taking the lock a second time.
+pub const OBTAIN_SEMAPHORE: u64 = 46;
+/// `exec.library`: confirm a semaphore grant, after being woken.
+///
+/// Arguments: `semaphore`. Consumes the pending `SIGF_SINGLE` wait and
+/// returns `1` when the hand-off named the caller, `0` otherwise (a
+/// spurious wake leaves the decision to retry to the caller, exactly as
+/// `WaitPort` hands back `NULL`).
+pub const CONFIRM_GRANT: u64 = 47;
+/// `exec.library`: attempt a semaphore without blocking.
+///
+/// Arguments: `semaphore`, `shared`. Returns `1` when the lock was taken,
+/// `0` when it was held — a failed attempt is an answer, not an error.
+pub const ATTEMPT_SEMAPHORE: u64 = 48;
+/// `exec.library`: release one nesting level of a held semaphore.
+///
+/// Arguments: `semaphore`. When the nest count reaches zero the lock is
+/// granted to the queue — to every leading shared waiter, or to the first
+/// exclusive waiter — and each grantee is woken with `SIGF_SINGLE`.
+pub const RELEASE_SEMAPHORE: u64 = 49;
+/// `exec.library`: delete a semaphore.
+///
+/// Arguments: `semaphore`. Its waiters are woken so their next attempt
+/// reports `NO_OBJECT` rather than sleeping forever.
+pub const DELETE_SEMAPHORE: u64 = 50;
+/// `exec.library`: raise an alert.
+///
+/// Arguments: `alert` (an `AN_*`/`AG_*` number with the `AT_DeadEnd` type
+/// bit). The alert is logged with its decoded name; a dead alert halts the
+/// calling task, which is what `AT_DeadEnd` means on AmigaOS.
+pub const ALERT: u64 = 51;
 
 /// `net.library`: create a socket.
 ///
@@ -435,7 +490,7 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// reserved range: the range is 64 wide so that a library added later does
 /// not renumber the ones already compiled into stub libraries, and the count
 /// is what the conformance tests iterate over.
-pub const EXEC_COUNT: u64 = 33;
+pub const EXEC_COUNT: u64 = 42;
 /// The number of syscalls in the `graphics.library` group.
 pub const GRAPHICS_COUNT: u64 = 13;
 /// The number of syscalls in the `layers.library` group.
@@ -458,6 +513,164 @@ pub const BOOT_CHOICE_COUNT: u64 = 1;
 
 /// The highest syscall number the kernel defines.
 pub const MAX: u64 = WORKBENCH_WORKBENCH_CONTROL;
+/// True when the kernel defines a syscall with this number.
+///
+/// The conformance suite uses it to check that every API in the matrix names
+/// a number the kernel really implements — a stronger check than "the
+/// number is inside the library's range", because the ranges are reserved
+/// wider than the numbers that are defined.
+pub fn is_defined(number: u64) -> bool {
+    DEFINED.iter().any(|(defined, _)| *defined == number)
+}
+
+/// Every syscall number the kernel defines, with the group that owns it.
+///
+/// The table is the kernel's own list of what exists: the dispatcher
+/// installs exactly these numbers, and the conformance suite checks the
+/// SDK's published surface against it. It is public for that check — a
+/// matrix entry that names a number the kernel does not define is a
+/// documentation bug that would otherwise only show up as a failed call.
+pub const DEFINED: [(u64, SyscallGroup); 132] = [
+    (CREATE_MSG_PORT, SyscallGroup::Exec),
+    (DELETE_MSG_PORT, SyscallGroup::Exec),
+    (PUT_MSG, SyscallGroup::Exec),
+    (GET_MSG, SyscallGroup::Exec),
+    (REPLY_MSG, SyscallGroup::Exec),
+    (WAIT_PORT, SyscallGroup::Exec),
+    (WAIT, SyscallGroup::Exec),
+    (SET_SIGNAL, SyscallGroup::Exec),
+    (SET_EXCEPT, SyscallGroup::Exec),
+    (SIGNAL, SyscallGroup::Exec),
+    (OPEN_LIBRARY, SyscallGroup::Exec),
+    (CLOSE_LIBRARY, SyscallGroup::Exec),
+    (FORBID, SyscallGroup::Exec),
+    (PERMIT, SyscallGroup::Exec),
+    (YIELD, SyscallGroup::Exec),
+    (GET_TASK_ID, SyscallGroup::Exec),
+    (PUTCHAR, SyscallGroup::Exec),
+    (POWER_OFF, SyscallGroup::Exec),
+    (MAP_PAGE, SyscallGroup::Exec),
+    (BRK, SyscallGroup::Exec),
+    (ADD_PORT, SyscallGroup::Exec),
+    (GETCHAR, SyscallGroup::Exec),
+    (CLEAR_SCREEN, SyscallGroup::Exec),
+    (GET_HOSTNAME, SyscallGroup::Exec),
+    (GET_BOOT_CHOICE, SyscallGroup::Exec),
+    (FIND_TASK, SyscallGroup::Exec),
+    (SET_TASK_NAME, SyscallGroup::Exec),
+    (CREATE_SEMAPHORE, SyscallGroup::Exec),
+    (OBTAIN_SEMAPHORE, SyscallGroup::Exec),
+    (CONFIRM_GRANT, SyscallGroup::Exec),
+    (ATTEMPT_SEMAPHORE, SyscallGroup::Exec),
+    (RELEASE_SEMAPHORE, SyscallGroup::Exec),
+    (DELETE_SEMAPHORE, SyscallGroup::Exec),
+    (ALERT, SyscallGroup::Exec),
+    (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
+    (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
+    (GRAPHICS_SET_PEN, SyscallGroup::Graphics),
+    (GRAPHICS_RECT, SyscallGroup::Graphics),
+    (GRAPHICS_FILL_RECT, SyscallGroup::Graphics),
+    (GRAPHICS_TEXT, SyscallGroup::Graphics),
+    (GRAPHICS_LINE, SyscallGroup::Graphics),
+    (GRAPHICS_SET_CLIP, SyscallGroup::Graphics),
+    (GRAPHICS_PEN_COLOR, SyscallGroup::Graphics),
+    (GRAPHICS_WRITE_PIXEL, SyscallGroup::Graphics),
+    (GRAPHICS_MOVE, SyscallGroup::Graphics),
+    (GRAPHICS_SET_PALETTE, SyscallGroup::Graphics),
+    (GRAPHICS_RASTER_INFO, SyscallGroup::Graphics),
+    (LAYERS_CREATE, SyscallGroup::Layers),
+    (LAYERS_DESTROY, SyscallGroup::Layers),
+    (LAYERS_SET_CLIP, SyscallGroup::Layers),
+    (LAYERS_FRONT, SyscallGroup::Layers),
+    (LAYERS_BACK, SyscallGroup::Layers),
+    (LAYERS_SET_VISIBLE, SyscallGroup::Layers),
+    (LAYERS_MOVE, SyscallGroup::Layers),
+    (LAYERS_COMPOSITE, SyscallGroup::Layers),
+    (LAYERS_ORDER, SyscallGroup::Layers),
+    (LAYERS_TOPMOST, SyscallGroup::Layers),
+    (INTUITION_OPEN_SCREEN, SyscallGroup::Intuition),
+    (INTUITION_CLOSE_SCREEN, SyscallGroup::Intuition),
+    (INTUITION_OPEN_WINDOW, SyscallGroup::Intuition),
+    (INTUITION_CLOSE_WINDOW, SyscallGroup::Intuition),
+    (INTUITION_SET_TITLE, SyscallGroup::Intuition),
+    (INTUITION_REFRESH, SyscallGroup::Intuition),
+    (INTUITION_SET_ATTRS, SyscallGroup::Intuition),
+    (INTUITION_ADD_GADGET, SyscallGroup::Intuition),
+    (INTUITION_REMOVE_GADGET, SyscallGroup::Intuition),
+    (INTUITION_SET_BOUNDS, SyscallGroup::Intuition),
+    (INTUITION_FRONT, SyscallGroup::Intuition),
+    (INTUITION_BACK, SyscallGroup::Intuition),
+    (INTUITION_REPAINT, SyscallGroup::Intuition),
+    (DOS_OPEN, SyscallGroup::Dos),
+    (DOS_CLOSE, SyscallGroup::Dos),
+    (DOS_READ, SyscallGroup::Dos),
+    (DOS_WRITE, SyscallGroup::Dos),
+    (DOS_SEEK, SyscallGroup::Dos),
+    (DOS_READ_DIR, SyscallGroup::Dos),
+    (DOS_DELETE, SyscallGroup::Dos),
+    (DOS_MKDIR, SyscallGroup::Dos),
+    (DOS_EXAMINE, SyscallGroup::Dos),
+    (DOS_CURRENT_DIR, SyscallGroup::Dos),
+    (DOS_EXAMINE_DIR, SyscallGroup::Dos),
+    (DOS_SET_CURRENT_DIR, SyscallGroup::Dos),
+    (DOS_RENAME, SyscallGroup::Dos),
+    (DOS_ADD_ASSIGN, SyscallGroup::Dos),
+    (DOS_REMOVE_ASSIGN, SyscallGroup::Dos),
+    (DOS_LIST_ASSIGNS, SyscallGroup::Dos),
+    (UTILITY_FIND_TAG, SyscallGroup::Utility),
+    (UTILITY_STRNCPY, SyscallGroup::Utility),
+    (UTILITY_STRCMP, SyscallGroup::Utility),
+    (ICON_GET_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_GET_DISK_OBJECT_NEW, SyscallGroup::Icon),
+    (ICON_PUT_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_FREE_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_DUP_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_DELETE_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_GET_DEF_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_PUT_DEF_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_NEW_DISK_OBJECT, SyscallGroup::Icon),
+    (ICON_FIND_TOOL_TYPE, SyscallGroup::Icon),
+    (ICON_MATCH_TOOL_VALUE, SyscallGroup::Icon),
+    (ICON_GET_ICON_TAG_LIST, SyscallGroup::Icon),
+    (ICON_PUT_ICON_TAG_LIST, SyscallGroup::Icon),
+    (ICON_BUMP_REVISION, SyscallGroup::Icon),
+    (ICON_LAYOUT_ICON, SyscallGroup::Icon),
+    (ICON_GET_ICON_RECTANGLE, SyscallGroup::Icon),
+    (ICON_ICON_CONTROL, SyscallGroup::Icon),
+    (ICON_DRAW_ICON_STATE, SyscallGroup::Icon),
+    (ICON_ADD_FREE_LIST, SyscallGroup::Icon),
+    (ICON_FREE_FREE_LIST, SyscallGroup::Icon),
+    (ICON_CHANGE_TO_SELECTED_ICON_COLOR, SyscallGroup::Icon),
+    (WORKBENCH_ADD_APP_ICON, SyscallGroup::Workbench),
+    (WORKBENCH_ADD_APP_MENU_ITEM, SyscallGroup::Workbench),
+    (WORKBENCH_ADD_APP_WINDOW, SyscallGroup::Workbench),
+    (WORKBENCH_ADD_APP_WINDOW_DROP_ZONE, SyscallGroup::Workbench),
+    (WORKBENCH_CLOSE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+    (WORKBENCH_GET_NEXT_APP_ICON, SyscallGroup::Workbench),
+    (
+        WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE,
+        SyscallGroup::Workbench,
+    ),
+    (WORKBENCH_NOTIFY_WORKBENCH, SyscallGroup::Workbench),
+    (WORKBENCH_OPEN_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+    (WORKBENCH_QUOTE_WORKBENCH, SyscallGroup::Workbench),
+    (WORKBENCH_REGISTER_WORKBENCH, SyscallGroup::Workbench),
+    (WORKBENCH_REMOVE_APP_ICON, SyscallGroup::Workbench),
+    (WORKBENCH_REMOVE_APP_MENU_ITEM, SyscallGroup::Workbench),
+    (WORKBENCH_REMOVE_APP_WINDOW, SyscallGroup::Workbench),
+    (
+        WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE,
+        SyscallGroup::Workbench,
+    ),
+    (WORKBENCH_SEND_APP_WINDOW_MESSAGE, SyscallGroup::Workbench),
+    (WORKBENCH_START_WORKBENCH, SyscallGroup::Workbench),
+    (WORKBENCH_UNREGISTER_WORKBENCH, SyscallGroup::Workbench),
+    (WORKBENCH_UPDATE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
+    (WORKBENCH_WB_CONFIG, SyscallGroup::Workbench),
+    (WORKBENCH_WB_INFO, SyscallGroup::Workbench),
+    (WORKBENCH_WORKBENCH_CONTROL, SyscallGroup::Workbench),
+];
+
 /// The syscall groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallGroup {
@@ -677,142 +890,9 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
-    /// Every syscall number the kernel defines, with its group.
-    const ALL: [(u64, SyscallGroup); 123] = [
-        (CREATE_MSG_PORT, SyscallGroup::Exec),
-        (DELETE_MSG_PORT, SyscallGroup::Exec),
-        (PUT_MSG, SyscallGroup::Exec),
-        (GET_MSG, SyscallGroup::Exec),
-        (REPLY_MSG, SyscallGroup::Exec),
-        (WAIT_PORT, SyscallGroup::Exec),
-        (WAIT, SyscallGroup::Exec),
-        (SET_SIGNAL, SyscallGroup::Exec),
-        (SET_EXCEPT, SyscallGroup::Exec),
-        (SIGNAL, SyscallGroup::Exec),
-        (OPEN_LIBRARY, SyscallGroup::Exec),
-        (CLOSE_LIBRARY, SyscallGroup::Exec),
-        (FORBID, SyscallGroup::Exec),
-        (PERMIT, SyscallGroup::Exec),
-        (YIELD, SyscallGroup::Exec),
-        (GET_TASK_ID, SyscallGroup::Exec),
-        (PUTCHAR, SyscallGroup::Exec),
-        (POWER_OFF, SyscallGroup::Exec),
-        (MAP_PAGE, SyscallGroup::Exec),
-        (BRK, SyscallGroup::Exec),
-        (ADD_PORT, SyscallGroup::Exec),
-        (GETCHAR, SyscallGroup::Exec),
-        (CLEAR_SCREEN, SyscallGroup::Exec),
-        (GET_HOSTNAME, SyscallGroup::Exec),
-        (GET_BOOT_CHOICE, SyscallGroup::Exec),
-        (GRAPHICS_ALLOC_PEN, SyscallGroup::Graphics),
-        (GRAPHICS_FREE_PEN, SyscallGroup::Graphics),
-        (GRAPHICS_SET_PEN, SyscallGroup::Graphics),
-        (GRAPHICS_RECT, SyscallGroup::Graphics),
-        (GRAPHICS_FILL_RECT, SyscallGroup::Graphics),
-        (GRAPHICS_TEXT, SyscallGroup::Graphics),
-        (GRAPHICS_LINE, SyscallGroup::Graphics),
-        (GRAPHICS_SET_CLIP, SyscallGroup::Graphics),
-        (GRAPHICS_PEN_COLOR, SyscallGroup::Graphics),
-        (GRAPHICS_WRITE_PIXEL, SyscallGroup::Graphics),
-        (GRAPHICS_MOVE, SyscallGroup::Graphics),
-        (GRAPHICS_SET_PALETTE, SyscallGroup::Graphics),
-        (GRAPHICS_RASTER_INFO, SyscallGroup::Graphics),
-        (LAYERS_CREATE, SyscallGroup::Layers),
-        (LAYERS_DESTROY, SyscallGroup::Layers),
-        (LAYERS_SET_CLIP, SyscallGroup::Layers),
-        (LAYERS_FRONT, SyscallGroup::Layers),
-        (LAYERS_BACK, SyscallGroup::Layers),
-        (LAYERS_SET_VISIBLE, SyscallGroup::Layers),
-        (LAYERS_MOVE, SyscallGroup::Layers),
-        (LAYERS_COMPOSITE, SyscallGroup::Layers),
-        (LAYERS_ORDER, SyscallGroup::Layers),
-        (LAYERS_TOPMOST, SyscallGroup::Layers),
-        (INTUITION_OPEN_SCREEN, SyscallGroup::Intuition),
-        (INTUITION_CLOSE_SCREEN, SyscallGroup::Intuition),
-        (INTUITION_OPEN_WINDOW, SyscallGroup::Intuition),
-        (INTUITION_CLOSE_WINDOW, SyscallGroup::Intuition),
-        (INTUITION_SET_TITLE, SyscallGroup::Intuition),
-        (INTUITION_REFRESH, SyscallGroup::Intuition),
-        (INTUITION_SET_ATTRS, SyscallGroup::Intuition),
-        (INTUITION_ADD_GADGET, SyscallGroup::Intuition),
-        (INTUITION_REMOVE_GADGET, SyscallGroup::Intuition),
-        (INTUITION_SET_BOUNDS, SyscallGroup::Intuition),
-        (INTUITION_FRONT, SyscallGroup::Intuition),
-        (INTUITION_BACK, SyscallGroup::Intuition),
-        (INTUITION_REPAINT, SyscallGroup::Intuition),
-        (DOS_OPEN, SyscallGroup::Dos),
-        (DOS_CLOSE, SyscallGroup::Dos),
-        (DOS_READ, SyscallGroup::Dos),
-        (DOS_WRITE, SyscallGroup::Dos),
-        (DOS_SEEK, SyscallGroup::Dos),
-        (DOS_READ_DIR, SyscallGroup::Dos),
-        (DOS_DELETE, SyscallGroup::Dos),
-        (DOS_MKDIR, SyscallGroup::Dos),
-        (DOS_EXAMINE, SyscallGroup::Dos),
-        (DOS_CURRENT_DIR, SyscallGroup::Dos),
-        (DOS_EXAMINE_DIR, SyscallGroup::Dos),
-        (DOS_SET_CURRENT_DIR, SyscallGroup::Dos),
-        (DOS_RENAME, SyscallGroup::Dos),
-        (DOS_ADD_ASSIGN, SyscallGroup::Dos),
-        (DOS_REMOVE_ASSIGN, SyscallGroup::Dos),
-        (DOS_LIST_ASSIGNS, SyscallGroup::Dos),
-        (UTILITY_FIND_TAG, SyscallGroup::Utility),
-        (UTILITY_STRNCPY, SyscallGroup::Utility),
-        (UTILITY_STRCMP, SyscallGroup::Utility),
-        (ICON_GET_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_GET_DISK_OBJECT_NEW, SyscallGroup::Icon),
-        (ICON_PUT_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_FREE_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_DUP_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_DELETE_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_GET_DEF_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_PUT_DEF_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_NEW_DISK_OBJECT, SyscallGroup::Icon),
-        (ICON_FIND_TOOL_TYPE, SyscallGroup::Icon),
-        (ICON_MATCH_TOOL_VALUE, SyscallGroup::Icon),
-        (ICON_GET_ICON_TAG_LIST, SyscallGroup::Icon),
-        (ICON_PUT_ICON_TAG_LIST, SyscallGroup::Icon),
-        (ICON_BUMP_REVISION, SyscallGroup::Icon),
-        (ICON_LAYOUT_ICON, SyscallGroup::Icon),
-        (ICON_GET_ICON_RECTANGLE, SyscallGroup::Icon),
-        (ICON_ICON_CONTROL, SyscallGroup::Icon),
-        (ICON_DRAW_ICON_STATE, SyscallGroup::Icon),
-        (ICON_ADD_FREE_LIST, SyscallGroup::Icon),
-        (ICON_FREE_FREE_LIST, SyscallGroup::Icon),
-        (ICON_CHANGE_TO_SELECTED_ICON_COLOR, SyscallGroup::Icon),
-        (WORKBENCH_ADD_APP_ICON, SyscallGroup::Workbench),
-        (WORKBENCH_ADD_APP_MENU_ITEM, SyscallGroup::Workbench),
-        (WORKBENCH_ADD_APP_WINDOW, SyscallGroup::Workbench),
-        (WORKBENCH_ADD_APP_WINDOW_DROP_ZONE, SyscallGroup::Workbench),
-        (WORKBENCH_CLOSE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
-        (WORKBENCH_GET_NEXT_APP_ICON, SyscallGroup::Workbench),
-        (
-            WORKBENCH_MAKE_WORKBENCH_OBJECT_VISIBLE,
-            SyscallGroup::Workbench,
-        ),
-        (WORKBENCH_NOTIFY_WORKBENCH, SyscallGroup::Workbench),
-        (WORKBENCH_OPEN_WORKBENCH_OBJECT, SyscallGroup::Workbench),
-        (WORKBENCH_QUOTE_WORKBENCH, SyscallGroup::Workbench),
-        (WORKBENCH_REGISTER_WORKBENCH, SyscallGroup::Workbench),
-        (WORKBENCH_REMOVE_APP_ICON, SyscallGroup::Workbench),
-        (WORKBENCH_REMOVE_APP_MENU_ITEM, SyscallGroup::Workbench),
-        (WORKBENCH_REMOVE_APP_WINDOW, SyscallGroup::Workbench),
-        (
-            WORKBENCH_REMOVE_APP_WINDOW_DROP_ZONE,
-            SyscallGroup::Workbench,
-        ),
-        (WORKBENCH_SEND_APP_WINDOW_MESSAGE, SyscallGroup::Workbench),
-        (WORKBENCH_START_WORKBENCH, SyscallGroup::Workbench),
-        (WORKBENCH_UNREGISTER_WORKBENCH, SyscallGroup::Workbench),
-        (WORKBENCH_UPDATE_WORKBENCH_OBJECT, SyscallGroup::Workbench),
-        (WORKBENCH_WB_CONFIG, SyscallGroup::Workbench),
-        (WORKBENCH_WB_INFO, SyscallGroup::Workbench),
-        (WORKBENCH_WORKBENCH_CONTROL, SyscallGroup::Workbench),
-    ];
-
     #[test]
     fn every_syscall_belongs_to_the_group_it_is_listed_in() {
-        for (number, group) in ALL {
+        for (number, group) in DEFINED {
             assert_eq!(
                 SyscallGroup::of(number),
                 Some(group),
@@ -824,14 +904,14 @@ mod tests {
     #[test]
     fn the_syscall_numbers_are_distinct() {
         let mut seen = BTreeSet::new();
-        for (number, _) in ALL {
+        for (number, _) in DEFINED {
             assert!(seen.insert(number), "syscall {number} is defined twice");
         }
     }
 
     #[test]
     fn every_syscall_falls_inside_its_groups_range() {
-        for (number, group) in ALL {
+        for (number, group) in DEFINED {
             assert!(
                 number >= group.first() && number < group.first() + group.size(),
                 "syscall {number} is outside the {:?} range",

@@ -26,6 +26,8 @@
 //! convention would make the SDK *less* recognisable to the code it exists to
 //! serve, which is the opposite of what a compatibility layer is for.
 
+pub use vela_abi_native64::alerts;
+pub use vela_abi_native64::signals;
 /// The list node.
 ///
 /// The kernel's definition, re-exported. `ln_Name` is the AmigaOS-conformant
@@ -723,11 +725,18 @@ pub mod workbench_control {
 }
 
 /// The signal bits Exec uses.
+///
+/// The bits follow the AmigaOS/AROS table in
+/// `vela_abi_native64::signals`: bit 0 is the "a message is waiting" bit,
+/// bits 1–15 are the reply slots, and bit 16 is `SIGF_SINGLE` — the bit a
+/// semaphore grant raises.
 pub mod sigs {
     /// A message arrived on one of the task's ports.
-    pub const MESSAGE: u32 = 1 << 4;
+    pub const MESSAGE: u32 = 1 << 0;
     /// A task is ready to run.
     pub const SINGLE: u32 = 1 << 16;
+    /// The mask a semaphore grant raises, and the one a waiter waits for.
+    pub const GRANT: u32 = SINGLE;
 }
 
 /// The signal mask a program uses for a message port.

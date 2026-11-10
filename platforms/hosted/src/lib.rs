@@ -434,6 +434,16 @@ impl Kernel {
     /// signal was already pending — the check-then-wait distinction the
     /// Exec service makes.
     pub fn block_current(&self, mask: u32) -> bool {
+        self.block_current_on(mask, vela_kernel_exec::task::BlockedOn::Signal(mask))
+    }
+
+    /// Block the current task on a signal mask, recording *why* it waits.
+    ///
+    /// The reason matters for the semaphore protocol: a waiter blocked on a
+    /// grant publishes `BlockedOn::Semaphore`, and that is what lets the
+    /// kernel tell "the grant woke me" from "something else woke me" when
+    /// the task resumes.
+    pub fn block_current_on(&self, mask: u32, on: vela_kernel_exec::task::BlockedOn) -> bool {
         let Some(slot) = self.scheduler.current() else {
             return false;
         };
@@ -443,13 +453,12 @@ impl Kernel {
         let Some(signals) = self.exec.task_signals(task) else {
             return false;
         };
-        if !signals.begin_wait(mask, vela_kernel_exec::task::BlockedOn::Signal(mask)) {
+        if !signals.begin_wait(mask, on) {
             // The signal was already there: the wait does not block.
             signals.end_wait();
             return false;
         }
-        self.scheduler
-            .block_current(vela_kernel_exec::task::BlockedOn::Signal(mask));
+        self.scheduler.block_current(on);
         true
     }
 

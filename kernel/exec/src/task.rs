@@ -38,7 +38,12 @@ pub const SIGB_MESSAGE: u32 = 1 << 0;
 /// Reply slot `n` uses bit `n + 1`, so the first reply is bit 1. Fifteen
 /// replies can therefore be outstanding at once, which is the AmigaOS limit:
 /// the classic `REPLY_MASK` is `0xFFFE`.
-pub const REPLY_MASK: u32 = 0xFFFF_FFFE;
+///
+/// The mask stops at bit 15 on purpose. Everything above it belongs to the
+/// classic signal space, where `SIGF_SINGLE` sits — and a grant that
+/// landed on a reply slot would wake a task waiting for a reply with a
+/// semaphore in its hand.
+pub const REPLY_MASK: u32 = 0x0000_FFFE;
 
 /// Every signal bit a task may use.
 pub const SIGNAL_MASK_ALL: u32 = 0xFFFF_FFFF;
@@ -76,6 +81,8 @@ pub enum BlockedOn {
     Port(u32),
     /// Waiting for a reply to a message sent to this port.
     ReplyPort(u32),
+    /// Waiting for a semaphore grant. The value is the semaphore id.
+    Semaphore(u32),
 }
 
 /// A task's signal set and wait bookkeeping.
@@ -220,24 +227,29 @@ impl TaskSignals {
 }
 
 /// Pack a [`BlockedOn`] into the one word the task stores atomically.
+///
+/// The kind is the low three bits and the value the upper twenty-nine, so
+/// five kinds fit with room for two more. A port id and a semaphore id are
+/// both small; a signal mask is truncated to twenty-nine bits, which is the
+/// same truncation the one-word encoding has always had.
 const fn encode_blocked(on: BlockedOn) -> u32 {
     match on {
         BlockedOn::Nothing => 0,
-        // Kind in the low two bits, value in the upper 30. A port id and a
-        // signal mask both fit comfortably.
-        BlockedOn::Signal(mask) => 1 | ((mask & 0x3FFF_FFFF) << 2),
-        BlockedOn::Port(id) => 2 | ((id & 0x3FFF_FFFF) << 2),
-        BlockedOn::ReplyPort(id) => 3 | ((id & 0x3FFF_FFFF) << 2),
+        BlockedOn::Signal(mask) => 1 | ((mask & 0x1FFF_FFFF) << 3),
+        BlockedOn::Port(id) => 2 | ((id & 0x1FFF_FFFF) << 3),
+        BlockedOn::ReplyPort(id) => 3 | ((id & 0x1FFF_FFFF) << 3),
+        BlockedOn::Semaphore(id) => 4 | ((id & 0x1FFF_FFFF) << 3),
     }
 }
 
 /// Unpack a [`BlockedOn`].
 const fn decode_blocked(raw: u32) -> BlockedOn {
-    match raw & 0b11 {
+    match raw & 0b111 {
         0 => BlockedOn::Nothing,
-        1 => BlockedOn::Signal((raw >> 2) & 0x3FFF_FFFF),
-        2 => BlockedOn::Port((raw >> 2) & 0x3FFF_FFFF),
-        _ => BlockedOn::ReplyPort((raw >> 2) & 0x3FFF_FFFF),
+        1 => BlockedOn::Signal((raw >> 3) & 0x1FFF_FFFF),
+        2 => BlockedOn::Port((raw >> 3) & 0x1FFF_FFFF),
+        3 => BlockedOn::ReplyPort((raw >> 3) & 0x1FFF_FFFF),
+        _ => BlockedOn::Semaphore((raw >> 3) & 0x1FFF_FFFF),
     }
 }
 
@@ -389,6 +401,10 @@ mod tests {
             decode_blocked(encode_blocked(BlockedOn::ReplyPort(0xABC))),
             BlockedOn::ReplyPort(0xABC)
         );
+        assert_eq!(
+            decode_blocked(encode_blocked(BlockedOn::Semaphore(7))),
+            BlockedOn::Semaphore(7)
+        );
     }
 
     #[test]
@@ -404,13 +420,16 @@ mod tests {
 
     #[test]
     fn the_signal_and_reply_bits_do_not_overlap() {
-        // Bit 0 is the message bit and bits 1..31 are reply bits, so a reply
+        // Bit 0 is the message bit and bits 1..15 are reply bits, so a reply
         // can never be mistaken for a request.
         assert_eq!(SIGB_MESSAGE & REPLY_MASK, 0);
         assert_eq!(SIGB_MESSAGE, 1);
-        assert_eq!(REPLY_MASK, 0xFFFF_FFFE);
+        assert_eq!(REPLY_MASK, 0x0000_FFFE);
         // Fifteen reply slots are available.
-        assert_eq!(REPLY_MASK.count_ones(), 31);
+        assert_eq!(REPLY_MASK.count_ones(), 15);
+        // And the grant signal lives above the reply space, so a semaphore
+        // grant can never be mistaken for a reply.
+        assert_eq!(REPLY_MASK & vela_abi_native64::signals::SIGF_SINGLE, 0);
     }
 
     #[test]
