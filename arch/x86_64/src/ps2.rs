@@ -51,3 +51,20 @@ pub unsafe fn write_command(byte: u8) {
     // SAFETY: writing the PS/2 command port is defined for any byte.
     unsafe { regs::outb(COMMAND_PORT, byte) }
 }
+
+/// Write a byte to the controller's data port.
+///
+/// A write here goes to the *device*, not to the controller: through the
+/// first port it is a keyboard command, and after a `0xD4` command it is a
+/// mouse command. Only write when the status port's input-full bit is clear,
+/// or the controller has not taken the previous byte yet.
+///
+/// # Safety
+///
+/// Writing the data port sends a command to a device; callers must know
+/// what they are doing.
+#[inline]
+pub unsafe fn write_data(byte: u8) {
+    // SAFETY: writing the PS/2 data port is defined for any byte.
+    unsafe { regs::outb(DATA_PORT, byte) }
+}

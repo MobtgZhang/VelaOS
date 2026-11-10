@@ -27,6 +27,27 @@ use vela_kernel_input::{status, Keyboard};
 /// The status port's auxiliary bit: the waiting byte is a mouse packet.
 const MOUSE_DATA: u8 = 1 << 5;
 
+/// The controller's two ports, shared between the console's keyboard poll
+/// and the timer tick's mouse drain.
+///
+/// One lock rather than two readers, because the pair is a *protocol*, not
+/// two independent registers: a status read is only meaningful while the
+/// byte it describes is still waiting, and two readers racing would see one
+/// reader take a byte the other had already decided was its own. The console
+/// holds the lock for the length of its poll (it runs as a task and may
+/// wait); the tick takes it with `try_lock`, so a tick that lands mid-poll
+/// simply skips and lets the next one drain.
+static CONTROLLER: Mutex<()> = Mutex::new(());
+
+/// The mouse decoder's state: half a packet, the pointer's position, the
+/// buttons down.
+///
+/// The tick is the only writer — the console discards mouse bytes rather
+/// than decoding them, because decoding them is the tick's job — and two
+/// CPUs' ticks are the only contention, so a `try_lock` and a skip is the
+/// whole story there too.
+static MOUSE: Mutex<vela_kernel_input::Mouse> = Mutex::new(vela_kernel_input::Mouse::new());
+
 /// The keyboard decoder's modifier state, shared because the syscall layer
 /// is the only caller but a handler may run on any CPU.
 static KEYBOARD: Mutex<Keyboard> = Mutex::new(Keyboard::new());
@@ -41,27 +62,34 @@ static SEEN_CONTROLLER: AtomicBool = AtomicBool::new(false);
 /// into text — a printable character, Enter (`\r`) or Backspace (`0x08`).
 /// Returns `None` when nothing is waiting, which includes scancodes that
 /// decode to nothing (modifiers, releases, unknown keys) and bytes the
-/// controller has for the *mouse*, which are consumed and discarded because
-/// the mouse has its own driver and the console does not want them.
+/// controller has for the *mouse*, which are left for the timer tick's
+/// drain because the mouse has its own consumer and a byte the keyboard
+/// decoder would misread as a scancode would make the console type garbage
+/// when the pointer moved.
 pub fn read_char() -> Option<u8> {
     let mut produced = None;
     let mut keyboard = KEYBOARD.lock();
+    // The controller is shared with the timer tick's mouse drain, which
+    // never waits for this poll — but this poll may wait for the tick. A
+    // task holding the lock is the ordinary case; a tick holding it is
+    // bounded by the tick's own drain.
+    let _controller = CONTROLLER.lock();
     // Drain everything waiting, because one keypress can arrive as several
     // bytes (a modifier plus the key, or a two-byte escape sequence), and
     // leaving the tail queued would make the *next* key late by one.
     while output_full() {
         // Mouse packets also arrive on the data port. The controller marks
-        // them with the auxiliary bit in the status byte, so they are
-        // consumed and discarded here: the mouse has its own driver, and a
-        // byte the keyboard decoder would misread as a scancode would make
-        // the console type garbage when the pointer moved.
+        // them with the auxiliary bit in the status byte, and the timer
+        // tick's drain is the consumer that decodes them — so this poll
+        // leaves the packet alone and stops, rather than reading a byte
+        // that belongs to someone else.
         // SAFETY: the status port said a byte is waiting on the data port,
         // which is the only condition under which reading it is defined.
         let status_byte = unsafe { ps2::read_status() };
         let scancode = unsafe { ps2::read_data() };
         SEEN_CONTROLLER.store(true, Ordering::Release);
         if status_byte & MOUSE_DATA != 0 {
-            continue;
+            break;
         }
         if let Some(event) = keyboard.feed(scancode) {
             if event.released {
@@ -99,9 +127,130 @@ fn ascii_of(event: vela_kernel_input::KeyEvent) -> u8 {
     byte
 }
 
+/// Wait until the controller accepts a byte, bounded.
+///
+/// The input-full bit means the controller has not taken the previous write
+/// yet. A controller that never clears it would spin forever, so the wait is
+/// bounded: a few thousand status reads is far more than a real controller
+/// needs and far less than forever.
+fn can_write() -> bool {
+    for _ in 0..10_000 {
+        // SAFETY: the status port is always readable.
+        let status_byte = unsafe { ps2::read_status() };
+        if status_byte & status::INPUT_FULL == 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Wait until the controller has an answer for the host, bounded.
+fn answer_ready() -> bool {
+    for _ in 0..10_000 {
+        if output_full() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Enable the mouse, at the controller and at the device.
+///
+/// The i8042 gates its mouse packets on the *device's* "reporting enabled"
+/// flag, which only a `0xF4` command addressed to the auxiliary port can
+/// set — and the firmware never sends it (OVMF does not touch the PS/2
+/// mouse at all), so without this sequence the controller delivers nothing
+/// and the pointer never moves however much the user waves the mouse.
+///
+/// The command byte is read first and *modified* rather than written
+/// blind: the firmware chose the keyboard's translation bit, and a blind
+/// write that cleared it would change the scancode set the keyboard
+/// decoder was calibrated against.
+///
+/// Called once at boot, before any user program runs. Idempotent: a second
+/// `0xF4` to an already-reporting mouse is a no-op.
+pub fn enable_mouse() {
+    let _controller = CONTROLLER.lock();
+    // Drain anything stale so the transaction below reads its own answers
+    // and not a byte the firmware left behind.
+    while output_full() {
+        // SAFETY: the status port said a byte is waiting.
+        let _ = unsafe { ps2::read_data() };
+    }
+    // Read the command byte: `0x20` is "read", and the answer arrives on
+    // the data port.
+    // SAFETY: `0x20` is the controller's read-command-byte opcode.
+    unsafe { ps2::write_command(0x20) };
+    if !answer_ready() {
+        return; // A controller that never answers is left as the firmware set it.
+    }
+    // SAFETY: the wait above guarantees a byte is waiting.
+    let command_byte = unsafe { ps2::read_data() };
+    // Write it back with both ports' interrupt bits on. The kernel polls
+    // rather than interrupting, so these bits are not what makes packets
+    // arrive — the device's own reporting flag is — but a controller that
+    // would deliver the second port's interrupts with them off is not a
+    // controller this kernel wants to be surprised by later.
+    // SAFETY: `0x60` is "write the command byte".
+    unsafe { ps2::write_command(0x60) };
+    if !can_write() {
+        return;
+    }
+    // SAFETY: the wait above means the controller took the previous byte.
+    unsafe { ps2::write_data(command_byte | 0x03) };
+    // `0xF4` to the auxiliary port: "enable data reporting".
+    // SAFETY: `0xD4` directs the next data write to the second port.
+    unsafe { ps2::write_command(0xD4) };
+    if !can_write() {
+        return;
+    }
+    // SAFETY: as above.
+    unsafe { ps2::write_data(0xF4) };
+    SEEN_CONTROLLER.store(true, Ordering::Release);
+}
+
 /// True when the controller has a byte for the host.
 fn output_full() -> bool {
     // SAFETY: the status port is always readable.
     let status_byte = unsafe { ps2::read_status() };
     status_byte & status::OUTPUT_FULL != 0
+}
+
+/// Drain the controller's mouse packets into the decoder.
+///
+/// Called from the timer tick, 250 times a second: a packet the hardware
+/// delivers now is decoded now, and the pointer is never further behind the
+/// mouse than one 4 ms tick. Returns the event the drain's *last* completed
+/// packet produced, if any — the packets carry absolute positions, so an
+/// earlier one is already out of date by the time a later one exists.
+///
+/// # Why every lock here is a `try_lock`
+///
+/// The caller runs in interrupt context. The console's keyboard poll may
+/// hold the `CONTROLLER` lock mid-drain, and another CPU's tick may hold
+/// the `MOUSE` lock; waiting for either from an interrupt would deadlock
+/// the task the machine is running. Busy locks mean "skip": the packets
+/// stay in the controller's buffer, the decoder keeps its half-finished
+/// packet, and the next tick picks the whole thing up.
+pub fn pump_mouse() -> Option<vela_kernel_input::MouseEvent> {
+    let mut mouse = MOUSE.try_lock()?;
+    let _controller = CONTROLLER.try_lock()?;
+    let mut last = None;
+    // The drain stops at a keyboard byte: that byte belongs to the console's
+    // poll, and reading it here would eat a keystroke. The aux bit tells the
+    // two apart before either reader touches the data port.
+    while output_full() {
+        // SAFETY: the status port said a byte is waiting.
+        let status_byte = unsafe { ps2::read_status() };
+        if status_byte & MOUSE_DATA == 0 {
+            break;
+        }
+        // SAFETY: as above — a byte is waiting, and it is ours.
+        let byte = unsafe { ps2::read_data() };
+        SEEN_CONTROLLER.store(true, Ordering::Release);
+        if let Some(event) = mouse.feed(byte) {
+            last = Some(event);
+        }
+    }
+    last
 }
