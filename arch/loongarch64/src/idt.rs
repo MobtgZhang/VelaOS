@@ -520,8 +520,10 @@ pub mod off {
 /// (`loongarch64-linux-gnu-as`): `b .+4` assembles to `0x5000_0400` and
 /// `b .-4` to `0x53ff_ffff`.
 ///
-/// The branch range is ±2²⁵ words = ±128 MiB; `install` asserts the vector
-/// page and the entry stub are within that of each other.
+/// The branch range is ±(2²⁵ − 1) words = ±(128 MiB − 4) bytes (verified
+/// against GNU as: a delta of exactly ±2²⁵ words overflows); `install`
+/// asserts the vector page and the entry stub are within that of each
+/// other.
 pub const fn branch_word(from: u64, to: u64) -> u32 {
     let offs = ((to as i64) - (from as i64)) >> 2;
     let offs = offs as u64;
@@ -585,7 +587,7 @@ pub unsafe fn install(base: u64) {
         for ec in 0..=25u8 {
             let delta = (entry as i64) - (slot as i64);
             assert!(
-                delta.abs() <= (1i64 << 25) * 4,
+                delta.abs() <= ((1i64 << 25) - 1) * 4,
                 "vector slot {ec} out of b's ±128 MiB reach"
             );
             core::ptr::write_volatile(slot as *mut u32, branch_word(slot, entry));
