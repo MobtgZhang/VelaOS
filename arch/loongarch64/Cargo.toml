@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "loongarch64 architecture placeholder (compile-check only)"
+description = "loongarch64 architecture support: TLB-driven paging, CSR-based traps and timers"
 
 [dependencies]
 vela-arch-common.workspace = true
+spin.workspace = true
