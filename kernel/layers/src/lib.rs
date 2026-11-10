@@ -44,7 +44,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 use vela_renderer2d::{Color, Rect};
 
@@ -637,61 +637,92 @@ impl LayerStack {
         if stride == 0 {
             return Err(errors::BAD_RECT);
         }
+        let mut layers = self.layers.lock();
+        self.copy_dirty(&mut layers, target, stride)
+    }
+
+    /// The same composite, but only when the stack is free.
+    ///
+    /// This is the variant a timer tick calls: the tick runs in interrupt
+    /// context, and a task may hold the stack's lock mid-draw. Waiting for it
+    /// from the interrupt would deadlock the very task the tick shares the
+    /// CPU with, so a busy stack is not an error but a *skip* — `Ok(None)`.
+    /// Nothing was copied and no dirty flag was cleared, so the layers stay
+    /// exactly as they were and the next tick presents them.
+    pub fn try_composite(&self, target: &mut [u32], stride: u32) -> Result<Option<Rect>, i32> {
+        if stride == 0 {
+            return Err(errors::BAD_RECT);
+        }
+        let Some(mut layers) = self.layers.try_lock() else {
+            return Ok(None);
+        };
+        self.copy_dirty(&mut layers, target, stride).map(Some)
+    }
+
+    /// The copy loop both composites share.
+    ///
+    /// The guard is borrowed rather than taken because the two callers
+    /// acquire it differently — one blocking, one not — and the lock has to
+    /// be held for the whole walk, since the walk is what clears the dirty
+    /// flags it reads.
+    fn copy_dirty(
+        &self,
+        layers: &mut MutexGuard<'_, Vec<Layer>>,
+        target: &mut [u32],
+        stride: u32,
+    ) -> Result<Rect, i32> {
         let screen = self.screen;
         let mut touched: Option<Rect> = None;
-        {
-            let mut layers = self.layers.lock();
-            for layer in layers.iter_mut() {
-                if !layer.dirty || !layer.visible || layer.buffer.is_none() {
-                    // The screen layer has no back buffer: its pixels *are*
-                    // the target, so it contributes nothing to the copy.
-                    layer.dirty = false;
-                    continue;
-                }
-                let screen_rect = layer.screen_rect();
-                let Some(draw) = screen_rect.intersect(&screen) else {
-                    layer.dirty = false;
-                    continue;
-                };
-                let Some(buffer) = layer.buffer.as_ref() else {
-                    unreachable!("checked above");
-                };
-                for row in 0..draw.height as i32 {
-                    let y = draw.y + row;
-                    if y < 0 || y >= screen.height as i32 {
-                        continue;
-                    }
-                    // The buffer row that lands on `y`. It differs from the
-                    // screen row whenever the layer hangs off an edge, and it
-                    // also carries the clip's own y offset — which is why this
-                    // is a subtraction of both rather than of the position
-                    // alone.
-                    let ly = y - layer.position.1 - layer.clip.y;
-                    if ly < 0 || ly as usize >= layer.bounds.height as usize {
-                        continue;
-                    }
-                    for col in 0..draw.width as i32 {
-                        let x = draw.x + col;
-                        if x < 0 || x >= screen.width as i32 {
-                            continue;
-                        }
-                        let lx = x - layer.position.0 - layer.clip.x;
-                        if lx < 0 || lx as usize >= layer.bounds.width as usize {
-                            continue;
-                        }
-                        let src = (ly as usize) * (layer.stride as usize) + lx as usize;
-                        let dst = (y as usize) * (stride as usize) + x as usize;
-                        if src >= buffer.len() || dst >= target.len() {
-                            continue;
-                        }
-                        target[dst] = buffer[src];
-                    }
-                }
-                // The union of everything painted so far, not the
-                // intersection: the caller has to repaint the whole area.
-                touched = Some(union(touched, draw));
+        for layer in layers.iter_mut() {
+            if !layer.dirty || !layer.visible || layer.buffer.is_none() {
+                // The screen layer has no back buffer: its pixels *are*
+                // the target, so it contributes nothing to the copy.
                 layer.dirty = false;
+                continue;
             }
+            let screen_rect = layer.screen_rect();
+            let Some(draw) = screen_rect.intersect(&screen) else {
+                layer.dirty = false;
+                continue;
+            };
+            let Some(buffer) = layer.buffer.as_ref() else {
+                unreachable!("checked above");
+            };
+            for row in 0..draw.height as i32 {
+                let y = draw.y + row;
+                if y < 0 || y >= screen.height as i32 {
+                    continue;
+                }
+                // The buffer row that lands on `y`. It differs from the
+                // screen row whenever the layer hangs off an edge, and it
+                // also carries the clip's own y offset — which is why this
+                // is a subtraction of both rather than of the position
+                // alone.
+                let ly = y - layer.position.1 - layer.clip.y;
+                if ly < 0 || ly as usize >= layer.bounds.height as usize {
+                    continue;
+                }
+                for col in 0..draw.width as i32 {
+                    let x = draw.x + col;
+                    if x < 0 || x >= screen.width as i32 {
+                        continue;
+                    }
+                    let lx = x - layer.position.0 - layer.clip.x;
+                    if lx < 0 || lx as usize >= layer.bounds.width as usize {
+                        continue;
+                    }
+                    let src = (ly as usize) * (layer.stride as usize) + lx as usize;
+                    let dst = (y as usize) * (stride as usize) + x as usize;
+                    if src >= buffer.len() || dst >= target.len() {
+                        continue;
+                    }
+                    target[dst] = buffer[src];
+                }
+            }
+            // The union of everything painted so far, not the
+            // intersection: the caller has to repaint the whole area.
+            touched = Some(union(touched, draw));
+            layer.dirty = false;
         }
         touched.ok_or(errors::NO_OBJECT)
     }
@@ -900,6 +931,25 @@ mod tests {
         s.composite(&mut fb, 100).unwrap();
         assert_eq!(fb[5 * 100 + 5], 0xFF, "inside the clip");
         assert_eq!(fb[15 * 100 + 15], 0, "clipped away");
+    }
+
+    #[test]
+    fn try_composite_presents_when_the_stack_is_free() {
+        // The uncontended case must behave exactly like `composite`: the
+        // dirty layer copied, the touched rectangle reported, the layer left
+        // clean. A tick that presented *less* than a blocking composite
+        // would drop the very updates it exists to show.
+        let s = stack();
+        let id = window(&s, 0, 0, 20, 20);
+        s.with_layer(id, |l| l.clear(0xAB)).unwrap();
+        let mut fb = alloc::vec![0u32; 100 * 80];
+        let touched = s.try_composite(&mut fb, 100).unwrap();
+        assert_eq!(touched, Some(Rect::new(0, 0, 20, 20)));
+        assert_eq!(fb[10 * 100 + 10], 0xAB);
+        // And a second call has nothing left to present: the dirty flag was
+        // cleared by the first, and "nothing dirty" is the same `NO_OBJECT`
+        // the blocking composite has always reported for a clean screen.
+        assert_eq!(s.try_composite(&mut fb, 100), Err(errors::NO_OBJECT));
     }
 
     #[test]
