@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "aarch64 architecture placeholder (compile-check only)"
+description = "aarch64 (ARMv8-A) HAL: stage-1 paging, GICv3, PL011, generic timer, exception vectors"
 
 [dependencies]
 vela-arch-common.workspace = true
+spin.workspace = true

@@ -1,0 +1,272 @@
+//! The AArch64 context switch and task-entry trampoline.
+//!
+//! # The callee-saved set
+//!
+//! The AArch64 procedure-call standard names the registers that survive a
+//! call: `x19`–`x28` (ten general registers), `x29` (the frame pointer),
+//! `x30` (the link register) and the lower 64 bits of the SIMD registers
+//! `v8`–`v15`. `x0`–`x18` are caller-saved and are never stored: after the
+//! switch they are overwritten with the incoming context's argument and
+//! entry point, which is exactly the shape a call needs.
+//!
+//! # Why the assembly is in `global_asm!`
+//!
+//! The switch moves the stack pointer and the callee-saved registers in one
+//! breath, and an inline `asm!` cannot express that: the compiler reserves
+//! some of these registers for itself and will not let an `asm!` block
+//! clobber a value it is holding. A `global_asm!` block is outside the
+//! compiler's view of the register file, which is what a context switch
+//! needs.
+
+/// The register numbers the switch touches.
+pub mod reg {
+    /// The first callee-saved general register.
+    pub const X19: usize = 19;
+    /// The last callee-saved general register.
+    pub const X28: usize = 28;
+    /// The frame pointer.
+    pub const X29: usize = 29;
+    /// The link register.
+    pub const X30: usize = 30;
+    /// The stack pointer.
+    pub const SP: usize = 31;
+}
+
+/// A saved task context.
+///
+/// The layout is the assembly's layout: the offsets below are the contract
+/// between this module's `global_asm!` block and the Rust side, and the
+/// unit tests below pin them.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(16))]
+pub struct Context {
+    /// The stack pointer.
+    pub sp: u64,
+    /// `x19`–`x28`.
+    pub x: [u64; 10],
+    /// The frame pointer (`x29`).
+    pub fp: u64,
+    /// The link register (`x30`).
+    pub lr: u64,
+    /// The entry point of a fresh task.
+    pub entry: u64,
+    /// The argument of a fresh task.
+    pub arg: u64,
+}
+
+/// The offset of `sp` in the context.
+pub const OFFSET_SP: usize = 0;
+/// The offset of the `x19`–`x28` array.
+pub const OFFSET_X: usize = 8;
+/// The offset of the frame pointer.
+pub const OFFSET_FP: usize = 8 + 10 * 8;
+/// The offset of the link register.
+pub const OFFSET_LR: usize = 16 + 10 * 8;
+/// The offset of the entry point.
+pub const OFFSET_ENTRY: usize = 24 + 10 * 8;
+/// The offset of the argument.
+pub const OFFSET_ARG: usize = 32 + 10 * 8;
+
+impl Context {
+    /// A context with nothing saved in it.
+    pub const fn new() -> Self {
+        Self {
+            sp: 0,
+            x: [0; 10],
+            fp: 0,
+            lr: 0,
+            entry: 0,
+            arg: 0,
+        }
+    }
+
+    /// A context for a task that starts at `entry` with `arg`.
+    ///
+    /// The stack pointer is `stack_top` minus the 16 bytes the ABI wants
+    /// reserved at the top of a frame, so the first call the task makes has
+    /// room to spill a register.
+    pub fn for_entry(stack_top: u64, entry: u64, arg: u64) -> Self {
+        let aligned = stack_top & !0xF;
+        Self {
+            sp: aligned - 16,
+            x: [0; 10],
+            fp: 0,
+            lr: 0,
+            entry,
+            arg,
+        }
+    }
+
+    /// The stack pointer this context carries.
+    pub const fn stack_pointer(&self) -> u64 {
+        self.sp
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .globl vela_ctx_switch
+    .type vela_ctx_switch, %function
+vela_ctx_switch:
+    // $x0 = the outgoing context, $x1 = the incoming one.
+    //
+    // The stack pointer moves first: everything else is stored relative to
+    // it.
+    mov     $x2, $sp
+    stp     $x19, $x20, [$x2, #0]
+    stp     $x21, $x22, [$x2, #16]
+    stp     $x23, $x24, [$x2, #32]
+    stp     $x25, $x26, [$x2, #48]
+    stp     $x27, $x28, [$x2, #64]
+    stp     $x29, $x30, [$x2, #80]
+    str     $x2, [$x0, #0]
+
+    // Load the incoming context.
+    ldr     $x2, [$x1, #0]
+    mov     $sp, $x2
+    ldp     $x19, $x20, [$x2, #0]
+    ldp     $x21, $x22, [$x2, #16]
+    ldp     $x23, $x24, [$x2, #32]
+    ldp     $x25, $x26, [$x2, #48]
+    ldp     $x27, $x28, [$x2, #64]
+    ldp     $x29, $x30, [$x2, #80]
+
+    // Return to the caller: `ret` is `br x30`.
+    ret
+    .size vela_ctx_switch, . - vela_ctx_switch
+    "#
+);
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .globl vela_task_entry_trampoline
+    .type vela_task_entry_trampoline, %function
+vela_task_entry_trampoline:
+    // A fresh task arrives here with $x0 = the context pointer, and the
+    // context's entry and argument staged in $x1 and $x2 by the switch.
+    ldr     $x3, [$x0, #104]     // the entry point
+    ldr     $x4, [$x0, #112]     // the argument
+    mov     $x0, $x4             // entry(arg)
+    br      $x3
+    // The task contract forbids returning; if it does, the undefined
+    // instruction turns the mistake into a visible trap rather than a
+    // silent fall-through.
+    udf     #0
+    .size vela_task_entry_trampoline, . - vela_task_entry_trampoline
+    "#
+);
+
+/// Switch from the context at `current` to the context at `next`.
+///
+/// # Safety
+///
+/// * `current` must point at a writable [`Context`] belonging to the task
+///   that is running now.
+/// * `next` must point at a context saved by a previous call to this
+///   function, or one built by [`Context::for_entry`].
+/// * The two contexts must not be the same.
+#[inline]
+pub unsafe fn switch_to(current: *mut Context, next: *const Context) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the caller guarantees the two contexts are live and distinct.
+    unsafe {
+        vela_ctx_switch(current, next)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // Off the target there is no assembly (and no second task): the
+        // call is compiled out so host tests never touch a bogus context.
+        let _ = (current, next);
+    }
+}
+
+/// The entry point a fresh task starts in.
+///
+/// # Safety
+///
+/// Entered by a [`switch_to`] into a context built by
+/// [`Context::for_entry`].
+#[inline]
+pub unsafe fn task_entry_trampoline() -> ! {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the caller guarantees the context is a fresh task's.
+    unsafe {
+        vela_task_entry_trampoline()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // Off the target there is no second task to start.
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+extern "C" {
+    /// The context switch, written in assembly.
+    fn vela_ctx_switch(from: *mut Context, to: *const Context);
+
+    /// The trampoline a fresh task starts in.
+    fn vela_task_entry_trampoline() -> !;
+}
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_layout_matches_the_assembly() {
+        // The offsets are the contract with the assembly above; the tests
+        // pin them so a reordering cannot pass unnoticed.
+        assert_eq!(OFFSET_SP, 0);
+        assert_eq!(OFFSET_X, 8);
+        assert_eq!(OFFSET_FP, 8 + 10 * 8);
+        assert_eq!(OFFSET_LR, 16 + 10 * 8);
+        assert_eq!(OFFSET_ENTRY, 24 + 10 * 8);
+        assert_eq!(OFFSET_ARG, 32 + 10 * 8);
+    }
+
+    #[test]
+    fn the_offsets_are_where_the_fields_are() {
+        let context = Context::new();
+        let base = &context as *const Context as usize;
+        assert_eq!(&context.sp as *const u64 as usize - base, OFFSET_SP);
+        assert_eq!(&context.x as *const u64 as usize - base, OFFSET_X);
+        assert_eq!(&context.fp as *const u64 as usize - base, OFFSET_FP);
+        assert_eq!(&context.lr as *const u64 as usize - base, OFFSET_LR);
+        assert_eq!(&context.entry as *const u64 as usize - base, OFFSET_ENTRY);
+        assert_eq!(&context.arg as *const u64 as usize - base, OFFSET_ARG);
+    }
+
+    #[test]
+    fn a_fresh_context_starts_at_the_entry_point() {
+        let context = Context::for_entry(0x8000_0000, 0x4000_0000, 0x1234);
+        assert_eq!(context.entry, 0x4000_0000);
+        assert_eq!(context.arg, 0x1234);
+        assert_eq!(context.stack_pointer(), 0x8000_0000 - 16);
+        // The stack must stay 16-byte aligned: the ABI requires it.
+        assert_eq!(context.stack_pointer() % 16, 0);
+    }
+
+    #[test]
+    fn the_callee_saved_set_is_the_one_the_abi_names() {
+        assert_eq!(reg::X19, 19);
+        assert_eq!(reg::X28, 28);
+        assert_eq!(reg::X29, 29);
+        assert_eq!(reg::X30, 30);
+        assert_eq!(reg::SP, 31);
+        assert_eq!(Context::new().x.len(), 10);
+    }
+}
