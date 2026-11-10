@@ -321,6 +321,27 @@ pub struct Intuition {
     layers: LayerStack,
     /// The window that has keyboard focus.
     active: Mutex<WindowId>,
+    /// The pointer's position, in screen coordinates, and whether a mouse
+    /// packet has been seen at all.
+    ///
+    /// Atomics rather than a mutex because the two writers are the timer
+    /// tick (interrupt context) and the present tick's read-back, and a
+    /// position one frame stale is a cursor one frame late rather than a
+    /// torn one.
+    pointer_x: core::sync::atomic::AtomicI32,
+    pointer_y: core::sync::atomic::AtomicI32,
+    pointer_seen: core::sync::atomic::AtomicBool,
+    /// The pixels the cursor overdraws, and where it sits now.
+    ///
+    /// A software cursor is drawn over whatever the compositor just painted,
+    /// and moving it means putting those pixels back. Only the present tick
+    /// writes this state — task-side composites bump [`PRESENT_EPOCH`] and
+    /// let the next tick notice — so the lock is contended only between two
+    /// CPUs' ticks, and the tick takes it with `try_lock`: a busy lock means
+    /// skip, and the next tick redraws.
+    cursor: Mutex<CursorState>,
+    /// The `PRESENT_EPOCH` value the last present tick saw.
+    last_present_epoch: core::sync::atomic::AtomicU64,
 }
 
 impl core::fmt::Debug for Intuition {
@@ -345,6 +366,14 @@ impl Intuition {
             next_gadget: Mutex::new(1),
             layers: LayerStack::new(width, height),
             active: Mutex::new(WindowId::NONE),
+            pointer_x: core::sync::atomic::AtomicI32::new(0),
+            pointer_y: core::sync::atomic::AtomicI32::new(0),
+            pointer_seen: core::sync::atomic::AtomicBool::new(false),
+            cursor: Mutex::new(CursorState {
+                drawn_at: None,
+                under: alloc::vec![0; CURSOR_W as usize * CURSOR_H as usize],
+            }),
+            last_present_epoch: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1112,33 +1141,225 @@ impl Intuition {
     /// Returns the rectangle that was touched, or `None` when nothing was
     /// dirty.
     ///
-    /// # Safety of the framebuffer access
-    ///
-    /// This is the one place in the crate that touches the framebuffer, and it
-    /// does so through a raw pointer the kernel installed. The pointer comes
-    /// from the boot handoff rather than from a user pointer, and the geometry
-    /// was validated when the framebuffer was mapped.
+    /// This is the *task-side* present: it runs when a program asks to be
+    /// shown, and it counts against [`PRESENT_EPOCH`] so the present tick
+    /// knows the display changed underneath the cursor and redraws the
+    /// cursor on top. The steady-state present, sixty-odd times a second,
+    /// is [`Intuition::present_tick`].
     pub fn composite_to_framebuffer(&self) -> Option<Rect> {
-        let fb = framebuffer();
-        if fb.address == 0 || fb.width == 0 || fb.height == 0 {
-            return None;
-        }
-        let stride_bytes = fb.stride_px * 4;
-        // Checked: a hostile or merely wrong stride must not make the slice
-        // length wrap, because a wrapped length is a slice the compiler will
-        // happily hand to `composite` and it will happily write through.
-        let len = (stride_bytes as usize).checked_mul(fb.height as usize)?;
-        // SAFETY: the framebuffer is mapped for the whole of the kernel's life
-        // and its geometry is the boot handoff's, which the display driver
-        // validated. `len` is the stride times the height, which is the
-        // framebuffer's own length, and the address is the kernel's — never a
-        // user pointer.
-        unsafe {
-            let base = fb.address as *mut u32;
-            let slice = core::slice::from_raw_parts_mut(base, len);
-            self.layers.composite(slice, fb.stride_px).ok()
-        }
+        let touched = with_framebuffer(|slice, fb| self.layers.composite(slice, fb.stride_px));
+        // Whatever the composite painted, it may have painted *over* the
+        // cursor's pixels; the tick compares its epoch against this and
+        // redraws.
+        PRESENT_EPOCH.fetch_add(1, core::sync::atomic::Ordering::Release);
+        touched.and_then(|result| result.ok())
     }
+
+    /// One present step, from the timer tick.
+    ///
+    /// This is the display driver's steady state: a tick presents the dirty
+    /// layers and then makes sure the pointer is on top of whatever was
+    /// presented. It runs in interrupt context, so it never *waits* for a
+    /// lock a task might hold — every lock below is a `try_lock`, and busy
+    /// means "skip; the next tick, sixteen milliseconds away, catches up".
+    ///
+    /// When nothing is dirty and the pointer has not moved, the tick costs a
+    /// few flag checks: that is what damage-based presentation buys.
+    pub fn present_tick(&self) {
+        // A task-side composite since the last tick may have painted over
+        // the cursor's pixels; its save region is then stale, and the
+        // cursor must be saved and drawn afresh rather than restored.
+        let epoch = PRESENT_EPOCH.load(core::sync::atomic::Ordering::Acquire);
+        if epoch
+            != self
+                .last_present_epoch
+                .swap(epoch, core::sync::atomic::Ordering::AcqRel)
+        {
+            if let Some(mut cursor) = self.cursor.try_lock() {
+                cursor.drawn_at = None;
+            }
+        }
+        // The composite itself. A dirty stack means the copy may cover the
+        // cursor's current pixels — same conclusion, same remedy.
+        let drew = with_framebuffer(|slice, fb| {
+            matches!(self.layers.try_composite(slice, fb.stride_px), Ok(Some(_)))
+        })
+        .unwrap_or(false);
+        if drew {
+            if let Some(mut cursor) = self.cursor.try_lock() {
+                cursor.drawn_at = None;
+            }
+        }
+        self.draw_cursor();
+    }
+
+    /// The pointer's position, clamped to the screen.
+    pub fn pointer_position(&self) -> (i32, i32) {
+        use core::sync::atomic::Ordering::Acquire;
+        (self.pointer_x.load(Acquire), self.pointer_y.load(Acquire))
+    }
+
+    /// Move the pointer, as a mouse packet reports it.
+    ///
+    /// The position is clamped to the screen here rather than trusting the
+    /// decoder: the decoder knows the *controller's* idea of the screen,
+    /// which is whatever the firmware's mode was, and the compositor's is
+    /// the one that matters. The first packet also makes the cursor visible
+    /// — a pointer that has never moved has no known position to draw at,
+    /// and an arrow in the corner of a desktop nobody has touched reads as
+    /// a bug.
+    pub fn pointer_move(&self, x: i32, y: i32) {
+        use core::sync::atomic::Ordering::Release;
+        let screen = self.layers.screen();
+        let clamp = |v: i32, span: u32| {
+            if span == 0 {
+                v
+            } else {
+                v.clamp(0, span as i32 - 1)
+            }
+        };
+        self.pointer_x.store(clamp(x, screen.width), Release);
+        self.pointer_y.store(clamp(y, screen.height), Release);
+        self.pointer_seen.store(true, Release);
+    }
+
+    /// Put the cursor where the pointer is, erasing where it was.
+    ///
+    /// The erase is the save region: the pixels under the cursor as they
+    /// were when the cursor was drawn there. The region is only trusted
+    /// while `drawn_at` says a cursor is on screen, and every path that
+    /// repaints the display clears `drawn_at` first — so a valid entry
+    /// always means "the framebuffer under the cursor is exactly what this
+    /// region replaced".
+    fn draw_cursor(&self) {
+        use core::sync::atomic::Ordering::Acquire;
+        if !self.pointer_seen.load(Acquire) {
+            return;
+        }
+        let (x, y) = self.pointer_position();
+        let Some(mut cursor) = self.cursor.try_lock() else {
+            // Another CPU's tick is mid-draw. Skip: its draw is the same
+            // one this tick would make.
+            return;
+        };
+        if cursor.drawn_at == Some((x, y)) {
+            return;
+        }
+        with_framebuffer(|slice, info| {
+            // Put back what the old cursor hid.
+            if let Some((old_x, old_y)) = cursor.drawn_at {
+                for row in 0..CURSOR_H {
+                    for col in 0..CURSOR_W {
+                        let sx = old_x + col;
+                        let sy = old_y + row;
+                        if sx < 0 || sy < 0 || sx >= info.width as i32 || sy >= info.height as i32 {
+                            continue;
+                        }
+                        let under_at = (row as usize * CURSOR_W as usize + col as usize)
+                            .min(cursor.under.len() - 1);
+                        let dest = (sy as usize * info.stride_px as usize) + sx as usize;
+                        slice[dest] = cursor.under[under_at];
+                    }
+                }
+                cursor.drawn_at = None;
+            }
+            // Save what the new position hides, then hide it.
+            for row in 0..CURSOR_H {
+                for col in 0..CURSOR_W {
+                    let sx = x + col;
+                    let sy = y + row;
+                    let under_at = (row as usize * CURSOR_W as usize + col as usize)
+                        .min(cursor.under.len() - 1);
+                    if sx < 0 || sy < 0 || sx >= info.width as i32 || sy >= info.height as i32 {
+                        continue;
+                    }
+                    let dest = (sy as usize * info.stride_px as usize) + sx as usize;
+                    cursor.under[under_at] = slice[dest];
+                    let shade = CURSOR_SPRITE[row as usize].as_bytes()[col as usize];
+                    match shade {
+                        b'B' => slice[dest] = 0x000000,
+                        b'W' => slice[dest] = 0xFFFFFF,
+                        _ => {}
+                    }
+                }
+            }
+            cursor.drawn_at = Some((x, y));
+        });
+    }
+}
+
+/// How many times the display has been repainted from the task side.
+///
+/// The present tick compares its own count against this to notice that a
+/// composite happened underneath the cursor.
+static PRESENT_EPOCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The cursor's width, in pixels.
+const CURSOR_W: i32 = 11;
+/// The cursor's height, in pixels.
+const CURSOR_H: i32 = 17;
+
+/// The pointer's shape: the Amiga arrow.
+///
+/// `B` is a black pixel, `W` a white one, and `.` whatever was underneath —
+/// the arrow is opaque with a transparent margin, which is how the Workbench
+/// pointer reads on both light and dark backdrops.
+const CURSOR_SPRITE: [&str; 17] = [
+    "B..........",
+    "BB.........",
+    "BWB........",
+    "BWWB.......",
+    "BWWWB......",
+    "BWWWWB.....",
+    "BWWWWWB....",
+    "BWWWWWWB...",
+    "BWWWWWWWB..",
+    "BWWWWWWWWB.",
+    "BWWWWWWWWWB",
+    "BWWWWWBBBB.",
+    "BWWBWWB....",
+    "BWB.BWWB...",
+    "BB..BWWB...",
+    "B....BB....",
+    "......B....",
+];
+
+/// The cursor's saved state: where it sits, and what it sits on.
+struct CursorState {
+    /// The top-left corner of the drawn cursor, if one is on screen.
+    drawn_at: Option<(i32, i32)>,
+    /// The pixels the cursor replaced, row-major over `CURSOR_W * CURSOR_H`.
+    under: alloc::vec::Vec<u32>,
+}
+
+/// Run `body` with the display's framebuffer as a `u32` slice.
+///
+/// Returns `None` when no display driver has installed a framebuffer — the
+/// hosted configuration has none, and every caller already treats "nothing
+/// happened" as "nothing to draw".
+///
+/// # Safety of the framebuffer access
+///
+/// The one way in which this crate touches the framebuffer. The address is
+/// the kernel's own, installed at boot from the display driver's handoff,
+/// and the length is the stride times the height, both of which the driver
+/// validated.
+fn with_framebuffer<R>(body: impl FnOnce(&mut [u32], FramebufferInfo) -> R) -> Option<R> {
+    let fb = framebuffer();
+    if fb.address == 0 || fb.width == 0 || fb.height == 0 || fb.stride_px == 0 {
+        return None;
+    }
+    // Checked: a hostile or merely wrong stride must not make the slice
+    // length wrap, because a wrapped length is a slice the compiler will
+    // happily hand to `composite` and it will happily write through.
+    let len = (fb.stride_px as usize).checked_mul(fb.height as usize)?;
+    // SAFETY: the framebuffer is mapped for the whole of the kernel's life
+    // and its geometry is the boot handoff's, which the display driver
+    // validated. `len` is the stride times the height, which is the
+    // framebuffer's own length, and the address is the kernel's — never a
+    // user pointer.
+    let slice = unsafe { core::slice::from_raw_parts_mut(fb.address as *mut u32, len) };
+    Some(body(slice, fb))
 }
 
 /// Drop every queued event on `port` whose `im_Source` is `source`.
@@ -2301,5 +2522,114 @@ mod tests {
             abi_buttons::LEFT | abi_buttons::RIGHT | abi_buttons::MIDDLE
         );
         assert_eq!(button_mask(0), 0);
+    }
+
+    /// A framebuffer for the present tick's tests: 64 by 48, zero stride
+    /// quirk, backed by a leaked buffer so the address outlives the test.
+    ///
+    /// The one test that uses it also *removes* it — the framebuffer is a
+    /// process-wide static, and the other tests in this module must not see
+    /// a display they did not install.
+    struct FakeDisplay {
+        pixels: &'static mut [u32],
+        width: u32,
+        height: u32,
+    }
+
+    impl FakeDisplay {
+        fn install() -> Self {
+            let width = 64u32;
+            let height = 48u32;
+            let buffer = alloc::vec![0xA5A5_A5A5; (width * height) as usize];
+            let pixels = alloc::boxed::Box::leak(buffer.into_boxed_slice());
+            // SAFETY: the test's own buffer, leaked so the address is valid;
+            // the geometry matches the allocation.
+            unsafe {
+                set_framebuffer(pixels.as_mut_ptr() as u64, width, height, width * 4);
+            }
+            Self {
+                pixels,
+                width,
+                height,
+            }
+        }
+    }
+
+    /// One pixel of the fake display, as an `(x, y)` screen position.
+    fn pixel_of(display: &FakeDisplay, x: i32, y: i32) -> u32 {
+        display.pixels[y as usize * display.width as usize + x as usize]
+    }
+
+    impl Drop for FakeDisplay {
+        fn drop(&mut self) {
+            // SAFETY: restoring the "no display" state the other tests
+            // expect; the mutex makes the swap atomic against any tick that
+            // could not be running anyway in a single-threaded test.
+            let mut fb = FRAMEBUFFER.lock();
+            *fb = None;
+        }
+    }
+
+    #[test]
+    fn the_present_tick_draws_and_moves_the_pointer() {
+        let display = FakeDisplay::install();
+        let intui = Intuition::new(display.width, display.height);
+
+        // A pointer that has never moved draws nothing: there is no known
+        // position to put an arrow at.
+        intui.present_tick();
+        assert_eq!(
+            pixel_of(&display, 0, 0),
+            0xA5A5_A5A5,
+            "an unseen pointer must not draw"
+        );
+
+        // The first packet puts the arrow down. The tip is the sprite's
+        // black pixel at the top-left corner.
+        intui.pointer_move(10, 10);
+        assert_eq!(intui.pointer_position(), (10, 10));
+        intui.present_tick();
+        assert_eq!(
+            pixel_of(&display, 10, 10),
+            0x000000,
+            "the arrow's black tip"
+        );
+        assert_eq!(
+            pixel_of(&display, 13, 15),
+            0xFFFFFF,
+            "the arrow's white body"
+        );
+        assert_eq!(
+            pixel_of(&display, 5, 5),
+            0xA5A5_A5A5,
+            "nothing drawn away from the arrow"
+        );
+
+        // Moving erases the old arrow — the saved pixels go back — and
+        // draws the new one.
+        intui.pointer_move(30, 20);
+        intui.present_tick();
+        assert_eq!(
+            pixel_of(&display, 10, 10),
+            0xA5A5_A5A5,
+            "the old arrow is gone"
+        );
+        assert_eq!(pixel_of(&display, 30, 20), 0x000000, "the new arrow's tip");
+
+        // A task-side composite repaints the display underneath the
+        // cursor; the tick notices the epoch moved and redraws the arrow.
+        display.pixels[(20 * display.width as usize) + 30] = 0xDEAD_BEEF;
+        intui.composite_to_framebuffer();
+        intui.present_tick();
+        assert_eq!(
+            pixel_of(&display, 30, 20),
+            0x000000,
+            "the arrow is back after a repaint"
+        );
+
+        // The pointer cannot leave the screen, wherever the mouse says it
+        // went.
+        intui.pointer_move(-100, 10_000);
+        assert_eq!(intui.pointer_position(), (0, display.height as i32 - 1));
     }
 }
