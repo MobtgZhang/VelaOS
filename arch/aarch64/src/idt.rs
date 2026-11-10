@@ -18,27 +18,27 @@
 /// The exception classes, `ESR_EL1.EC`.
 pub mod ec {
     /// An exception taken from the same exception level.
-    pub const SAME_EL: u8 = 0b000000;
-    /// An exception taken from a lower exception level, running at EL0.
-    pub const SP0: u8 = 0b000001;
-    /// An exception taken from a lower exception level, running at EL1.
-    pub const SP1: u8 = 0b000010;
-    /// A supervisor call (`svc`).
-    pub const SVC: u8 = 0b001011;
-    /// A data abort from the current exception level.
-    pub const DATA_ABORT_CURRENT: u8 = 0b100100;
-    /// A data abort from a lower exception level.
-    pub const DATA_ABORT_LOWER: u8 = 0b100101;
-    /// A system register access to a lower exception level.
-    pub const SYSTEM_REGISTER_LOWER: u8 = 0b100110;
-    /// An instruction abort from the current exception level.
-    pub const INSTRUCTION_ABORT_CURRENT: u8 = 0b100111;
+    pub const SAME_EL: u8 = 0x00;
+    /// An interrupt taken from a lower exception level.
+    pub const IRQ_LOWER: u8 = 0x01;
+    /// An interrupt taken from the current exception level.
+    pub const IRQ_CURRENT: u8 = 0x04;
+    /// A supervisor call from a lower exception level, in AArch64 state.
+    pub const SVC: u8 = 0x15;
+    /// The system-call trap from a lower exception level, in AArch64 state.
+    pub const SYS64: u8 = 0x18;
     /// An instruction abort from a lower exception level.
-    pub const INSTRUCTION_ABORT_LOWER: u8 = 0b101000;
-    /// A PC alignment error.
-    pub const PC_ALIGNMENT: u8 = 0b101010;
-    /// A data abort from an unknown lower exception level.
-    pub const DATA_ABORT_UNKNOWN: u8 = 0b101011;
+    pub const IABT_LOWER: u8 = 0x20;
+    /// An instruction abort from the current exception level.
+    pub const IABT_CURRENT: u8 = 0x21;
+    /// A program-counter alignment fault.
+    pub const PC_ALIGNMENT: u8 = 0x22;
+    /// A data abort from a lower exception level.
+    pub const DATA_ABORT_LOWER: u8 = 0x24;
+    /// A data abort from the current exception level.
+    pub const DATA_ABORT_CURRENT: u8 = 0x25;
+    /// A stack-pointer alignment fault.
+    pub const SP_ALIGNMENT: u8 = 0x26;
 }
 
 /// The `ESR_EL1` shift for the exception class.
@@ -127,7 +127,7 @@ pub const fn decode(esr: u64) -> Exception {
             write: is_write_fault(esr),
             translation: is_translation_fault(esr),
         },
-        ec::INSTRUCTION_ABORT_CURRENT | ec::INSTRUCTION_ABORT_LOWER => Exception::InstructionAbort,
+        ec::IABT_CURRENT | ec::IABT_LOWER => Exception::InstructionAbort,
         ec::PC_ALIGNMENT => Exception::PcAlignment,
         other => Exception::Other(other),
     }
@@ -168,13 +168,16 @@ mod tests {
     #[test]
     fn the_exception_classes_are_the_architectures() {
         // A supervisor call is class 0b001011.
-        assert_eq!(ec::SVC, 0b001011);
+        assert_eq!(ec::SVC, 0x15);
         // A data abort from the current level is 0b100100.
-        assert_eq!(ec::DATA_ABORT_CURRENT, 0b100100);
+        assert_eq!(ec::DATA_ABORT_CURRENT, 0x25);
         // The instruction abort from the current level is 0b100111.
-        assert_eq!(ec::INSTRUCTION_ABORT_CURRENT, 0b100111);
+        // The instruction-abort classes are 0x20 (a lower level) and 0x21
+        // (the current one).
+        assert_eq!(ec::IABT_LOWER, 0x20);
+        assert_eq!(ec::IABT_CURRENT, 0x21);
         // The PC alignment error is 0b101010.
-        assert_eq!(ec::PC_ALIGNMENT, 0b101010);
+        assert_eq!(ec::PC_ALIGNMENT, 0x22);
     }
 
     #[test]

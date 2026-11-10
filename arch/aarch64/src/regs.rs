@@ -150,7 +150,15 @@ pub mod names {
     /// The interrupt controller's end-of-interrupt register.
     pub const ICC_EOIR1_EL1: &str = "icc_eoir1_el1";
     /// The interrupt controller's software-generated interrupt register.
-    pub const ICC_SGI_INT: &str = "icc_sgi_int";
+    /// The priority mask: interrupts whose priority is not more significant
+    /// than this value do not preempt.
+    pub const ICC_PMR_EL1: &str = "icc_pmr_el1";
+    /// The interrupt group register: which interrupts are group 1 (and so
+    /// preempt on the kernel's own priority).
+    pub const ICC_IGRPEN1_EL1: &str = "icc_igrpen1_el1";
+    /// The software-generated interrupt 1 register: the way one core wakes
+    /// another.
+    pub const ICC_SGI1R_EL1: &str = "icc_sgi1r_el1";
     /// The interrupt controller's software-generated interrupt acknowledge.
     pub const ICC_SGI_EOI: &str = "icc_sgi_eoi";
 }
@@ -175,7 +183,9 @@ pub unsafe fn read_sysreg(name: &str) -> u64 {
             names::ICC_SRE_EL1 => sys_read!("icc_sre_el1"),
             names::ICC_IAR1_EL1 => sys_read!("icc_iar1_el1"),
             names::ICC_EOIR1_EL1 => sys_read!("icc_eoir1_el1"),
-            names::ICC_SGI_INT => sys_read!("icc_sgi_int"),
+            names::ICC_PMR_EL1 => sys_read!("icc_pmr_el1"),
+            names::ICC_IGRPEN1_EL1 => sys_read!("icc_igrpen1_el1"),
+            names::ICC_SGI1R_EL1 => sys_read!("icc_sgi1r_el1"),
             names::ICC_SGI_EOI => sys_read!("icc_sgi_eoi"),
             // An unknown name is a bug in the caller; the honest answer is
             // zero, and the name is documented as unsupported.
@@ -206,7 +216,9 @@ pub unsafe fn write_sysreg(name: &str, value: u64) {
             names::ICC_SRE_EL1 => sys_write!("icc_sre_el1", value),
             names::ICC_IAR1_EL1 => sys_write!("icc_iar1_el1", value),
             names::ICC_EOIR1_EL1 => sys_write!("icc_eoir1_el1", value),
-            names::ICC_SGI_INT => sys_write!("icc_sgi_int", value),
+            names::ICC_PMR_EL1 => sys_write!("icc_pmr_el1", value),
+            names::ICC_IGRPEN1_EL1 => sys_write!("icc_igrpen1_el1", value),
+            names::ICC_SGI1R_EL1 => sys_write!("icc_sgi1r_el1", value),
             names::ICC_SGI_EOI => sys_write!("icc_sgi_eoi", value),
             _ => {}
         }

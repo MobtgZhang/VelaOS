@@ -22,15 +22,14 @@ const DR: u64 = UART_BASE;
 /// The flag register: transmit and receive status.
 const FR: u64 = UART_BASE + 0x18;
 /// The line-control register.
-const LCR: u64 = UART_BASE + 0x28;
-/// The baud-rate divisor register.
+/// The line-control register.
+const LCR: u64 = UART_BASE + 0x2C;
+/// The integer baud-rate divisor register.
 const IBRD: u64 = UART_BASE + 0x24;
 /// The fractional baud-rate divisor register.
-const FBRD: u64 = UART_BASE + 0x28 - 4;
+const FBRD: u64 = UART_BASE + 0x28;
 /// The interrupt-mask register.
 const IMSC: u64 = UART_BASE + 0x38;
-/// The interrupt-clear register.
-const ICR: u64 = UART_BASE + 0x44;
 
 /// The flag register's "transmit holding register empty" bit.
 const FR_TXFE: u32 = 1 << 7;
@@ -79,7 +78,6 @@ pub unsafe fn init() {
     unsafe {
         // Interrupts off: the kernel polls.
         write32(IMSC, 0);
-        write32(ICR, 0x7FF);
         // The divisor, then the word length and the FIFO.
         write32(IBRD, DIVISOR_115200);
         write32(FBRD, 0);
@@ -221,10 +219,12 @@ mod tests {
     fn the_register_offsets_are_the_pl011_ones() {
         assert_eq!(DR, UART_BASE);
         assert_eq!(FR, UART_BASE + 0x18);
+        // The PL011 map: the integer divisor at 0x24, the fraction at 0x28
+        // and the line control at 0x2C.
         assert_eq!(IBRD, UART_BASE + 0x24);
-        assert_eq!(LCR, UART_BASE + 0x28);
+        assert_eq!(FBRD, UART_BASE + 0x28);
+        assert_eq!(LCR, UART_BASE + 0x2C);
         assert_eq!(IMSC, UART_BASE + 0x38);
-        assert_eq!(ICR, UART_BASE + 0x44);
     }
 
     #[test]

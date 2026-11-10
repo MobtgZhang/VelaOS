@@ -26,7 +26,7 @@
 /// The distributor's registers, relative to the redistributor frame base.
 pub mod distributor {
     /// The distributor's type register.
-    pub const TYPER: u64 = 0x008;
+    pub const TYPER: u64 = 0x004;
     /// The control register: enable the distributor.
     pub const CTLR: u64 = 0x000;
     /// The interrupt group register.
@@ -50,7 +50,10 @@ pub mod redistributor {
     /// The redistributor's wake-up register.
     pub const WAKER: u64 = 0x014;
     /// The base of the SGI (software-generated interrupt) registers.
-    pub const SGI: u64 = 0x100;
+    ///
+    /// The SGI frame lives 0x10000 above the redistributor's own base, not
+    /// inside the distributor's window.
+    pub const SGI: u64 = 0x10000;
 }
 
 /// The offset of the redistributor for `cpu` within the frame.
@@ -79,13 +82,18 @@ pub const fn spi_set_enable(interrupt: u32) -> u64 {
 }
 
 /// The priority register for a shared peripheral interrupt.
+///
+/// The priority and routing registers hold *one byte* per interrupt, so
+/// interrupt `n` is at byte `n` of the register.
 pub const fn spi_priority(interrupt: u32) -> u64 {
-    distributor::IPRIORITYR + ((interrupt.saturating_sub(32) / 32) as u64) * 4
+    distributor::IPRIORITYR + interrupt as u64
 }
 
 /// The routing register for a shared peripheral interrupt.
+///
+/// Like the priority register, it holds one byte per interrupt.
 pub const fn spi_target(interrupt: u32) -> u64 {
-    distributor::ITARGETSR + ((interrupt.saturating_sub(32) / 32) as u64) * 4
+    distributor::ITARGETSR + interrupt as u64
 }
 
 /// The number of interrupts the private range holds.
@@ -136,6 +144,10 @@ pub unsafe fn init(base: u64) {
         // Let the system registers reach the GIC's CPU interface.
         crate::regs::write_sysreg("icc_sre_el1", 3);
         crate::regs::isb();
+        // Let every priority through, and make every group-1 interrupt
+        // preempt on it: the kernel's own priority scheme.
+        crate::regs::write_sysreg("icc_pmr_el1", 0xFF);
+        crate::regs::write_sysreg("icc_igrpen1_el1", 0xFFFF);
     }
 }
 
@@ -146,8 +158,9 @@ pub fn interrupt_count(base: u64) -> u32 {
     }
     // SAFETY: the distributor's type register is readable.
     let value = unsafe { read32(base, distributor::TYPER) };
-    // Bits 19:16 hold the number of interrupt lines minus 32.
-    32 + ((value >> 16) & 0xF) * 32
+    // Bits 19:16 hold `ITLinesNumber`, which is the number of 32-interrupt
+    // blocks *minus one*: zero means one block, so thirty-two interrupts.
+    (((value >> 16) & 0xF) + 1) * 32
 }
 
 /// Allow an interrupt to interrupt this CPU.
@@ -235,8 +248,11 @@ pub fn send_ipi(cpu: u32) {
     unsafe {
         // The target list in the upper bits, the interrupt id in the lower
         // eight, and the "send" bit in bit 31.
-        let target = (cpu as u64) << 16;
-        crate::regs::write_sysreg("icc_sgi_int", target);
+        // `ICC_SGI1R_EL1`: bit 31 sends the interrupt, bits 23:16 are the
+        // target list, and the interrupt id (software-generated interrupt
+        // zero) is in bits 15:8.
+        let value = (1u64 << 31) | ((cpu as u64) << 16);
+        crate::regs::write_sysreg("icc_sgi1r_el1", value);
     }
 }
 
@@ -263,9 +279,10 @@ mod tests {
         assert_eq!(spi_set_enable(64), distributor::ISENABLER + 4);
         assert_eq!(spi_set_enable(95), distributor::ISENABLER + 4);
         assert_eq!(spi_set_enable(96), distributor::ISENABLER + 8);
-        // The priority and routing registers follow the same grouping.
-        assert_eq!(spi_priority(32), distributor::IPRIORITYR);
-        assert_eq!(spi_target(32), distributor::ITARGETSR);
+        // The priority and routing registers hold *one byte* per interrupt,
+        // so they are indexed by the interrupt itself.
+        assert_eq!(spi_priority(32), distributor::IPRIORITYR + 32);
+        assert_eq!(spi_target(64), distributor::ITARGETSR + 64);
     }
 
     #[test]

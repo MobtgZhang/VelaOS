@@ -15,7 +15,7 @@
 /// The default base of the extended configuration space.
 ///
 /// QEMU's `virt` machine maps it here.
-pub const ECAM_BASE: u64 = 0x4010_0000;
+pub const ECAM_BASE: u64 = 0x3F00_0000;
 
 /// The physical address of a device's configuration register.
 ///
