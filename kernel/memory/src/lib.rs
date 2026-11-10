@@ -1087,6 +1087,39 @@ impl MemoryPlan {
         if self.heap_region.1 > self.heap_region.0 {
             out.push(self.heap_region);
         }
+        // The frames the allocator covers but no descriptor calls allocatable
+        // are reserved here as well — *including the gaps between the
+        // descriptors*, the ranges the firmware does not report at all. The
+        // classic one is the VGA/BIOS window at 0xA0000–0xFFFFF, which a UEFI
+        // map simply omits: the report jumps from the last conventional page
+        // below the hole to the first one above it. The bitmap starts
+        // all-free, so those frames read as allocatable, and the first user
+        // page that lands on one is a page the identity map never mapped —
+        // zeroing it faults the machine in the middle of `MapPage`. Walking
+        // the complement of the allocatable spans closes the hole for every
+        // firmware that under-reports, not just for this one.
+        let covered = self.frame_count * PAGE_SIZE;
+        let mut spans: Vec<(u64, u64)> = self
+            .map
+            .regions()
+            .iter()
+            .filter(|r| r.is_allocatable() && r.byte_len() > 0)
+            .map(|r| (r.physical_start, r.end()))
+            .collect();
+        spans.sort_unstable();
+        let mut cursor = 0u64;
+        for (start, end) in spans {
+            if start > cursor {
+                out.push((cursor, start.min(covered)));
+            }
+            cursor = cursor.max(end);
+            if cursor >= covered {
+                break;
+            }
+        }
+        if cursor < covered {
+            out.push((cursor, covered));
+        }
         out
     }
 
@@ -1690,6 +1723,30 @@ mod tests {
         let reserved = plan.reserved_regions();
         assert!(reserved.iter().any(|(s, _)| *s == 0x20_0000), "MMIO");
         assert!(reserved.iter().any(|(s, _)| *s == 0x30_0000), "reserved");
+    }
+
+    #[test]
+    fn a_plan_reserves_the_gaps_the_firmware_does_not_report() {
+        // The UEFI firmware on the machines this boots on never reports the
+        // VGA/BIOS window: the map jumps from the conventional region below
+        // 0xA0000 to the one above 0x100000 with nothing in between. The
+        // frames in that hole must be reserved, because the allocator's
+        // bitmap starts all-free and a frame it hands out from the hole is a
+        // frame the identity map never mapped.
+        let (buf, stride) = build_map(&[
+            (mem_type::CONVENTIONAL, 0x0, 160),     // 0x0–0xA0000
+            (mem_type::CONVENTIONAL, 0x100000, 16), // above the hole
+        ]);
+        let map = MemoryMap::parse(&buf, stride);
+        let plan = MemoryPlan::build(map, 4096, 4096, &[]).expect("plan");
+
+        let reserved = plan.reserved_regions();
+        assert!(
+            reserved
+                .iter()
+                .any(|(s, e)| *s == 0xA_0000 && *e == 0x10_0000),
+            "the unreported hole must be reserved, got {reserved:#?}"
+        );
     }
 
     #[test]
