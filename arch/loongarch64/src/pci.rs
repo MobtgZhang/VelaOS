@@ -21,13 +21,15 @@ pub const ECAM_BASE: u64 = 0x2C00_0000;
 /// The physical address of a device's configuration register.
 ///
 /// The address is
-/// `base | (bus << 20) | (device << 15) | (function << 12) | offset`,
-/// which is the ECAM layout every architecture uses.
+/// `base + (bus << 20) + (device << 15) + (function << 12) + offset`,
+/// which is the ECAM layout every architecture uses. The fields are added
+/// rather than or-ed, because they live inside the window: a base whose own
+/// bits overlap the bus field would swallow the bus number.
 pub const fn ecam_address(base: u64, bus: u8, device: u8, function: u8, offset: u16) -> u64 {
-    base | ((bus as u64) << 20)
-        | ((device as u64) << 15)
-        | ((function as u64) << 12)
-        | (offset as u64 & 0xFFF)
+    base + ((bus as u64) << 20)
+        + ((device as u64) << 15)
+        + ((function as u64) << 12)
+        + (offset as u64 & 0xFFF)
 }
 
 /// Read a 32-bit configuration register.

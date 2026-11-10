@@ -72,6 +72,153 @@
 //! how VelaOS builds `PRMD` before entering ring 3.
 
 /// The architectural exception codes (`ESTAT.EC`, bits 21:16).
+/// The register state a trap saves.
+///
+/// The LoongArch trap entry saves the general registers, the return address
+/// (`ERA`), the exception status (`ESTAT`) and the mode (`CRMD`), and it
+/// switches to the kernel stack. The dispatcher receives this frame so that
+/// the *same* frame describes the state for every exception — a syscall
+/// reads the arguments out of it, and a fault handler reads the faulting
+/// address and the instruction out of it.
+///
+/// The frame is the kernel's own structure: the user program never sees it,
+/// and the kernel writes it to a kernel-owned stack.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(16))]
+pub struct TrapFrame {
+    /// `r1` — the return address.
+    pub ra: u64,
+    /// `r2` — the thread pointer.
+    pub tp: u64,
+    /// `r3` — the stack pointer.
+    pub sp: u64,
+    /// `r4` — the first argument register.
+    pub a0: u64,
+    /// `r5`.
+    pub a1: u64,
+    /// `r6`.
+    pub a2: u64,
+    /// `r7`.
+    pub a3: u64,
+    /// `r8`.
+    pub a4: u64,
+    /// `r9`.
+    pub a5: u64,
+    /// `r10`.
+    pub a6: u64,
+    /// `r11` — the syscall number.
+    pub a7: u64,
+    /// `r12`.
+    pub t0: u64,
+    /// `r13`.
+    pub t1: u64,
+    /// `r14`.
+    pub t2: u64,
+    /// `r15`.
+    pub t3: u64,
+    /// `r16`.
+    pub t4: u64,
+    /// `r17`.
+    pub t5: u64,
+    /// `r18`.
+    pub t6: u64,
+    /// `r19`.
+    pub t7: u64,
+    /// `r20`.
+    pub t8: u64,
+    /// `r22` — the frame pointer.
+    pub fp: u64,
+    /// `r23`.
+    pub s0: u64,
+    /// `r24`.
+    pub s1: u64,
+    /// `r25`.
+    pub s2: u64,
+    /// `r26`.
+    pub s3: u64,
+    /// `r27`.
+    pub s4: u64,
+    /// `r28`.
+    pub s5: u64,
+    /// `r29`.
+    pub s6: u64,
+    /// `r30`.
+    pub s7: u64,
+    /// `r31`.
+    pub s8: u64,
+    /// The return address.
+    pub era: u64,
+    /// The exception status.
+    pub estat: u64,
+    /// The mode the processor was in.
+    pub crmd: u64,
+    /// The bad virtual address, for the address faults.
+    pub badv: u64,
+}
+
+impl TrapFrame {
+    /// A frame with nothing saved in it.
+    pub const fn empty() -> Self {
+        Self {
+            ra: 0,
+            tp: 0,
+            sp: 0,
+            a0: 0,
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            t0: 0,
+            t1: 0,
+            t2: 0,
+            t3: 0,
+            t4: 0,
+            t5: 0,
+            t6: 0,
+            t7: 0,
+            t8: 0,
+            fp: 0,
+            s0: 0,
+            s1: 0,
+            s2: 0,
+            s3: 0,
+            s4: 0,
+            s5: 0,
+            s6: 0,
+            s7: 0,
+            s8: 0,
+            era: 0,
+            estat: 0,
+            crmd: 0,
+            badv: 0,
+        }
+    }
+
+    /// A frame with every register zero.
+    pub const fn zeroed() -> Self {
+        Self::empty()
+    }
+
+    /// The syscall number: the `a7` register.
+    pub const fn syscall_number(&self) -> u64 {
+        self.a7
+    }
+
+    /// The syscall arguments: `a0`–`a5`.
+    pub const fn syscall_args(&self) -> [u64; 6] {
+        [self.a0, self.a1, self.a2, self.a3, self.a4, self.a5]
+    }
+
+    /// The exception class the frame describes.
+    pub fn kind(&self) -> TrapKind {
+        decode_ec(estat_ec(self.estat))
+    }
+}
+
+/// The architectural exception codes (`ESTAT.EC`, bits 21:16).
 pub mod ec {
     /// Interrupt — the real cause is in `ESTAT.IS`.
     pub const INT: u8 = 0;
