@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "riscv64 architecture placeholder (compile-check only)"
+description = "riscv64 HAL: Sv39 paging, PLIC, SBI, stvec traps, context switch"
 
 [dependencies]
 vela-arch-common.workspace = true
+spin.workspace = true
