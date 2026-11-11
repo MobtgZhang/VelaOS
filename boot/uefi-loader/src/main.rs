@@ -41,7 +41,7 @@ use pool::Pool;
 
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
-use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
+use uefi::proto::console::gop::{GraphicsOutput, Mode, PixelFormat};
 use uefi::proto::console::text::{InputEx, Key};
 use uefi::runtime::ResetType;
 use uefi::{entry, prelude::*};
@@ -487,79 +487,88 @@ fn run(fs: &mut FileSystem) -> Result<core::convert::Infallible, Status> {
     let mut gop = uefi::boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)
         .map_err(|e| e.status())?;
 
-    let (fb_paddr, fb_bytes, w, h, stride_bytes, vela_fmt) = {
-        let mode = gop.current_mode_info();
-        let px = mode.pixel_format();
-        let pixel_format = match px {
+    let mut fb_paddr: u64 = 0;
+    let mut fb_bytes: u64 = 0;
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    let mut stride_bytes: u64 = 0;
+    let mut vela_fmt = VelaPixelFormat::Bgr;
+
+    // The framebuffer the firmware is currently showing, if any mode is
+    // addressable. `current_mode_info()` tells the geometry; `frame_buffer()`
+    // is the same physical window no matter which mode is active.
+    let current_px = gop.current_mode_info().pixel_format();
+    let current_is_usable = matches!(current_px, PixelFormat::Rgb | PixelFormat::Bgr);
+
+    let mut have_gop = current_is_usable;
+    if !have_gop {
+        let (cw, ch) = gop.current_mode_info().resolution();
+        let chosen = gop.modes().find(|m| {
+            matches!(
+                m.info().pixel_format(),
+                PixelFormat::Rgb | PixelFormat::Bgr
+            ) && m.info().resolution() == (cw, ch)
+        }).or_else(|| {
+            gop.modes().find(|m| {
+                matches!(
+                    m.info().pixel_format(),
+                    PixelFormat::Rgb | PixelFormat::Bgr
+                )
+            })
+        });
+        if let Some(mode) = chosen {
+            have_gop = gop.set_mode(&mode).is_ok();
+        }
+    }
+    if have_gop {
+        let mi = gop.current_mode_info();
+        let px = mi.pixel_format();
+        let (cw, ch) = mi.resolution();
+        let stride_px = mi.stride() as u64;
+        let mut fb = gop.frame_buffer();
+        fb_paddr = fb.as_mut_ptr() as u64;
+        fb_bytes = fb.size() as u64;
+        w = cw as u32;
+        h = ch as u32;
+        stride_bytes = stride_px.saturating_mul(4);
+        vela_fmt = match px {
             PixelFormat::Rgb => VelaPixelFormat::Rgb,
             PixelFormat::Bgr => VelaPixelFormat::Bgr,
-            // BLT_ONLY and the YUV modes have no addressable framebuffer, so
-            // there is nothing to draw on and nothing for the kernel to use.
             other => {
-                log::error!("unsupported GOP pixel format {other:?}");
-                return Err(Status::UNSUPPORTED);
+                log::warn!("chosen GOP mode has format {other:?}, treating as Bgr");
+                VelaPixelFormat::Bgr
             }
         };
-        let (w, h) = mode.resolution();
-        // `stride()` is in pixels; each pixel is 4 bytes.
-        let stride_px = mode.stride() as u32;
-        let stride_bytes = (stride_px as u64).saturating_mul(4);
-
-        let (fb_paddr, fb_bytes) = {
-            let mut fb = gop.frame_buffer();
-            // Before `ExitBootServices` the firmware hands us identity-mapped
-            // memory, so this pointer *is* the physical framebuffer address.
-            let fb_paddr = fb.as_mut_ptr() as u64;
-            let fb_bytes = fb.size() as u64;
-            log::info!(
-                "GOP {w}x{h} stride={stride_bytes}B fmt={px:?} base={fb_paddr:#x} size={fb_bytes:#x}"
-            );
-
-            match Surface::new(
-                fb.as_mut_ptr(),
-                fb.size(),
-                w as u32,
-                h as u32,
-                stride_px,
-                pixel_format,
-            ) {
-                Some(mut surface) => {
-                    splash::draw(&mut surface);
-                    // --- B-03b: boot menu -------------------------------------
-                    // Draw the menu on top of the splash and wait for the user
-                    // to pick an entry (or for the timeout to elapse).
-                    if let Some(selected) = boot_menu(&mut surface, &cfg) {
-                        // Selected entry overrides the config default.
-                        selected_entry = Some(selected);
-                    }
-                }
-                None => {
-                    log::error!("framebuffer geometry rejected");
-                    return Err(Status::BAD_BUFFER_SIZE);
-                }
-            }
-            (fb_paddr, fb_bytes)
-        };
-
-        // Guard against a mode that lies about its geometry: a framebuffer
-        // smaller than `stride * height` would let the splash write out of
-        // bounds, and the kernel would later map a bogus range.
+        log::info!(
+            "GOP {w}x{h} stride={}B fmt={px:?} base={fb_paddr:#x} size={fb_bytes:#x}",
+            stride_bytes
+        );
         let needed = stride_bytes.saturating_mul(h as u64);
         if fb_bytes < needed {
             log::error!("framebuffer {fb_bytes} bytes < {needed} required");
             return Err(Status::BAD_BUFFER_SIZE);
         }
-
-        (
-            fb_paddr,
-            fb_bytes,
+        // Draw the splash on the firmware framebuffer before the kernel
+        // takes the display over (its own driver may replace it entirely).
+        match Surface::new(
+            fb.as_mut_ptr(),
+            fb.size(),
             w as u32,
             h as u32,
-            stride_bytes,
-            pixel_format,
-        )
-    };
-    // Release GOP: after this the framebuffer is only reachable by address.
+            stride_px as u32,
+            vela_fmt,
+        ) {
+            Some(mut surface) => {
+                splash::draw(&mut surface);
+                if let Some(selected) = boot_menu(&mut surface, &cfg) {
+                    selected_entry = Some(selected);
+                }
+            }
+            None => {
+                log::error!("framebuffer geometry rejected");
+            }
+        }
+    }
     drop(gop);
 
     // --- B-04: validate the kernel ELF --------------------------------------
@@ -1235,3 +1244,4 @@ fn boot_menu(surface: &mut Surface<'_>, cfg: &config::Config) -> Option<usize> {
 
     selected.or(Some(default_idx))
 }
+

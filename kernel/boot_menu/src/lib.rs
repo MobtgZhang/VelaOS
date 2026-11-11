@@ -82,6 +82,11 @@ impl BootMenu {
                         let sel = self.selected.load(Ordering::Acquire);
                         return Some(self.entries[sel as usize].1);
                     }
+                    0x1B => {
+                        // Escape: select the highlighted default (entry 0 = terminal).
+                        self.selected.store(0, Ordering::Release);
+                        return Some(BootChoice::Terminal);
+                    }
                     _ => {}
                 }
             }
