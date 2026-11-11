@@ -324,7 +324,22 @@ fn read_rect(ptr: u64) -> Option<UserRect> {
 /// `WritePixels` — write a rectangle of pixels into the calling task's window.
 ///
 /// Arguments: `window`, `x`, `y`, `width`, `height`, `pixels` (a user
-/// pointer to `width * height` colours, each `0x00RRGGBB`).
+/// pointer to `width * height` colours, each `0xAARRGGBB`).
+///
+/// # The alpha byte, and why zero is transparent
+///
+/// The colours carry an alpha in the top byte, and the alpha is the pixel's
+/// coverage over whatever the window already shows:
+///
+/// * `0x00` — the pixel is **transparent** and is skipped, so the desktop's
+///   backdrop shows through. This is what makes an icon's artwork float on
+///   the desktop instead of arriving inside a black rectangle: the icon's
+///   pixels are `0xFFRRGGBB` and the pixels *between* its artwork are zero,
+///   and a blit that copied the zeros would paint the rectangle whether it
+///   meant to or not.
+/// * `0xFF` — opaque, the ordinary case.
+/// * anything between — blended by the compositor against what is below, at
+///   that coverage.
 ///
 /// The pixels are copied out of user space *before* anything is drawn: a
 /// pointer that faults half-way through a rectangle would otherwise leave
@@ -361,6 +376,7 @@ pub fn write_pixels(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResul
     } {
         return SyscallResult::err(e);
     }
+    let mut written = 0u64;
     match paint_window(ctx, window, Color::from(0), |l| {
         for row in 0..height as i32 {
             for column in 0..width as i32 {
@@ -368,13 +384,54 @@ pub fn write_pixels(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResul
                 let Some(pixel) = pixels.get(at) else {
                     continue;
                 };
-                l.put(x + column, y + row, pack(*pixel));
+                // Alpha zero is *transparent*, not black: the pixel is left
+                // alone, so whatever the window already shows stays showing.
+                // A blit that wrote the zeros instead would draw a black
+                // rectangle around every piece of artwork it carried.
+                let alpha = (pixel >> 24) as u8;
+                if alpha == 0 {
+                    continue;
+                }
+                written += 1;
+                // Opaque pixels are written in the legacy packing, the way
+                // every other drawing call stores them; partial ones keep
+                // their alpha in the top byte for the compositor to mix.
+                if alpha == 0xFF {
+                    l.put(x + column, y + row, pack(pixel & 0x00FF_FFFF));
+                } else {
+                    l.put(x + column, y + row, *pixel);
+                }
             }
         }
     }) {
-        Ok(()) => SyscallResult::ok(count as u64),
+        Ok(()) => SyscallResult::ok(written),
         Err(e) => SyscallResult::err(e),
     }
+}
+
+/// `TextWidth` — measure a string without drawing it.
+///
+/// Arguments: `text` (a user NUL-terminated string). Returns the advance
+/// width in pixels, at the same 16-pixel UI size every text call draws at.
+///
+/// # Why measuring is a call of its own
+///
+/// A program centring a label under an icon needs the string's width *before*
+/// it draws, and the only other answer — drawing it once to read back the
+/// advance — costs a visible artefact or a drawing call at a position chosen
+/// to be harmless. The font is the kernel's, so the measurement is too: a
+/// program that guessed at the metrics would be wrong the day the font
+/// changed, and the label it centred would be off by half the difference.
+pub fn text_width(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let _ = ctx;
+    let string = match crate::copy::copy_string_alloc(args.get(0)) {
+        Ok(s) => s,
+        Err(e) => return SyscallResult::err(e),
+    };
+    let width = vela_font::source_sans()
+        .map(|font| font.text_width(&string, 16) as u64)
+        .unwrap_or(0);
+    SyscallResult::ok(width)
 }
 
 fn paint_window(
