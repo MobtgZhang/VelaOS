@@ -20,11 +20,27 @@
 //
 // # What v0.1.0 does *not* do
 //
-// There is no alpha blending, no dirty-region tracking per pixel, and no
-// async compositor. The screen is composited synchronously whenever something
-// is marked dirty. On a software renderer at 1280x800 that is a full-screen
-// copy per change, which is roughly four megabytes of `memcpy` — fast enough to
-// be invisible, and much simpler than an incremental compositor.
+// There is no per-pixel dirty-region tracking and no async compositor. The
+// screen is composited synchronously whenever something is marked dirty. On a
+// software renderer at 1280x800 that is a full-screen copy per change, which is
+// roughly four megabytes of `memcpy` — fast enough to be invisible, and much
+// simpler than an incremental compositor.
+//
+// # Alpha, and why it is a top byte with a twist
+//
+// A layer's buffer holds `0xAARRGGBB` colours, but the *legacy* drawing calls
+// — pens, fills, text — all pack `0x00RRGGBB`, so a top byte of zero would
+// mean "transparent" under the obvious reading and every window would become
+// invisible. The convention is therefore:
+//
+// * top byte `0x00` — **opaque**, the legacy packing, copied unchanged;
+// * top byte `0x01`..=`0xFF` — blend over what is below, at that alpha.
+//
+// Compositing is the only place the two meet, so the rule costs one branch per
+// pixel at composite time and nothing at all when every pixel is opaque. It is
+// what makes an icon's transparent pixels show the desktop behind it and a
+// semi-transparent layer pick up whatever is underneath, instead of punching a
+// black rectangle through the screen.
 //
 // # The layering model, precisely
 //
@@ -716,7 +732,7 @@ impl LayerStack {
                     if src >= buffer.len() || dst >= target.len() {
                         continue;
                     }
-                    target[dst] = buffer[src];
+                    target[dst] = blend_over(target[dst], buffer[src]);
                 }
             }
             // The union of everything painted so far, not the
@@ -759,6 +775,19 @@ impl LayerStack {
     pub fn pack(color: Color) -> u32 {
         ((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32
     }
+
+    /// Pack a colour with an explicit alpha, for the callers that composite.
+    ///
+    /// This is the *other* half of the [`blend_over`] convention: a caller
+    /// with real transparency — an icon's see-through pixels, a window with a
+    /// translucent edge — writes `0x01`..=`0xFF` in the top byte and lets the
+    /// composite mix it against whatever is below. An alpha of zero must not
+    /// be passed here: that is the *opaque* legacy packing, and a pixel the
+    /// caller means as "nothing" should simply not be written at all.
+    pub fn pack_alpha(color: Color, alpha: u8) -> u32 {
+        debug_assert_ne!(alpha, 0, "alpha zero is the opaque legacy packing; skip the pixel instead");
+        ((alpha as u32) << 24) | Self::pack(color)
+    }
 }
 
 /// The union of two rectangles.
@@ -778,6 +807,41 @@ fn union(a: Option<Rect>, b: Rect) -> Rect {
             Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
         }
     }
+}
+
+/// Composite one source pixel over one destination pixel.
+///
+/// The source's alpha lives in its top byte, under the convention the crate
+/// documents: `0x00` is the *legacy opaque* packing — every pen, fill and text
+/// call produces it, and reading it as "transparent" would blank the screen —
+/// while `0x01`..=`0xFF` blend over the destination at that much coverage.
+///
+/// The result is always the legacy packing, so a blended pixel that lands in a
+/// buffer later read as background (text antialiasing reads the pixel under a
+/// glyph) is an ordinary `0x00RRGGBB` colour. What a semi-transparent layer
+/// "is" underneath a window is not information anything can use twice; the
+/// blended colour is.
+#[inline]
+pub fn blend_over(dst: u32, src: u32) -> u32 {
+    let alpha = src >> 24;
+    // Legacy opaque, and the fully-opaque case of the blend, are both plain
+    // copies. Splitting the common path out keeps the per-pixel cost of an
+    // all-opaque composite to one comparison.
+    if alpha == 0 || alpha == 0xFF {
+        return src & 0x00FF_FFFF;
+    }
+    let numerator = alpha as u32;
+    let denominator = 255 - numerator;
+    // Each channel is mixed with a rational rather than a floating-point
+    // weight, the way the theme's gradient is: the target has no float maths
+    // library, and a weight off by a rounding step is invisible.
+    let mix = |src_channel: u32, dst_channel: u32| -> u32 {
+        (src_channel * numerator + dst_channel * denominator) / 255
+    };
+    let red = mix((src >> 16) & 0xFF, (dst >> 16) & 0xFF);
+    let green = mix((src >> 8) & 0xFF, (dst >> 8) & 0xFF);
+    let blue = mix(src & 0xFF, dst & 0xFF);
+    (red << 16) | (green << 8) | blue
 }
 #[cfg(test)]
 extern crate std;
@@ -1259,6 +1323,50 @@ mod tests {
     #[test]
     fn packing_a_colour_uses_0x00rrggbb_ordering() {
         assert_eq!(LayerStack::pack(Color::rgb(0x11, 0x22, 0x33)), 0x0011_2233);
+    }
+
+    #[test]
+    fn a_legacy_pixel_composites_opaquely() {
+        // The legacy packing has a zero top byte, and a composite that read
+        // that as "transparent" would blank every window ever drawn with a
+        // pen. Zero must mean opaque.
+        assert_eq!(blend_over(0x0055_6677, 0x0011_2233), 0x0011_2233);
+    }
+
+    #[test]
+    fn a_fully_opaque_alpha_is_a_plain_copy() {
+        assert_eq!(blend_over(0x0055_6677, 0xFF11_2233), 0x0011_2233);
+    }
+
+    #[test]
+    fn a_semi_transparent_pixel_blends_over_the_destination() {
+        // Half coverage of half red over none: 0x88/255 of 0xFF, mixed
+        // against the destination's zero — the arithmetic the compositor
+        // runs per pixel, checked at one channel so the rational weight is
+        // pinned down exactly.
+        let blended = blend_over(0x0000_0000, 0x88FF_0000);
+        assert_eq!((blended >> 16) & 0xFF, (0xFFu32 * 0x88) / 255);
+        assert_eq!(blended & 0xFFFF, 0, "green and blue stay at zero");
+        // The blend result is the legacy packing: no alpha leaks into a
+        // buffer another drawing call will read as background.
+        assert_eq!(blended >> 24, 0);
+    }
+
+    #[test]
+    fn a_fully_transparent_alpha_leaves_the_destination() {
+        // Alpha 0x01 is the *most* transparent a blended pixel can be: the
+        // destination survives to within one rounding step per channel.
+        let blended = blend_over(0x0055_6677, 0x0111_2233);
+        assert_ne!(blended, 0x0011_2233, "some of the source arrived");
+        assert_ne!(blended, 0x0055_6677, "and some of the destination left");
+    }
+
+    #[test]
+    fn pack_alpha_carries_the_alpha_byte() {
+        assert_eq!(
+            LayerStack::pack_alpha(Color::rgb(0x11, 0x22, 0x33), 0x80),
+            0x8011_2233
+        );
     }
 
     #[test]
