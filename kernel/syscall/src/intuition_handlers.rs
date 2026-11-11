@@ -253,6 +253,16 @@ pub fn refresh_all(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult
     SyscallResult::ok(0)
 }
 
+/// `KeyboardLeds` — query the keyboard LED state.
+///
+/// Takes no arguments. Returns a bitmask: bit 0 is caps lock. More bits may
+/// be added later for num lock and scroll lock.
+pub fn keyboard_leds(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let _ = args;
+    let leds = ctx.intuition.leds();
+    SyscallResult::ok(leds as u64)
+}
+
 /// `AddGadget` — attach a gadget to a window.
 ///
 /// Arguments: `window`, `kind`, `rect_ptr` (a user pointer to a
