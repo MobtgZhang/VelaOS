@@ -342,6 +342,9 @@ pub struct Intuition {
     cursor: Mutex<CursorState>,
     /// The `PRESENT_EPOCH` value the last present tick saw.
     last_present_epoch: core::sync::atomic::AtomicU64,
+    /// Keyboard LED state bitmask: bit 0 = caps lock, bit 1 = num lock,
+    /// bit 2 = scroll lock. Exposed to the desktop so it can show keyboard LEDs.
+    leds: core::sync::atomic::AtomicU8,
 }
 
 impl core::fmt::Debug for Intuition {
@@ -357,6 +360,11 @@ impl core::fmt::Debug for Intuition {
 impl Intuition {
     /// A service over a screen of `width` by `height`.
     pub fn new(width: u32, height: u32) -> Self {
+        // The pointer starts at the screen centre and is visible immediately,
+        // so the desktop never appears to have a missing mouse pointer even
+        // before the first input event arrives.
+        let cx = (width as i32 / 2).clamp(0, width as i32 - 1);
+        let cy = (height as i32 / 2).clamp(0, height as i32 - 1);
         Self {
             screens: Mutex::new(Vec::new()),
             windows: Mutex::new(Vec::new()),
@@ -366,14 +374,15 @@ impl Intuition {
             next_gadget: Mutex::new(1),
             layers: LayerStack::new(width, height),
             active: Mutex::new(WindowId::NONE),
-            pointer_x: core::sync::atomic::AtomicI32::new(0),
-            pointer_y: core::sync::atomic::AtomicI32::new(0),
-            pointer_seen: core::sync::atomic::AtomicBool::new(false),
+            pointer_x: core::sync::atomic::AtomicI32::new(cx),
+            pointer_y: core::sync::atomic::AtomicI32::new(cy),
+            pointer_seen: core::sync::atomic::AtomicBool::new(true),
             cursor: Mutex::new(CursorState {
                 drawn_at: None,
                 under: alloc::vec![0; CURSOR_W as usize * CURSOR_H as usize],
             }),
             last_present_epoch: core::sync::atomic::AtomicU64::new(0),
+            leds: core::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -801,6 +810,10 @@ impl Intuition {
     ///
     /// Returns the window that received it, if any.
     pub fn dispatch_mouse(&self, exec: &Exec, event: &MouseEvent) -> Option<WindowId> {
+        // Keep the software cursor position in sync with the input event so
+        // that PS/2 and USB mice both move the same on-screen arrow.
+        self.pointer_move(event.x, event.y);
+
         let (x, y) = (event.x, event.y);
         let window = self.window_at_screen(x, y)?;
         let layer = self.layers.layer(window.layer)?;
@@ -910,6 +923,9 @@ impl Intuition {
     /// pointer: there is no pointer in a keyboard event, and the AmigaOS rule
     /// is that the active window has focus.
     pub fn dispatch_key(&self, exec: &Exec, event: &KeyEventLike) -> Option<WindowId> {
+        // Update the tracked lock state from the event, so the desktop can
+        // show keyboard LEDs.
+        self.leds.store(event.leds, core::sync::atomic::Ordering::Release);
         let window = self.window(self.active_window())?;
         if !window.wants(idcmp::KEYBOARD) {
             return None;
@@ -933,6 +949,7 @@ impl Intuition {
                 &KeyEventLike {
                     code: k.code,
                     released: k.released,
+                    leds: k.leds,
                 },
             ),
         }
@@ -1131,6 +1148,12 @@ impl Intuition {
         &self.layers
     }
 
+    /// Keyboard LED state bitmask: bit 0 = caps lock, bit 1 = num lock,
+    /// bit 2 = scroll lock. For the desktop to show keyboard LEDs.
+    pub fn leds(&self) -> u8 {
+        self.leds.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// Composite the stack into the display's framebuffer.
     ///
     /// The framebuffer is *the kernel's*, supplied at boot by the display
@@ -1165,16 +1188,16 @@ impl Intuition {
     ///
     /// When nothing is dirty and the pointer has not moved, the tick costs a
     /// few flag checks: that is what damage-based presentation buys.
-    pub fn present_tick(&self) {
+    pub fn present_tick(&self) -> bool {
         // A task-side composite since the last tick may have painted over
         // the cursor's pixels; its save region is then stale, and the
         // cursor must be saved and drawn afresh rather than restored.
         let epoch = PRESENT_EPOCH.load(core::sync::atomic::Ordering::Acquire);
-        if epoch
+        let epoch_changed = epoch
             != self
                 .last_present_epoch
-                .swap(epoch, core::sync::atomic::Ordering::AcqRel)
-        {
+                .swap(epoch, core::sync::atomic::Ordering::AcqRel);
+        if epoch_changed {
             if let Some(mut cursor) = self.cursor.try_lock() {
                 cursor.drawn_at = None;
             }
@@ -1190,7 +1213,8 @@ impl Intuition {
                 cursor.drawn_at = None;
             }
         }
-        self.draw_cursor();
+        let cursor_drew = self.draw_cursor();
+        drew || cursor_drew || epoch_changed
     }
 
     /// The pointer's position, clamped to the screen.
@@ -1231,19 +1255,19 @@ impl Intuition {
     /// repaints the display clears `drawn_at` first — so a valid entry
     /// always means "the framebuffer under the cursor is exactly what this
     /// region replaced".
-    fn draw_cursor(&self) {
+    fn draw_cursor(&self) -> bool {
         use core::sync::atomic::Ordering::Acquire;
         if !self.pointer_seen.load(Acquire) {
-            return;
+            return false;
         }
         let (x, y) = self.pointer_position();
         let Some(mut cursor) = self.cursor.try_lock() else {
             // Another CPU's tick is mid-draw. Skip: its draw is the same
             // one this tick would make.
-            return;
+            return false;
         };
         if cursor.drawn_at == Some((x, y)) {
-            return;
+            return false;
         }
         with_framebuffer(|slice, info| {
             // Put back what the old cursor hid.
@@ -1284,7 +1308,8 @@ impl Intuition {
                 }
             }
             cursor.drawn_at = Some((x, y));
-        });
+        })
+        .is_some()
     }
 }
 
@@ -1480,12 +1505,19 @@ fn framebuffer() -> FramebufferInfo {
 /// modifier state, and Intuition must not be able to see it — a window
 /// manager that could see shift would be able to synthesise a shift-click,
 /// and that is not something the input layer should be handing out.
+///
+/// The lock state (caps lock, num lock, scroll lock) *is* exposed: it is not
+/// a modifier a program can synthesise a click with, and a desktop needs it
+/// to show keyboard LEDs.
 #[derive(Debug, Clone, Copy)]
 pub struct KeyEventLike {
     /// The key.
     pub code: KeyCode,
     /// Whether the key came up.
     pub released: bool,
+    /// Keyboard LED state bitmask: bit 0 = caps lock, bit 1 = num lock,
+    /// bit 2 = scroll lock.
+    pub leds: u8,
 }
 
 /// The AmigaOS mouse code for a button transition.
@@ -2218,6 +2250,7 @@ mod tests {
                 &KeyEventLike {
                     code: KeyCode::from_ascii('a'),
                     released: false,
+                    leds: 0,
                 },
             )
             .unwrap();
@@ -2239,6 +2272,7 @@ mod tests {
                 &KeyEventLike {
                     code: KeyCode::from_ascii('a'),
                     released: true,
+                    leds: 0,
                 },
             )
             .unwrap();
@@ -2256,6 +2290,7 @@ mod tests {
                 &KeyEventLike {
                     code: KeyCode::from_ascii('a'),
                     released: false,
+                    leds: 0,
                 },
             )
             .is_none());
@@ -2283,6 +2318,7 @@ mod tests {
             shift: false,
             ctrl: false,
             alt: false,
+            leds: 0,
         });
         h.intui.dispatch_event(&h.exec, &key).unwrap();
         assert_eq!(h.exec.ports_queue_len(port), 2);

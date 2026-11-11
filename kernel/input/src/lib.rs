@@ -64,6 +64,10 @@ pub struct KeyEvent {
     pub ctrl: bool,
     /// True when an alt key was down when the key was pressed.
     pub alt: bool,
+    /// Keyboard LED state bitmask: bit 0 = caps lock, bit 1 = num lock,
+    /// bit 2 = scroll lock. The decoder tracks lock toggles and publishes
+    /// them with every key event so the desktop can show keyboard LEDs.
+    pub leds: u8,
 }
 
 /// A key's code.
@@ -311,8 +315,9 @@ pub struct Keyboard {
     ctrl: bool,
     /// Whether an alt key is down.
     alt: bool,
-    /// Whether caps lock is on.
-    caps: bool,
+    /// Keyboard LED state bitmask: bit 0 = caps lock, bit 1 = num lock,
+    /// bit 2 = scroll lock.
+    leds: u8,
 }
 
 impl Keyboard {
@@ -322,13 +327,23 @@ impl Keyboard {
             shift: false,
             ctrl: false,
             alt: false,
-            caps: false,
+            leds: 0,
         }
     }
 
     /// Whether caps lock is on.
     pub const fn caps_lock(&self) -> bool {
-        self.caps
+        self.leds & 1 != 0
+    }
+
+    /// Whether num lock is on.
+    pub const fn num_lock(&self) -> bool {
+        self.leds & 2 != 0
+    }
+
+    /// Whether scroll lock is on.
+    pub const fn scroll_lock(&self) -> bool {
+        self.leds & 4 != 0
     }
 
     /// Whether shift is down.
@@ -393,7 +408,21 @@ impl Keyboard {
                 // own. The release is ignored: a lock that toggled on the
                 // release would toggle twice.
                 if !released {
-                    self.caps = !self.caps;
+                    self.leds ^= 1;
+                }
+                return None;
+            }
+            0x45 => {
+                // Num lock toggles on press.
+                if !released {
+                    self.leds ^= 2;
+                }
+                return None;
+            }
+            0x46 => {
+                // Scroll lock toggles on press.
+                if !released {
+                    self.leds ^= 4;
                 }
                 return None;
             }
@@ -417,7 +446,7 @@ impl Keyboard {
             .map(|c| c.is_ascii_lowercase())
             .unwrap_or(false);
         let final_code = if is_letter {
-            if self.shift ^ self.caps {
+            if self.shift ^ (self.leds & 1 != 0) {
                 scancodes::shifted(code).unwrap_or(base)
             } else {
                 base
@@ -434,6 +463,7 @@ impl Keyboard {
             shift: self.shift,
             ctrl: self.ctrl,
             alt: self.alt,
+            leds: self.leds,
         })
     }
 }
@@ -628,7 +658,7 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
 
 impl EventQueue {
     /// A queue with the given capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub const fn with_capacity(capacity: usize) -> Self {
         Self {
             events: Mutex::new(VecDeque::new()),
             capacity,
@@ -636,7 +666,7 @@ impl EventQueue {
     }
 
     /// A queue with the default capacity.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::with_capacity(DEFAULT_QUEUE_CAPACITY)
     }
 
@@ -658,6 +688,11 @@ impl EventQueue {
     /// Take the oldest event.
     pub fn pop(&self) -> Option<Event> {
         self.events.lock().pop_front()
+    }
+
+    /// Borrow the newest event, for a producer coalescing pointer motion.
+    pub fn back_mut(&mut self) -> Option<&mut Event> {
+        self.events.get_mut().back_mut()
     }
 
     /// Take every event, in order.
@@ -1006,6 +1041,7 @@ mod tests {
             shift: false,
             ctrl: false,
             alt: false,
+            leds: 0,
         })));
         assert!(q.push(Event::Key(KeyEvent {
             code: KeyCode::from_ascii('b'),
@@ -1013,6 +1049,7 @@ mod tests {
             shift: false,
             ctrl: false,
             alt: false,
+            leds: 0,
         })));
         assert_eq!(q.len(), 2);
         match q.pop().unwrap() {
@@ -1035,6 +1072,7 @@ mod tests {
             shift: false,
             ctrl: false,
             alt: false,
+            leds: 0,
         });
         assert!(q.push(event));
         assert!(q.push(event));
@@ -1054,6 +1092,7 @@ mod tests {
                 shift: false,
                 ctrl: false,
                 alt: false,
+                leds: 0,
             }));
         }
         let events = q.drain();

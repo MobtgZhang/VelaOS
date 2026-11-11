@@ -19,10 +19,11 @@
 //! not issue, and that is stated rather than hidden.
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::collections::VecDeque;
 use spin::Mutex;
 
 use vela_arch::ps2;
-use vela_kernel_input::{status, Keyboard};
+use vela_kernel_input::{status, Event, EventQueue, Keyboard};
 
 /// The status port's auxiliary bit: the waiting byte is a mouse packet.
 const MOUSE_DATA: u8 = 1 << 5;
@@ -52,6 +53,29 @@ static MOUSE: Mutex<vela_kernel_input::Mouse> = Mutex::new(vela_kernel_input::Mo
 /// is the only caller but a handler may run on any CPU.
 static KEYBOARD: Mutex<Keyboard> = Mutex::new(Keyboard::new());
 
+/// The system-wide input queue.
+///
+/// Every hardware source — the PS/2 controller below and the USB HID driver —
+/// publishes the *same* `kernel/input` events here. Intuition does not care
+/// which device produced a click, and neither does a window: one queue is what
+/// makes the two kinds of mouse indistinguishable to the desktop.
+static EVENT_QUEUE: Mutex<EventQueue> = Mutex::new(EventQueue::new());
+
+/// Console characters decoded by the timer tick once input capture is on.
+///
+/// A small bounded queue rather than a direct controller read: after capture
+/// starts the tick owns the controller, and `GetChar` must consume the tick's
+/// decoded characters instead of racing it for the same bytes.
+const CHAR_CAPACITY: usize = 128;
+static CHAR_QUEUE: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+
+/// Whether the boot menu has finished and the tick may capture the keyboard.
+///
+/// The boot menu polls the controller directly, so capturing before it closes
+/// would steal the very keypress that chooses the session. Entry enables this
+/// exactly once, after the menu has answered.
+static INPUT_CAPTURE: AtomicBool = AtomicBool::new(false);
+
 /// Whether the controller answered its first poll, so a wedged controller is
 /// reported once rather than on every call.
 static SEEN_CONTROLLER: AtomicBool = AtomicBool::new(false);
@@ -67,6 +91,12 @@ static SEEN_CONTROLLER: AtomicBool = AtomicBool::new(false);
 /// decoder would misread as a scancode would make the console type garbage
 /// when the pointer moved.
 pub fn read_char() -> Option<u8> {
+    if INPUT_CAPTURE.load(Ordering::Acquire) {
+        // The timer tick is now the controller's owner. Returning one decoded
+        // character per call preserves the console's original contract while
+        // allowing the same keypress to become an IDCMP keyboard event too.
+        return CHAR_QUEUE.lock().pop_front();
+    }
     let mut produced = None;
     let mut keyboard = KEYBOARD.lock();
     // The controller is shared with the timer tick's mouse drain, which
@@ -250,6 +280,143 @@ pub fn pump_mouse() -> Option<vela_kernel_input::MouseEvent> {
         SEEN_CONTROLLER.store(true, Ordering::Release);
         if let Some(event) = mouse.feed(byte) {
             last = Some(event);
+        }
+    }
+    last
+}
+
+/// Start routing input through the system event queue.
+///
+/// Called after the boot menu closes. Before this point the menu and the
+/// console poll the controller themselves; after it the timer tick is the one
+/// reader, and keyboard bytes are fanned out to both the console queue and
+/// Intuition's queue.
+pub fn set_input_capture(enabled: bool) {
+    if enabled {
+        CHAR_QUEUE.lock().clear();
+    }
+    INPUT_CAPTURE.store(enabled, Ordering::Release);
+}
+
+/// Publish a hardware event, from interrupt or task context.
+///
+/// Returns `false` when the queue is busy or full. Busy means the producer
+/// runs on the timer tick and a task is briefly inside the queue; dropping
+/// that event is preferable to deadlocking the CPU it interrupted. Ordinary
+/// pointer movement with no button change is coalesced with the queued tail:
+/// a hundred packets describing one sweep should be one current position,
+/// not a backlog that delays the click at its end.
+pub fn queue_input_event(event: Event) -> bool {
+    let Some(mut queue) = EVENT_QUEUE.try_lock() else {
+        return false;
+    };
+    if let Event::Mouse(mouse) = event {
+        if mouse.changed == 0 {
+            // A full queue is handled below, so this replacement never needs
+            // to allocate and cannot make an already-full queue larger.
+            if let Some(Event::Mouse(tail)) = queue.back_mut() {
+                if tail.changed == 0 {
+                    *tail = mouse;
+                    return true;
+                }
+            }
+        }
+    }
+    queue.push(event)
+}
+
+/// Take the next input event for Intuition.
+///
+/// This is a task-context call: `WaitPort` drains the queue immediately before
+/// waiting, so dispatch can take Intuition's ordinary locks without ever
+/// taking them in interrupt context.
+pub fn pop_input_event() -> Option<Event> {
+    EVENT_QUEUE.lock().pop()
+}
+
+/// Feed one set-1 scancode from a non-PS/2 keyboard.
+///
+/// USB HID boot reports are translated to set 1 by the USB driver and arrive
+/// here. Sharing the console's decoder means shift, caps lock, control and the
+/// ASCII queue behave exactly as they do for a PS/2 keyboard; the event is also
+/// published to Intuition through the same queue as every other input source.
+pub fn queue_scancode(scancode: u8) -> bool {
+    let Some(mut keyboard) = KEYBOARD.try_lock() else {
+        return false;
+    };
+    let Some(event) = keyboard.feed(scancode) else {
+        return true;
+    };
+    let queued = queue_input_event(Event::Key(event));
+    if !event.released {
+        let ascii = if event.code.to_ascii().is_some() {
+            ascii_of(event)
+        } else if event.code == vela_kernel_input::KeyCode::ENTER {
+            b'\r'
+        } else if event.code == vela_kernel_input::KeyCode::BACKSPACE {
+            0x08
+        } else {
+            0
+        };
+        if ascii != 0 {
+            if let Some(mut chars) = CHAR_QUEUE.try_lock() {
+                if chars.len() < CHAR_CAPACITY {
+                    chars.push_back(ascii);
+                }
+            }
+        }
+    }
+    queued
+}
+
+/// Drain both PS/2 ports, publishing mouse and keyboard events.
+///
+/// This is the tick's input path once capture is enabled. Every completed
+/// mouse packet is queued — not merely the last one — because the final
+/// position of a drag does not describe the press and release that happened
+/// along the way. The last position is still returned for the software cursor.
+pub fn pump_input() -> Option<vela_kernel_input::MouseEvent> {
+    if !INPUT_CAPTURE.load(Ordering::Acquire) {
+        return pump_mouse();
+    }
+    let mut mouse = MOUSE.try_lock()?;
+    let mut keyboard = KEYBOARD.try_lock()?;
+    let _controller = CONTROLLER.try_lock()?;
+    let mut last = None;
+    while output_full() {
+        // SAFETY: the status port said a byte is waiting.
+        let status_byte = unsafe { ps2::read_status() };
+        // SAFETY: as above — a byte is waiting on the data port.
+        let byte = unsafe { ps2::read_data() };
+        SEEN_CONTROLLER.store(true, Ordering::Release);
+        if status_byte & MOUSE_DATA != 0 {
+            if let Some(event) = mouse.feed(byte) {
+                let _ = queue_input_event(Event::Mouse(event));
+                last = Some(event);
+            }
+            continue;
+        }
+        let Some(event) = keyboard.feed(byte) else {
+            continue;
+        };
+        let _ = queue_input_event(Event::Key(event));
+        if event.released {
+            continue;
+        }
+        let ascii = if event.code.to_ascii().is_some() {
+            ascii_of(event)
+        } else if event.code == vela_kernel_input::KeyCode::ENTER {
+            b'\r'
+        } else if event.code == vela_kernel_input::KeyCode::BACKSPACE {
+            0x08
+        } else {
+            0
+        };
+        if ascii != 0 {
+            let mut chars = CHAR_QUEUE.try_lock()?;
+            if chars.len() < CHAR_CAPACITY {
+                chars.push_back(ascii);
+            }
         }
     }
     last
