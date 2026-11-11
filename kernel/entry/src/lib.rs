@@ -256,7 +256,7 @@ fn install_timer_device() {
 /// directly so `OpenDevice` names a real unit. The display driver is
 /// registered under the VGA/HDMI/DVI aliases because those are the same
 /// hardware class.
-fn install_builtin_devices() {
+fn install_builtin_devices() -> alloc::vec::Vec<vela_arch::pci::PciDevice> {
     // Legacy ATA primary and secondary channels, two drives each.
     vela_driver_ata::register_controller(0x1F0, 0x3F6, 14, true, 2);
     vela_driver_ata::register_controller(0x170, 0x376, 15, false, 2);
@@ -288,6 +288,7 @@ fn install_builtin_devices() {
     serial::puts(" devices, ");
     serial::puts_dec(net_count as u64);
     serial::puts(" network interface(s)\n");
+    devices
 }
 
 /// Advance the timer clocks once per APIC tick.
@@ -302,7 +303,7 @@ fn timer_tick_hook(_tick: u64) {
     // The pointer, every tick: a packet the hardware delivered is decoded
     // within one 4 ms tick of arriving, which is what keeps the cursor
     // feeling attached to the mouse.
-    if let Some(event) = vela_kernel_console::keyboard::pump_mouse() {
+    if let Some(event) = vela_kernel_console::keyboard::pump_input() {
         // SAFETY: the pointer, when present, is the leaked window manager —
         // the same reference `enable_present_tick` stored, valid for the
         // kernel's life.
@@ -322,8 +323,18 @@ fn timer_tick_hook(_tick: u64) {
     // SAFETY: as above — the leaked window manager, stored once at boot.
     let screen = PRESENT_SCREEN.load(Ordering::Acquire);
     if !screen.is_null() {
-        unsafe { (*screen).present_tick() };
+        let changed = unsafe { (*screen).present_tick() };
+        if changed {
+            // A virtio-gpu scanout only becomes visible after its backing
+            // store is transferred and flushed. With the GOP path this is a
+            // no-op; with virtio-gpu it is the second half of presentation.
+            vela_driver_gpu::flush();
+        }
     }
+    // USB input: HID keyboards and mice report through the same event queue
+    // as PS/2. A tick that lands while a task holds the queue lock skips;
+    // the next tick, sixteen milliseconds away, catches up.
+    vela_driver_usb::poll();
 }
 
 /// The window manager whose display the present tick refreshes.
@@ -904,7 +915,7 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     // Drivers are registered here; the driver crates register their unit
     // instances too, so `OpenDevice` names a real device rather than a name
     // with no instance behind it.
-    install_builtin_devices();
+    let pci_devices = install_builtin_devices();
     serial::puts("VELA-KERNEL: device manager initialised\n");
 
     // --- Real hardware drivers -----------------------------------------------
@@ -917,7 +928,46 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
     //
     // The framebuffer geometry comes from the boot handoff and is needed by
     // the graphics driver registration *before* the services are installed.
-    let (screen_width, screen_height, framebuffer) = display_geometry(&boot_info);
+    let (screen_width, screen_height, mut framebuffer) = display_geometry(&boot_info);
+    // Prefer a real display device when QEMU provides one. Every virtio MMIO
+    // window is mapped before the first user address space inherits the
+    // kernel's supervisor mappings; the driver's framebuffer itself is ordinary
+    // identity-mapped kernel RAM and therefore directly DMA-capable.
+    for device in vela_driver_gpu::devices(&pci_devices) {
+        for (base, bytes) in vela_driver_gpu::mmio_windows(&device) {
+            let start = base & !(PAGE_SIZE - 1);
+            let end = (base + bytes + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            if let Err(e) = space.map_range(
+                start,
+                start,
+                (end - start) as usize,
+                vela_arch_common::PageFlags::mmio(),
+            ) {
+                serial::puts("VELA-KERNEL: cannot map virtio-gpu MMIO: ");
+                serial::puts(&e.to_string());
+                serial::puts("\n");
+            }
+        }
+        // SAFETY: all capability-selected MMIO windows were mapped above, and
+        // the kernel heap is identity-mapped for the driver's DMA buffers.
+        match unsafe { vela_driver_gpu::init(&device, screen_width, screen_height) } {
+            Ok(info) => {
+                framebuffer = DisplayGeometry {
+                    address: info.address,
+                    width: info.width,
+                    height: info.height,
+                    stride_bytes: info.stride_bytes,
+                };
+                serial::puts("VELA-KERNEL: virtio-gpu display driver active\n");
+                break;
+            }
+            Err(error) => {
+                serial::puts("VELA-KERNEL: virtio-gpu unavailable, using GOP (error ");
+                serial::puts_dec(error.unsigned_abs() as u64);
+                serial::puts(")\n");
+            }
+        }
+    }
     let fb = FramebufferInfo {
         address: framebuffer.address,
         width: framebuffer.width,
@@ -926,9 +976,75 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
         format: 0, // BGR from GOP
     };
     register_graphics_drivers(Some(fb));
+    // Install the global audio mixer before registering audio drivers, so
+    // audio.device can allocate mixer channels on first write.
+    unsafe {
+        vela_driver_audio::init_audio_mixer(
+            44100, // DEFAULT_SAMPLE_RATE
+            2, // stereo
+        );
+    }
     register_audio_drivers();
     register_network_drivers();
     register_storage_drivers();
+
+    // USB host controllers: bring up every xHCI function found by PCI
+    // enumeration. Input from attached HID devices reaches Intuition through
+    // the same event queue as PS/2, so the desktop is not dependent on this
+    // driver; a controller that cannot be brought up is logged and skipped,
+    // and PS/2 remains the primary input path.
+    for device in pci_devices.iter() {
+        if device.vendor_id == 0
+            || device.base_class() != 0x0C
+            || device.sub_class() != 0x03
+            || device.prog_if() != 0x30
+        {
+            continue;
+        }
+        for bar in device.bars.iter() {
+            if !bar.memory || bar.base == 0 || bar.size == 0 {
+                continue;
+            }
+            let start = bar.base & !(PAGE_SIZE - 1);
+            let end = (bar.base + bar.size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            if let Err(e) = space.map_range(
+                start,
+                start,
+                (end - start) as usize,
+                vela_arch_common::PageFlags::mmio(),
+            ) {
+                serial::puts("VELA-KERNEL: cannot map xHCI MMIO: ");
+                serial::puts(&e.to_string());
+                serial::puts("\n");
+                continue;
+            }
+            match unsafe { vela_driver_usb::init(bar.base) } {
+                Ok(()) => {
+                    serial::puts("VELA-KERNEL: xHCI controller initialised\n");
+                    // Enumerate attached USB Mass Storage devices. QEMU's
+                    // usb-storage presents a BOT device with bulk-IN on
+                    // endpoint 2 and bulk-OUT on endpoint 3; we probe for
+                    // that configuration and register each found device as a
+                    // block device under `usb.storage`.
+                    if let Err(e) = vela_driver_usb::enumerate_storage(bar.base) {
+                        serial::puts("VELA-KERNEL: usb storage enumeration error (");
+                        serial::puts_dec(e.unsigned_abs() as u64);
+                        serial::puts(")\n");
+                    }
+                    break;
+                }
+                Err(error) => {
+                    serial::puts("VELA-KERNEL: xHCI controller unavailable (error ");
+                    serial::puts_dec(error.unsigned_abs() as u64);
+                    serial::puts(")\n");
+                }
+            }
+        }
+    }
+    // The screen bounds USB mice clamp against, now that the geometry is
+    // known. PS/2 mice are clamped by Intuition itself, so this only affects
+    // USB pointing devices.
+    vela_driver_usb::set_bounds(screen_width, screen_height);
     serial::puts("VELA-KERNEL: hardware drivers registered\n");
 
     // --- 9. Services -------------------------------------------------------
@@ -1077,6 +1193,10 @@ pub unsafe extern "C" fn kernel_entry(boot_info_paddr: u64) -> ! {
         let default = menu.default();
         menu.choice(default).unwrap_or(BootChoice::Desktop)
     });
+
+    // The menu no longer owns the keyboard. From here on the timer tick fans
+    // PS/2 (and USB HID) input out to the console and to Intuition's queue.
+    vela_kernel_console::keyboard::set_input_capture(true);
 
     serial::puts("VELA-KERNEL: boot choice: ");
     match choice {

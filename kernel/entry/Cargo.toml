@@ -49,4 +49,6 @@ vela-driver-graphics.workspace = true
 vela-driver-audio.workspace = true
 vela-driver-network.workspace = true
 vela-driver-storage.workspace = true
+vela-driver-gpu.workspace = true
+vela-driver-usb.workspace = true
 spin.workspace = true
