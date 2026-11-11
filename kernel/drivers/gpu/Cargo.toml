@@ -1,0 +1,10 @@
+[package]
+name = "vela-driver-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vela-arch.workspace = true
+spin.workspace = true
