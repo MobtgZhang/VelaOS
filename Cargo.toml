@@ -54,9 +54,12 @@ members = [
   "kernel/drivers/audio",
   "kernel/drivers/network",
   "kernel/drivers/storage",
+  "kernel/drivers/usb",
+  "kernel/drivers/gpu",
   # amiga abi + spec
   "amiga/abi-native64",
   "amiga/abi-guest32",
+  "amiga/emu68k",
   # graphics
   "graphics/renderer2d",
   "graphics/icons",
@@ -137,6 +140,8 @@ vela-driver-graphics = { path = "kernel/drivers/graphics" }
 vela-driver-audio = { path = "kernel/drivers/audio" }
 vela-driver-network = { path = "kernel/drivers/network" }
 vela-driver-storage = { path = "kernel/drivers/storage" }
+vela-driver-usb = { path = "kernel/drivers/usb" }
+vela-driver-gpu = { path = "kernel/drivers/gpu" }
 
 spin = { version = "0.9", default-features = false, features = ["once", "spin_mutex"] }
 uefi = { version = "0.41", default-features = false }

@@ -461,6 +461,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-driver-gpu"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch",
+]
+
+[[package]]
 name = "vela-driver-graphics"
 version = "0.1.0"
 dependencies = [
@@ -503,6 +511,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vela-driver-usb"
+version = "0.1.0"
+dependencies = [
+ "spin",
+ "vela-arch",
+ "vela-kernel-console",
+ "vela-kernel-device",
+ "vela-kernel-input",
+]
+
+[[package]]
 name = "vela-driver-vga"
 version = "0.1.0"
 dependencies = [
@@ -523,6 +542,14 @@ dependencies = [
 [[package]]
 name = "vela-elf-loader"
 version = "0.1.0"
+
+[[package]]
+name = "vela-emu68k"
+version = "0.1.0"
+dependencies = [
+ "vela-abi-guest32",
+ "vela-arch-common",
+]
 
 [[package]]
 name = "vela-font"
@@ -659,11 +686,13 @@ dependencies = [
  "vela-boot-protocol",
  "vela-driver-ata",
  "vela-driver-audio",
+ "vela-driver-gpu",
  "vela-driver-graphics",
  "vela-driver-network",
  "vela-driver-nvme",
  "vela-driver-sata",
  "vela-driver-storage",
+ "vela-driver-usb",
  "vela-driver-vga",
  "vela-driver-virtio-net",
  "vela-kernel-boot-menu",
