@@ -30,7 +30,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use vela_abi_native64::{AnchorPath, FileInfo};
+use vela_abi_native64::{AnchorPath, FileInfo, InfoData};
 use vela_kernel_dos::SeekFrom;
 use vela_kernel_vfs::AccessMode;
 
@@ -720,9 +720,12 @@ pub const MAX_ASSIGN_ENTRIES: usize = 64;
 /// `AddAssign` — create or re-point an assign.
 ///
 /// Arguments: `name_ptr` (the assign's name, *without* the colon),
-/// `target_ptr` (the single place it stands for). The kernel's assigns are
-/// one-target-per-name; a multi-target search list is built by re-pointing,
-/// which is what `Assign NAME: PUSH` would do on AmigaOS.
+/// `target_ptr` (the place or places it stands for). A multi-target search
+/// list is built by passing several targets separated by single spaces, e.g.
+/// `SYS:Libs SYS:LocalLibs`; that is what `Assign LIBS: SYS:Libs SYS:LocalLibs`
+/// does on AmigaOS. The targets are stored as-is and resolved through the
+/// assigns on each lookup, so `Assign WORK: SYS:Work` followed by
+/// `Assign WORK: RAM:Work` re-points rather than appends.
 ///
 /// Returns zero on success, or `OBJECT_IN_USE` when the name belongs to a
 /// system assign, which no program may re-point — `SYS:` failing to resolve
@@ -734,14 +737,25 @@ pub fn add_assign(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult 
         Ok(p) => p,
         Err(e) => return SyscallResult::err(e),
     };
-    let target = match copy_path(target_ptr) {
+    let raw_targets = match copy_path(target_ptr) {
         Ok(p) => p,
         Err(e) => return SyscallResult::err(e),
     };
     if name.is_empty() {
         return SyscallResult::err(errors::INVALID_NAME);
     }
-    if ctx.dos.add_assign(&name, alloc::vec![target]) {
+    // Split the targets on spaces into an ordered search list. AmigaOS's
+    // `Assign NAME: PUSH` appends; here a re-`Assign` replaces the whole list,
+    // which is what a script that rebuilds its namespace expects.
+    let targets: Vec<String> = raw_targets
+        .split(' ')
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect();
+    if targets.is_empty() {
+        return SyscallResult::err(errors::INVALID_NAME);
+    }
+    if ctx.dos.add_assign(&name, targets) {
         SyscallResult::ok(0)
     } else {
         SyscallResult::err(errors::OBJECT_IN_USE)
@@ -797,6 +811,39 @@ pub fn list_assigns(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResul
     // and the caller asked for at least this many records.
     match unsafe { crate::copy::copy_to_user(out_ptr, reply.as_ptr(), bytes) } {
         Ok(_) => SyscallResult::ok(limit as u64),
+        Err(e) => SyscallResult::err(e),
+    }
+}
+
+/// `Info` — query volume/filesystem information.
+///
+/// Arguments: `name_ptr` (the path, without a trailing colon), `info_ptr`
+/// (a user pointer to an [`vela_abi_native64::InfoData`]). Returns zero on
+/// success.
+///
+/// The path may name a volume (`SYS:`, `RAM:`) or any file or directory on
+/// it; the reply describes the volume it lives on.
+pub fn info(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
+    let name_ptr = args.get(0);
+    let info_ptr = args.get(1);
+    let path = match copy_path(name_ptr) {
+        Ok(p) => p,
+        Err(e) => return SyscallResult::err(e),
+    };
+    let (volume, total, free, block_size) = match ctx.dos.info(&path) {
+        Ok(v) => v,
+        Err(e) => return SyscallResult::err(e),
+    };
+    let info = InfoData::for_volume(&volume, total * block_size, free * block_size);
+    // SAFETY: the destination is a user pointer validated by `copy_to_user`.
+    match unsafe {
+        crate::copy::copy_to_user(
+            info_ptr,
+            &info as *const InfoData as *const u8,
+            core::mem::size_of::<InfoData>(),
+        )
+    } {
+        Ok(_) => SyscallResult::ok(0),
         Err(e) => SyscallResult::err(e),
     }
 }

@@ -612,6 +612,21 @@ impl Dos {
         self.segments.lock().clone()
     }
 
+    /// `Info` — query volume/filesystem information for a path.
+    ///
+    /// Returns the volume name, total blocks, free blocks and bytes per block.
+    pub fn info(&self, path: &str) -> Result<(String, u64, u64, u64), i32> {
+        let resolved = self.resolve_path(path)?;
+        let (mount, _relative) = self
+            .mounts
+            .split(&resolved.backend)
+            .map_err(|_| errors::PATH_NOT_FOUND)?;
+        let total = mount.fs.total_size().unwrap_or(0);
+        let free = mount.fs.free_size().unwrap_or(0);
+        let block_size = 512u64;
+        Ok((mount.volume.clone(), total / block_size, free / block_size, block_size))
+    }
+
     /// How many files are open.
     pub fn open_file_count(&self) -> usize {
         self.files.lock().len()

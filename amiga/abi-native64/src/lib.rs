@@ -1203,6 +1203,66 @@ pub struct FileInfo {
 /// The size of a `FileInfo`'s inline comment buffer.
 pub const FILE_INFO_COMMENT_LEN: usize = 108;
 
+/// The `InfoData` structure returned by `dos.library`'s `Info`.
+///
+/// # Layout
+///
+/// ```text
+/// offset  0  u32   id_DiskType     type of disk (0 = unknown, 1 = RAM)
+/// offset  4  u32   id_DiskState    state of disk (0 = ok)
+/// offset  8  u64   id_DiskSize     total blocks on the volume
+/// offset 16  u64   id_DiskFree     blocks free on the volume
+/// offset 24  u64   id_BytesPerBlock bytes per block
+/// offset 32  [u8; 32] id_VolumeName volume name, NUL-terminated
+/// offset 64  u32   id_Reserved     reserved, zero
+/// ```
+///
+/// `id_DiskType` follows AmigaOS convention: 0 = unknown, 1 = RAM disk,
+/// 2 = write-protected, 3 = read-write disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[allow(
+    non_snake_case,
+    reason = "the AmigaOS field names are CamelCase by convention"
+)]
+pub struct InfoData {
+    /// Type of disk.
+    pub id_DiskType: u32,
+    /// State of disk (0 = ok).
+    pub id_DiskState: u32,
+    /// Total blocks on the volume.
+    pub id_DiskSize: u64,
+    /// Blocks free on the volume.
+    pub id_DiskFree: u64,
+    /// Bytes per block.
+    pub id_BytesPerBlock: u64,
+    /// Volume name, NUL-terminated.
+    pub id_VolumeName: [u8; 32],
+    /// Reserved, zero.
+    pub id_Reserved: u32,
+}
+
+impl InfoData {
+    /// An `InfoData` for a volume with the given name, size and free bytes.
+    pub fn for_volume(name: &str, total_bytes: u64, free_bytes: u64) -> Self {
+        let block_size = 512u64;
+        let name_bytes = name.as_bytes();
+        let name_len = name_bytes.len().min(31);
+        let mut volume_name = [0u8; 32];
+        volume_name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+        let disk_type = if name == "RAM" { 1 } else { 3 };
+        Self {
+            id_DiskType: disk_type,
+            id_DiskState: 0,
+            id_DiskSize: total_bytes / block_size,
+            id_DiskFree: free_bytes / block_size,
+            id_BytesPerBlock: block_size,
+            id_VolumeName: volume_name,
+            id_Reserved: 0,
+        }
+    }
+}
+
 /// The AmigaDOS `ST_FILE` entry type.
 pub const ENTRY_TYPE_FILE: u32 = 2;
 /// The AmigaDOS `ST_DIR` entry type.
