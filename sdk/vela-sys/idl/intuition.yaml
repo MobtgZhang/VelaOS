@@ -36,6 +36,14 @@
 library: intuition.library
 prefix: INTUITION
 functions:
+  - name: KeyboardLeds
+    lvo: -112
+    offset: KEYBOARDLEDS
+    stub: keyboard_leds
+    syscall: I_KEYBOARD_LEDS
+    number: 205
+    kernel: INTUITION_KEYBOARD_LEDS
+    status: implemented
   - name: OpenScreen
     lvo: -104
     offset: OPENSCREEN

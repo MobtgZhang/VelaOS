@@ -1301,6 +1301,18 @@ pub fn composite_screen() -> Result<()> {
     check(packed).map(|_| ())
 }
 
+/// Query the keyboard LED state.
+///
+/// Returns a bitmask: bit 0 is caps lock. More bits may be added later for
+/// num lock and scroll lock. A desktop can use this to show keyboard LEDs.
+pub fn keyboard_leds() -> Result<u32> {
+    // SAFETY: no pointers among the arguments.
+    let packed = unsafe {
+        library_base::intuition::base().call(offset::INTUITION_KEYBOARDLEDS, [0, 0, 0, 0, 0, 0])
+    };
+    check(packed).map(|v| v as u32)
+}
+
 /// Add a gadget to a window.
 ///
 /// The bounds go through a pointer rather than four registers because the call
@@ -1701,6 +1713,29 @@ pub mod graphics {
         };
         let packed = check(packed)?;
         Ok((packed as u32, (packed >> 32) as u32))
+    }
+
+    /// Measure a string without drawing it.
+    ///
+    /// Returns the string's advance width in pixels, at the same 16-pixel UI
+    /// size [`text`] draws at. This is the call a program centring a label
+    /// makes *before* it draws: the metrics are the kernel's font, so the
+    /// answer cannot drift from what a later `text` call really draws.
+    ///
+    /// # Errors
+    ///
+    /// [`super::errors::BAD_STRING`] when the text is not a readable,
+    /// NUL-terminated user string.
+    pub fn text_width(text: &str) -> Result<u32> {
+        let bytes = super::c_string(text);
+        // SAFETY: `bytes` is live for the call; the kernel copies it out.
+        let packed = unsafe {
+            library_base::graphics::base().call(
+                offset::GRAPHICS_TEXTWIDTH,
+                [bytes.as_ptr() as u64, 0, 0, 0, 0, 0],
+            )
+        };
+        check(packed).map(|v| v as u32)
     }
 
     /// Unpack a pen handle out of a packed result, mapping a failure to

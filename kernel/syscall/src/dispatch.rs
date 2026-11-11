@@ -345,9 +345,19 @@ pub mod exec_handlers {
     /// Arguments: `port`, `message_ptr` (a user pointer to receive the
     /// message). Returns zero if a message was received, or one if the wait
     /// ended without one.
+    ///
+    /// The hardware input queue is drained *before* the wait. Device packets
+    /// are produced in interrupt context, where taking Intuition's locks would
+    /// deadlock the interrupted task; this syscall runs in task context, so it
+    /// is the safe hand-off point that turns those packets into IDCMP messages
+    /// on real window ports. A desktop blocked here is therefore woken by an
+    /// actual click, not by a private input side channel.
     pub fn wait_port(args: SyscallArgs, ctx: &SyscallContext<'_>) -> SyscallResult {
         let port = crate::ids::PortId(args.get(0) as u32);
         let message_ptr = args.get(1);
+        while let Some(event) = vela_kernel_console::keyboard::pop_input_event() {
+            let _ = ctx.intuition.dispatch_event(ctx.exec, &event);
+        }
         match ctx.exec.wait_port(port, ctx.task) {
             Ok(Some(message)) => {
                 // SAFETY: the destination is a user pointer validated by
@@ -1180,6 +1190,7 @@ pub fn builtin_table() -> DispatchTable {
         crate::dos_handlers::remove_assign,
     );
     table.install(numbers::DOS_LIST_ASSIGNS, crate::dos_handlers::list_assigns);
+    table.install(numbers::DOS_INFO, crate::dos_handlers::info);
 
     // The `net.library` group: BSD sockets. The handlers live in
     // [`crate::socket_handlers`] and reach the global socket service
@@ -1240,6 +1251,10 @@ pub fn builtin_table() -> DispatchTable {
         numbers::GRAPHICS_RASTER_INFO,
         crate::graphics_handlers::raster_info,
     );
+    table.install(
+        numbers::GRAPHICS_TEXT_WIDTH,
+        crate::graphics_handlers::text_width,
+    );
 
     // The `layers.library` group. Compositing is installed here rather than
     // being implicit: a program asking for a refresh is a normal thing to do,
@@ -1284,6 +1299,10 @@ pub fn builtin_table() -> DispatchTable {
     table.install(
         numbers::INTUITION_REFRESH,
         crate::intuition_handlers::refresh_all,
+    );
+    table.install(
+        numbers::INTUITION_KEYBOARD_LEDS,
+        crate::intuition_handlers::keyboard_leds,
     );
     table.install(
         numbers::INTUITION_SET_ATTRS,

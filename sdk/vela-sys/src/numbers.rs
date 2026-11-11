@@ -153,6 +153,8 @@ pub const G_SET_PALETTE: u64 = 75;
 pub const G_RASTER_INFO: u64 = 76;
 /// `graphics.library`: write a rectangle of pixels.
 pub const G_WRITE_PIXELS: u64 = 77;
+/// `graphics.library`: measure a string without drawing it.
+pub const G_TEXT_WIDTH: u64 = 78;
 
 /// `layers.library`: create a layer.
 pub const L_CREATE: u64 = 128;
@@ -201,6 +203,8 @@ pub const I_FRONT: u64 = 202;
 pub const I_BACK: u64 = 203;
 /// `intuition.library`: repaint one window's furniture.
 pub const I_REPAINT: u64 = 204;
+/// `intuition.library`: query keyboard LED state (bit 0 = caps lock).
+pub const I_KEYBOARD_LEDS: u64 = 205;
 
 /// `dos.library`: open a file.
 pub const D_OPEN: u64 = 256;
@@ -234,6 +238,8 @@ pub const D_ADD_ASSIGN: u64 = 269;
 pub const D_REMOVE_ASSIGN: u64 = 270;
 /// `dos.library`: enumerate the assigns.
 pub const D_LIST_ASSIGNS: u64 = 271;
+/// `dos.library`: query volume/filesystem information.
+pub const D_INFO: u64 = 272;
 
 /// `utility.library`: find a tag in a tag list.
 pub const U_FIND_TAG: u64 = 320;

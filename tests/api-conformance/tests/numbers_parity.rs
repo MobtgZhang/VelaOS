@@ -14,7 +14,7 @@ use vela_sys::numbers as sdk;
 /// derived from a spelling rule.
 #[test]
 fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
-    let pairs: [(u64, u64); 36] = [
+    let pairs: [(u64, u64); 37] = [
         (sdk::CREATE_MSG_PORT, kernel::CREATE_MSG_PORT),
         (sdk::DELETE_MSG_PORT, kernel::DELETE_MSG_PORT),
         (sdk::PUT_MSG, kernel::PUT_MSG),
@@ -50,6 +50,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::G_MOVE, kernel::GRAPHICS_MOVE),
         (sdk::G_SET_PALETTE, kernel::GRAPHICS_SET_PALETTE),
         (sdk::G_RASTER_INFO, kernel::GRAPHICS_RASTER_INFO),
+        (sdk::G_TEXT_WIDTH, kernel::GRAPHICS_TEXT_WIDTH),
         (sdk::D_OPEN, kernel::DOS_OPEN),
     ];
 
@@ -89,7 +90,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
     }
 
     // The remaining Intuition, DOS and utility numbers.
-    let tail: [(u64, u64); 49] = [
+    let tail: [(u64, u64); 51] = [
         (sdk::ALLOC_MEM, kernel::ALLOC_MEM),
         (sdk::FREE_MEM, kernel::FREE_MEM),
         (sdk::ALLOC_VEC, kernel::ALLOC_VEC),
@@ -121,6 +122,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::I_FRONT, kernel::INTUITION_FRONT),
         (sdk::I_BACK, kernel::INTUITION_BACK),
         (sdk::I_REPAINT, kernel::INTUITION_REPAINT),
+        (sdk::I_KEYBOARD_LEDS, kernel::INTUITION_KEYBOARD_LEDS),
         (sdk::D_CLOSE, kernel::DOS_CLOSE),
         (sdk::D_READ, kernel::DOS_READ),
         (sdk::D_WRITE, kernel::DOS_WRITE),
@@ -136,6 +138,7 @@ fn the_sdk_syscall_numbers_match_the_kernel_numbers() {
         (sdk::D_ADD_ASSIGN, kernel::DOS_ADD_ASSIGN),
         (sdk::D_REMOVE_ASSIGN, kernel::DOS_REMOVE_ASSIGN),
         (sdk::D_LIST_ASSIGNS, kernel::DOS_LIST_ASSIGNS),
+        (sdk::D_INFO, kernel::DOS_INFO),
         (sdk::U_FIND_TAG, kernel::UTILITY_FIND_TAG),
         (sdk::U_STRNCPY, kernel::UTILITY_STRNCPY),
         (sdk::U_STRCMP, kernel::UTILITY_STRCMP),

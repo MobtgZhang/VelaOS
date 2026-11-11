@@ -354,6 +354,11 @@ pub const GRAPHICS_RASTER_INFO: u64 = 76;
 /// per-pixel colours into a rastport, and doing it one `WritePixel` at a
 /// time is a syscall per pixel.
 pub const GRAPHICS_WRITE_PIXELS: u64 = 77;
+/// `graphics.library`: measure a string without drawing it.
+///
+/// Arguments: `text` (a user NUL-terminated string). Returns the string's
+/// advance width in pixels at the 16-pixel UI size.
+pub const GRAPHICS_TEXT_WIDTH: u64 = 78;
 
 /// `layers.library`: create a layer.
 pub const LAYERS_CREATE: u64 = 128;
@@ -402,6 +407,11 @@ pub const INTUITION_FRONT: u64 = 202;
 pub const INTUITION_BACK: u64 = 203;
 /// `intuition.library`: repaint a window's furniture.
 pub const INTUITION_REPAINT: u64 = 204;
+/// `intuition.library`: query keyboard LED state (bit 0 = caps lock).
+///
+/// Returns a bitmask: bit 0 is caps lock. More bits may be added later for
+/// num lock and scroll lock.
+pub const INTUITION_KEYBOARD_LEDS: u64 = 205;
 
 /// `dos.library`: open a file.
 pub const DOS_OPEN: u64 = 256;
@@ -436,6 +446,8 @@ pub const DOS_ADD_ASSIGN: u64 = 269;
 pub const DOS_REMOVE_ASSIGN: u64 = 270;
 /// `dos.library`: enumerate the assigns.
 pub const DOS_LIST_ASSIGNS: u64 = 271;
+/// `dos.library`: query volume/filesystem information (total/free blocks).
+pub const DOS_INFO: u64 = 272;
 
 /// `utility.library`: find a tag in a tag list.
 pub const UTILITY_FIND_TAG: u64 = 320;
@@ -540,13 +552,13 @@ pub const WORKBENCH_WORKBENCH_CONTROL: u64 = 469;
 /// is what the conformance tests iterate over.
 pub const EXEC_COUNT: u64 = 46;
 /// The number of syscalls in the `graphics.library` group.
-pub const GRAPHICS_COUNT: u64 = 14;
+pub const GRAPHICS_COUNT: u64 = 15;
 /// The number of syscalls in the `layers.library` group.
 pub const LAYERS_COUNT: u64 = 10;
 /// The number of syscalls in the `intuition.library` group.
-pub const INTUITION_COUNT: u64 = 13;
+pub const INTUITION_COUNT: u64 = 14;
 /// The number of syscalls in the `dos.library` group.
-pub const DOS_COUNT: u64 = 16;
+pub const DOS_COUNT: u64 = 17;
 /// The number of syscalls in the `utility.library` group.
 pub const UTILITY_COUNT: u64 = 3;
 /// The number of syscalls in the `icon.library` group.
@@ -578,7 +590,7 @@ pub fn is_defined(number: u64) -> bool {
 /// SDK's published surface against it. It is public for that check — a
 /// matrix entry that names a number the kernel does not define is a
 /// documentation bug that would otherwise only show up as a failed call.
-pub const DEFINED: [(u64, SyscallGroup); 137] = [
+pub const DEFINED: [(u64, SyscallGroup); 139] = [
     (CREATE_MSG_PORT, SyscallGroup::Exec),
     (DELETE_MSG_PORT, SyscallGroup::Exec),
     (PUT_MSG, SyscallGroup::Exec),
@@ -631,6 +643,7 @@ pub const DEFINED: [(u64, SyscallGroup); 137] = [
     (GRAPHICS_SET_PALETTE, SyscallGroup::Graphics),
     (GRAPHICS_RASTER_INFO, SyscallGroup::Graphics),
     (GRAPHICS_WRITE_PIXELS, SyscallGroup::Graphics),
+    (GRAPHICS_TEXT_WIDTH, SyscallGroup::Graphics),
     (LAYERS_CREATE, SyscallGroup::Layers),
     (LAYERS_DESTROY, SyscallGroup::Layers),
     (LAYERS_SET_CLIP, SyscallGroup::Layers),
@@ -654,6 +667,7 @@ pub const DEFINED: [(u64, SyscallGroup); 137] = [
     (INTUITION_FRONT, SyscallGroup::Intuition),
     (INTUITION_BACK, SyscallGroup::Intuition),
     (INTUITION_REPAINT, SyscallGroup::Intuition),
+    (INTUITION_KEYBOARD_LEDS, SyscallGroup::Intuition),
     (DOS_OPEN, SyscallGroup::Dos),
     (DOS_CLOSE, SyscallGroup::Dos),
     (DOS_READ, SyscallGroup::Dos),

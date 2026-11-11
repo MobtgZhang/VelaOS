@@ -36,6 +36,14 @@
 library: graphics.library
 prefix: GRAPHICS
 functions:
+  - name: TextWidth
+    lvo: -120
+    offset: TEXTWIDTH
+    stub: text_width
+    syscall: G_TEXT_WIDTH
+    number: 78
+    kernel: GRAPHICS_TEXT_WIDTH
+    status: implemented
   - name: WritePixels
     lvo: -112
     offset: WRITEPIXELS
