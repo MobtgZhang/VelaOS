@@ -4,7 +4,24 @@
 
 VelaOS is an experimental, independent operating system project written primarily in Rust. It aims to bring the programming model and desktop experience of **AmigaOS 3.1** to modern 64-bit platforms, with a clean kernel architecture, UEFI boot support, and a carefully designed compatibility layer.
 
-> **Project status:** Early planning and development. Features described below are goals, not claims of current implementation.
+> **Project status:** Early development. v0.1.0 already boots on x86-64 into a Workbench-inspired desktop (screenshots below); much of what is described further down remains a goal, not a claim of current implementation.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="assets/image1.png" alt="VelaOS Workbench desktop at 1280x800" width="49%" />
+      <br />
+      <sub><b>Vela Workbench</b> — desktop icons, menu bar, tool dock and clock at 1280&times;800</sub>
+    </td>
+    <td align="center">
+      <img src="assets/image2.png" alt="VelaOS boot menu and AmigaDOS-style shell" width="49%" />
+      <br />
+      <sub><b>Boot menu &amp; Safe Terminal</b> — the AmigaDOS-style Vela shell</sub>
+    </td>
+  </tr>
+</table>
 
 ## Goals
 
@@ -122,6 +139,23 @@ UEFI firmware
 ```
 
 The bootloader and kernel are separate binaries. After exiting UEFI Boot Services, the kernel must provide its own runtime facilities and drivers.
+
+## The Desktop (Vela Workbench)
+
+`make run` boots all the way into the desktop shown above. What you see is not a mock-up — it is rendered by VelaOS's own graphics stack on boot:
+
+| Element | What v0.1.0 does |
+| --- | --- |
+| **Screen** | 1280×800 framebuffer (virtio-gpu / std VGA under QEMU), driven through the `graphics.library`-style syscall surface |
+| **Desktop icons** | `RAM Disk`, `Workbench`, `System`, `Utilities`, `Startup` drawn with true transparency (no black boxes) and labels centered in each icon cell, truncated with `…` when too long |
+| **Menu bar** | `Project` / `Window` / `System` menus in the classic Workbench style |
+| **Tool dock** | Shell, Clock, More, HDToolBox, IconEdit, Calculator, Commodities, Memacs, PrintFiles, Lacer, Screendump, WIMP, DirectoryOpus |
+| **Compositing** | A layers.library-style compositor with per-layer alpha blending (the gradient backdrop is one layer; icons, windows and the pointer are composited over it) |
+| **Mouse & keyboard** | PS/2 and USB-HID (xHCI) input; the pointer is always visible, initialised at the screen centre before the first mouse event |
+| **Boot menu** | Choose `Boot to Safe Terminal` or `Boot to Desktop [DEFAULT]`; `Escape` selects the default entry |
+| **Safe Terminal** | The AmigaDOS-style shell: `Assign`, `List`, `Info`, `Copy`, `Delete`, `MakeDir`, `Rename`, scripts with `IF`/`ELSE`/`ENDIF`, keyword arguments (`Copy FROM=RAM:a TO=RAM:b`) and `?` templates |
+
+The desktop is implemented with the same API shape a native program uses: windows, gadgets and IDCMP events come from the Intuition-compatible layer, drawing from the graphics/layers libraries, and file operations from `dos.library` — so opening a window or reading a directory from an app exercises the same code paths the desktop itself uses.
 
 ## Repository Layout
 
