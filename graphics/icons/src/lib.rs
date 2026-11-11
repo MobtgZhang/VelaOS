@@ -56,7 +56,14 @@ impl Icon {
         let width = u16::from_be_bytes([raw[5], raw[6]]);
         let height = u16::from_be_bytes([raw[7], raw[8]]);
         let palette_len = raw[9] as usize;
-        let transparent = if raw[10] == 0xFF { None } else { Some(raw[10]) };
+        let transparent = if raw[10] == 0xFF {
+            // No explicit transparency index in the asset: assume index 0 is
+            // the background colour, which is the convention for most AROS
+            // Mason icons that were converted without a transparency marker.
+            Some(0)
+        } else {
+            Some(raw[10])
+        };
         let palette_start = 11;
         let palette_end = palette_start + palette_len * 3;
         if raw.len() < palette_end + 4 {
