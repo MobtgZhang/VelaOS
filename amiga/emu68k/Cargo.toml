@@ -1,0 +1,10 @@
+[package]
+name = "vela-emu68k"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vela-abi-guest32 = { path = "../abi-guest32" }
+vela-arch-common = { path = "../../arch/common" }
