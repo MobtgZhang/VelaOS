@@ -253,6 +253,20 @@ impl Vm {
             // Guest writes 0x10 to port 0xf4 to power off; QEMU exits with that
             // value as the exit code.
             .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+            // QEMU's default PS/2 keyboard (no explicit device needed): QEMU's
+            // monitor `sendkey` commands go through it, which the boot smoke
+            // test uses to select the boot-menu entry. The kernel's PS/2 drain
+            // reads these and feeds them to Intuition as keyboard events.
+            // USB mouse via xHCI: the kernel's xHCI/HID driver polls the
+            // interrupt-IN endpoint and publishes mouse events to the same
+            // input queue as PS/2, so the pointer moves on the desktop.
+            .args(["-device", "qemu-xhci,id=xhci"])
+            .args(["-device", "usb-mouse,bus=xhci.0"])
+            // AC97 audio device: the kernel's audio driver can play PCM
+            // through this controller.
+            .args(["-device", "ac97"])
+            .arg("-vga")
+            .arg("std")
             .arg("-display")
             .arg(if display { "sdl" } else { "none" })
             .arg("-drive")
