@@ -12,6 +12,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
@@ -155,6 +156,16 @@ pub fn register_all() {
         Arc::clone(&ac97) as Arc<dyn DriverOps>,
     );
     vela_kernel_device::DeviceManager::register_device("audio.ac97", 0, 0);
+
+    // The generic `audio.device`: a user-facing PCM device that mixes through
+    // the global audio mixer. Programs open it with OpenDevice("audio.device",
+    // unit) and write PCM sample frames (s16 LE stereo) to play sound.
+    let audio_device = AudioDevice::new();
+    vela_kernel_device::DeviceManager::register_driver(
+        "audio.device",
+        Arc::clone(&audio_device) as Arc<dyn DriverOps>,
+    );
+    vela_kernel_device::DeviceManager::register_device("audio.device", 0, 0);
 }
 
 /// The audio mixer service: mixes multiple PCM streams into one output.
@@ -342,3 +353,104 @@ pub fn audio_mixer() -> &'static AudioMixer {
 pub unsafe fn init_audio_mixer(sample_rate: u32, channels: u16) {
     AUDIO_MIXER.call_once(|| AudioMixer::new(sample_rate, channels));
 }
+
+// ---------------------------------------------------------------------------
+// audio.device: user-facing PCM device
+// ---------------------------------------------------------------------------
+
+/// The generic `audio.device`: programs open it with
+/// `OpenDevice("audio.device", unit)` and write PCM sample frames
+/// (s16 LE stereo) to play sound.
+///
+/// The device allocates a mixer stream per `io_unit` value and mixes all
+/// active streams through the global audio mixer.
+pub struct AudioDevice {
+    next_stream: AtomicU32,
+}
+
+impl AudioDevice {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            next_stream: AtomicU32::new(1),
+        })
+    }
+}
+
+impl DriverOps for AudioDevice {
+    fn probe(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
+    fn open(&self, _device: u64, _unit: u32) -> Result<u64, i32> {
+        Ok(0x7000_0000)
+    }
+
+    fn submit(&self, _cookie: u64, req: &mut IORequest) -> Result<(), i32> {
+        let mixer = audio_mixer();
+        match req.io_command {
+            cmd::STATUS => {
+                req.io_state = IoState::Done;
+                req.io_actual = 0;
+                req.io_error = errors::OK;
+                Ok(())
+            }
+            cmd::WRITE => {
+                // Write PCM sample frames (s16 LE stereo) to a mixer stream.
+                let stream_id = req.io_unit;
+                let frame_count = req.io_length as usize / 4;
+                if frame_count == 0 {
+                    req.io_state = IoState::Done;
+                    req.io_actual = 0;
+                    req.io_error = errors::OK;
+                    return Ok(());
+                }
+                // Allocate a stream for this unit on first write.
+                let _ = mixer.open_stream(
+                    44100, // DEFAULT_SAMPLE_RATE
+                    2,     // stereo
+                    0,     // format: s16 LE stereo
+                );
+                let buf = unsafe {
+                    core::slice::from_raw_parts(req.io_data as *const i16, frame_count * 2)
+                };
+                mixer.write_stream(stream_id, buf).map_err(|_| errors::BUSY)?;
+                req.io_state = IoState::Done;
+                req.io_actual = req.io_length;
+                req.io_error = errors::OK;
+                Ok(())
+            }
+            cmd::READ => {
+                // Read mixed output from the mixer into the caller's buffer.
+                let frame_count = req.io_length as usize / 4;
+                if frame_count == 0 {
+                    req.io_state = IoState::Done;
+                    req.io_actual = 0;
+                    req.io_error = errors::OK;
+                    return Ok(());
+                }
+                let mut out = vec![0i16; frame_count * 2];
+                mixer.mix(&mut out);
+                // Copy back to the caller's buffer.
+                let dst = unsafe {
+                    core::slice::from_raw_parts_mut(req.io_data as *mut i16, frame_count * 2)
+                };
+                dst.copy_from_slice(&out);
+                req.io_state = IoState::Done;
+                req.io_actual = req.io_length;
+                req.io_error = errors::OK;
+                Ok(())
+            }
+            _ => {
+                req.io_state = IoState::Aborted;
+                Err(errors::BAD_CMD)
+            }
+        }
+    }
+
+    fn cancel(&self, _cookie: u64, _req: &mut IORequest) -> bool {
+        false
+    }
+
+    fn remove(&self, _cookie: u64) {}
+}
+
