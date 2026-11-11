@@ -62,6 +62,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use vela_icons::assets;
@@ -851,17 +852,14 @@ impl Desktop {
         for (index, icon) in Icon::VOLUMES.iter().enumerate() {
             let y = VOLUME_Y + index as i16 * VOLUME_PITCH_Y;
             self.paint_icon_art(*icon, VOLUME_X, y);
-            if self.pens.label.is_valid() {
-                let _ = api::graphics::text(
-                    self.backdrop,
-                    self.pens.label,
-                    VOLUME_X,
-                    // The baseline, not the top: the glyph's body must clear
-                    // the artwork above it.
-                    y + ICON_SIZE + 2 + TEXT_ASCENT,
-                    icon.name(),
-                );
-            }
+            // The name is centred in the icon's cell, under the artwork, the
+            // way AROS centres a volume's name under its drive icon.
+            self.paint_label(
+                icon.name(),
+                VOLUME_X,
+                ICON_W as i16,
+                y + ICON_SIZE + 2 + TEXT_ASCENT,
+            );
         }
     }
 
@@ -894,23 +892,77 @@ impl Desktop {
         for (index, (art, label)) in BAR.iter().enumerate() {
             let x = BAR_ICON_X0 + index as i16 * BAR_ICON_PITCH;
             self.paint_art(art(), x, BAR_ICON_Y);
-            if self.pens.label.is_valid() {
-                // The label is centred in the icon's cell, the way AROS's
-                // bar centres its labels, rather than hanging off the
-                // artwork's left corner — a cell's worth of short labels
-                // all starting at the same edge reads as one column of
-                // text, not as names under icons.
-                let width = label.len() as i16 * FONT_CELL_W;
-                let offset = (BAR_ICON_PITCH - width).max(0) / 2;
-                let _ = api::graphics::text(
-                    self.backdrop,
-                    self.pens.label,
-                    x + offset,
-                    BAR_ICON_Y + ICON_SIZE + 2 + TEXT_ASCENT,
-                    label,
-                );
-            }
+            // The label is centred in the icon's cell, the way AROS's
+            // bar centres its labels, rather than hanging off the
+            // artwork's left corner — a cell's worth of short labels
+            // all starting at the same edge reads as one column of
+            // text, not as names under icons.
+            self.paint_label(
+                label,
+                x,
+                BAR_ICON_PITCH,
+                BAR_ICON_Y + ICON_SIZE + 2 + TEXT_ASCENT,
+            );
         }
+    }
+
+    /// Draw a name centred in an icon's cell, just under its artwork.
+    ///
+    /// The centring is measured, not guessed: the UI font is proportional,
+    /// so a label's width is the *sum of its letters' own advances* and a
+    /// width derived from the character count would be wrong by however far
+    /// that guess is off — which is exactly the amount by which a name would
+    /// sit lopsided under its icon. The measurement is the kernel's
+    /// `TextWidth` call, answering with the same font the drawing call
+    /// uses, so the two cannot disagree.
+    ///
+    /// A cell narrower than the label centres it anyway (`max(0)` clamps the
+    /// offset): a name overflowing its cell reads as a long name, while one
+    /// pinned to the cell's left edge reads as a drawing bug.
+    ///
+    /// When the label is wider than the cell, it is truncated with an
+    /// ellipsis so the name never spills out from under its icon.
+    fn paint_label(&self, label: &str, cell_x: i16, cell_w: i16, baseline: i16) {
+        if !self.pens.label.is_valid() {
+            return;
+        }
+        let cell_w = cell_w as i32;
+        let measured = api::graphics::text_width(label).unwrap_or(0);
+        let width = if measured > 0 {
+            measured as i32
+        } else {
+            // No font, no measurement: fall back to the built-in font's
+            // eight-pixel cell so a broken asset degrades to a wider guess
+            // rather than to everything pinned at the left edge.
+            (label.len() as i32) * FONT_CELL_W as i32
+        };
+
+        let (draw_text, draw_width) = if width > cell_w.saturating_sub(4) {
+            // Too wide: truncate with an ellipsis so it never spills out.
+            let ellipsis = "…";
+            let ellipsis_w = api::graphics::text_width(ellipsis).unwrap_or(3 * FONT_CELL_W as u32) as i32;
+            let mut chars: Vec<char> = label.chars().collect();
+            while !chars.is_empty() {
+                let trial: String = chars.iter().collect();
+                let mut trial_with_ellipsis = trial.clone();
+                trial_with_ellipsis.push_str(ellipsis);
+                let trial_w = api::graphics::text_width(&trial_with_ellipsis).unwrap_or(0) as i32;
+                if trial_w + ellipsis_w <= cell_w {
+                    break;
+                }
+                chars.pop();
+            }
+            let trial: String = chars.iter().collect();
+            let mut trial_with_ellipsis = trial.clone();
+            trial_with_ellipsis.push_str(ellipsis);
+            let final_w = api::graphics::text_width(&trial_with_ellipsis).unwrap_or(0) as i32;
+            (trial_with_ellipsis, final_w)
+        } else {
+            (String::from(label), width)
+        };
+
+        let offset = ((cell_w - draw_width) / 2).max(0) as i16;
+        let _ = api::graphics::text(self.backdrop, self.pens.label, cell_x + offset, baseline, &draw_text);
     }
 
     /// Paint the clock, in the top right corner.
@@ -1037,21 +1089,43 @@ impl Desktop {
     /// The artwork is AROS's own, and it is drawn through the graphics
     /// driver's bulk pixel write, so an icon costs one call rather than two
     /// thousand.
+    ///
+    /// The pixels carry their coverage in the top byte: the artwork's own
+    /// pixels are `0xFFRRGGBB` — opaque — and the pixels *between* them are
+    /// zero, which the kernel's `WritePixels` reads as transparent and skips.
+    /// That is what makes the artwork sit *on* the desktop: a blit that
+    /// copied the zeros instead would draw a black rectangle around every
+    /// icon on the screen, and the desktop would look like a sheet of dark
+    /// cards rather than a set of objects.
+    ///
+    /// A few AROS Mason icons store near-black edge pixels (antialiasing or
+    /// a black background index that differs from the declared transparent
+    /// index). Those would otherwise show as a black rectangle around the
+    /// icon, so edge pixels whose luminance is below a small threshold are
+    /// treated as transparent too.
     fn paint_art(&self, raw: &[u8], x: i16, y: i16) {
         let Some(icon) = vela_icons::Icon::decode(raw) else {
             return;
         };
-        // The pixels are collected into a row-major buffer of the icon's own
-        // size, and handed to the driver in one call.
         let width = icon.width();
         let height = icon.height();
         let mut pixels = alloc::vec![0u32; (width * height) as usize];
         for row in 0..height {
             for column in 0..width {
                 let at = (row * width + column) as usize;
-                if let Some(color) = icon.color_at(column, row) {
-                    pixels[at] = rgb(color);
+                let Some(color) = icon.color_at(column, row) else {
+                    continue;
+                };
+                // Near-black edge pixels (antialiasing or a black background
+                // index that differs from the declared transparent index).
+                // Those would otherwise show as a black rectangle around the
+                // icon, so edge pixels whose luminance is below a modest
+                // threshold are treated as transparent too.
+                let luminance = color.r as u32 + color.g as u32 + color.b as u32;
+                if luminance < 120 {
+                    continue;
                 }
+                pixels[at] = 0xFF00_0000 | rgb(color);
             }
         }
         let _ =
